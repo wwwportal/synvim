@@ -26,10 +26,20 @@ end
 local process_agent_response = nil
 
 local function setup_highlights()
-  vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#107c10", bg = "#e6f4ea", bold = true, default = false })
-  vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#d93025", bg = "#fce8e6", strikethrough = true, default = false })
-  vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#ffffff", bg = "#2d3748", bold = true, default = false })
-  vim.api.nvim_set_hl(0, "AgentDiffMenu", { fg = "#000000", bg = "#f0f0f0", bold = true, default = false })
+  local is_dark = (vim.o.background == "dark")
+  if is_dark then
+    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#85e89d", bg = "#144620", bold = true, ctermfg = "Green", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#ff7b72", bg = "#490202", strikethrough = true, ctermfg = "Red", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#c9d1d9", bg = "#21262d", bold = true, ctermfg = "White", ctermbg = "DarkGray", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#238636", bold = true, ctermfg = "White", ctermbg = "DarkGreen", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#8b949e", bg = "#161b22", ctermfg = "LightGray", ctermbg = "Black", default = false })
+  else
+    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#0e6b0e", bg = "#d4edda", bold = true, ctermfg = "DarkGreen", ctermbg = "LightGreen", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#b31d28", bg = "#f8d7da", strikethrough = true, ctermfg = "DarkRed", ctermbg = "LightRed", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#ffffff", bg = "#2d3748", bold = true, ctermfg = "White", ctermbg = "DarkGray", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#0969da", bold = true, ctermfg = "White", ctermbg = "Blue", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#24292f", bg = "#eaeef2", ctermfg = "Black", ctermbg = "LightGray", default = false })
+  end
 end
 
 --- Get root directory of current project
@@ -224,7 +234,7 @@ function M.accept_diff()
   end
 end
 
---- Show suggested code in-line with green-red diff colors and action toolbar
+--- Show suggested code in-line with green-red diff colors and bottom action toolbar
 function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count)
   M.clear_diff()
   setup_highlights()
@@ -239,7 +249,11 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count)
 
   target_line = math.max(1, (type(target_line) == "number" and target_line) or 1)
   local total_lines = vim.api.nvim_buf_line_count(bufnr)
-  if target_line > total_lines then target_line = total_lines end
+  if target_line > total_lines then target_line = math.max(1, total_lines) end
+
+  -- Direct cursor to the exact start line of the diff and center on screen
+  pcall(vim.api.nvim_win_set_cursor, origin_win, { target_line, 0 })
+  vim.cmd("normal! zz")
 
   local new_lines = vim.split(new_content, "\n")
   old_lines_count = (type(old_lines_count) == "number") and old_lines_count or 0
@@ -267,27 +281,30 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count)
 
   table.insert(virt_lines, { { "└── [a] Accept  |  [r] Reject  |  [w] Write in Natural Language ────┘", "AgentDiffHeader" } })
 
+  -- Attach virtual diff lines above target_line so it is immediately visible
   local mark_id = vim.api.nvim_buf_set_extmark(bufnr, ns_diff, math.max(0, target_line - 1), 0, {
     virt_lines = virt_lines,
-    virt_lines_above = (total_lines == 0 or (target_line == 1 and old_lines_count == 0)),
+    virt_lines_above = true,
   })
 
-  -- Floating mini toolbar near cursor
+  -- Floating bottom action toolbar docked at the bottom of the screen
   local t_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[t_buf].buftype = "nofile"
   vim.bo[t_buf].bufhidden = "wipe"
-  local t_text = " [a] Accept   [r] Reject   [w] Write / Revise   [<Esc>] Dismiss "
-  vim.api.nvim_buf_set_lines(t_buf, 0, -1, false, { t_text })
+
+  local win_width = math.min(74, math.max(48, vim.o.columns - 4))
+  local win_row = math.max(1, vim.o.lines - 4)
+  local win_col = math.max(0, math.floor((vim.o.columns - win_width) / 2))
 
   local t_win = vim.api.nvim_open_win(t_buf, true, {
-    relative = "cursor",
-    row = 1,
-    col = 0,
-    width = #t_text,
+    relative = "editor",
+    row = win_row,
+    col = win_col,
+    width = win_width,
     height = 1,
     style = "minimal",
     border = "rounded",
-    title = " Diff Action ",
+    title = " Diff Action (←/→ Navigate, <CR> Choose) ",
     title_pos = "center",
   })
 
@@ -303,22 +320,10 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count)
     bound_keys = {},
   }
 
-  -- Bind keys on toolbar buffer (floating action menu)
-  local function bind_toolbar_keys(tb)
-    vim.keymap.set("n", "a", function()
-      M.accept_diff()
-    end, { buffer = tb, silent = true, nowait = true })
-
-    vim.keymap.set("n", "<CR>", function()
-      M.accept_diff()
-    end, { buffer = tb, silent = true, nowait = true })
-
-    vim.keymap.set("n", "r", function()
-      M.clear_diff()
-      M.reject("")
-    end, { buffer = tb, silent = true, nowait = true })
-
-    vim.keymap.set("n", "w", function()
+  local menu_options = {
+    { label = "Accept", key = "a", action = function() M.accept_diff() end },
+    { label = "Reject", key = "r", action = function() M.clear_diff(); M.reject("") end },
+    { label = "Write",  key = "w", action = function()
       M.clear_diff()
       local input = vim.fn.input({ prompt = "● [Agent] Revise instruction (type or 'listen'): ", cancelreturn = "__CANCEL__" })
       if input ~= "__CANCEL__" and vim.trim(input) ~= "" then
@@ -328,16 +333,86 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count)
           M.run(input, true)
         end
       end
-    end, { buffer = tb, silent = true, nowait = true })
-
-    vim.keymap.set("n", "<Esc>", function()
+    end },
+    { label = "Dismiss", key = "Esc", action = function()
       M.clear_diff()
       vim.notify("Agent: Dismissed in-line diff preview", vim.log.levels.INFO)
-    end, { buffer = tb, silent = true, nowait = true })
+    end },
+  }
 
-    vim.keymap.set("n", "q", function()
-      M.clear_diff()
-    end, { buffer = tb, silent = true, nowait = true })
+  local selected_idx = 1
+
+  local function render_menu()
+    if not vim.api.nvim_buf_is_valid(t_buf) then return end
+    local pieces = {}
+    for i, opt in ipairs(menu_options) do
+      if i == selected_idx then
+        table.insert(pieces, string.format("▶ [%s] %s", opt.key, opt.label))
+      else
+        table.insert(pieces, string.format("  [%s] %s", opt.key, opt.label))
+      end
+    end
+    local line_content = "   " .. table.concat(pieces, "      ")
+    vim.bo[t_buf].modifiable = true
+    vim.api.nvim_buf_set_lines(t_buf, 0, -1, false, { line_content })
+    vim.bo[t_buf].modifiable = false
+
+    -- Highlight options: selected vs non-selected
+    pcall(vim.api.nvim_buf_clear_namespace, t_buf, ns_diff, 0, -1)
+    local cur_col = 3
+    for i, opt in ipairs(menu_options) do
+      local tag = (i == selected_idx) and string.format("▶ [%s] %s", opt.key, opt.label) or string.format("  [%s] %s", opt.key, opt.label)
+      local len = #tag
+      if i == selected_idx then
+        pcall(vim.api.nvim_buf_add_highlight, t_buf, ns_diff, "AgentDiffMenuSel", 0, cur_col, cur_col + len)
+      else
+        pcall(vim.api.nvim_buf_add_highlight, t_buf, ns_diff, "AgentDiffMenuBtn", 0, cur_col, cur_col + len)
+      end
+      cur_col = cur_col + len + 6
+    end
+  end
+
+  render_menu()
+
+  -- Bind keys on toolbar buffer (arrow navigation + hotkeys)
+  local function bind_toolbar_keys(tb)
+    local function nav_right()
+      selected_idx = (selected_idx % #menu_options) + 1
+      render_menu()
+    end
+    local function nav_left()
+      selected_idx = (selected_idx - 2 + #menu_options) % #menu_options + 1
+      render_menu()
+    end
+
+    vim.keymap.set("n", "<Right>", nav_right, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "<Down>", nav_right, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "l", nav_right, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "<Tab>", nav_right, { buffer = tb, silent = true, nowait = true })
+
+    vim.keymap.set("n", "<Left>", nav_left, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "<Up>", nav_left, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "h", nav_left, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "<S-Tab>", nav_left, { buffer = tb, silent = true, nowait = true })
+
+    local function execute_current()
+      if menu_options[selected_idx] then
+        menu_options[selected_idx].action()
+      end
+    end
+    vim.keymap.set("n", "<CR>", execute_current, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "<Space>", execute_current, { buffer = tb, silent = true, nowait = true })
+
+    vim.keymap.set("n", "a", function() menu_options[1].action() end, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "r", function() menu_options[2].action() end, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "w", function() menu_options[3].action() end, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "<Esc>", function() menu_options[4].action() end, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "q", function() menu_options[4].action() end, { buffer = tb, silent = true, nowait = true })
+
+    vim.keymap.set("n", "1", function() menu_options[1].action() end, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "2", function() menu_options[2].action() end, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "3", function() menu_options[3].action() end, { buffer = tb, silent = true, nowait = true })
+    vim.keymap.set("n", "4", function() menu_options[4].action() end, { buffer = tb, silent = true, nowait = true })
   end
 
   bind_toolbar_keys(t_buf)
@@ -833,7 +908,7 @@ process_agent_response = function(data, on_done)
   end
 
   -- 1. Process Directory Preview Modal (STRICTLY for paths/directories)
-  if data.action == "propose_dir" or (data.dir_preview and not data.active_target) then
+  if data.action == "propose_dir" or data.dir_preview then
     local base_dir = ""
     local entries = {}
     local sugg = nil
@@ -850,16 +925,42 @@ process_agent_response = function(data, on_done)
 
     if #entries > 0 then
       local pending_path = (base_dir ~= "" and not base_dir:match("/$") and (base_dir .. "/") or base_dir) .. (sugg or "")
+      local at = data.active_target or {}
+      local target_content = (type(at.content) == "string" and at.content) or (type(data.content) == "string" and data.content) or nil
+      local target_line = tonumber(at.line) or tonumber(data.line) or 1
+      local target_col = tonumber(at.col) or tonumber(data.col) or 1
+      local target_action = at.action or data.action or "replace"
+      local target_old_count = tonumber(at.old_lines_count) or tonumber(data.old_lines_count) or (target_action == "replace" and 1 or 0)
+
       M.state.pending_target = {
-        path = pending_path,
-        line = 1,
-        content = (data.active_target and type(data.active_target.content) == "string") and data.active_target.content or nil,
-        action = (data.active_target and type(data.active_target.action) == "string") and data.active_target.action or nil,
-        old_lines_count = (data.active_target and type(data.active_target.old_lines_count) == "number") and data.active_target.old_lines_count or nil,
+        path = at.path or pending_path,
+        line = target_line,
+        col = target_col,
+        content = target_content,
+        action = target_action,
+        old_lines_count = target_old_count,
+        description = at.description or data.description,
       }
+
+      if data.queue and #data.queue > 0 then
+        M.state.queue = data.queue
+        M.state.queue_index = 1
+        update_queue_display(true)
+      end
+
       M.show_dir_preview(base_dir, entries, sugg, function(origin_win)
-        M.accept()
+        local target = M.state.pending_target
+        M.state.pending_target = nil
+        if target then
+          M.state.last_target = target
+          jump_to_target(target, origin_win)
+        end
       end)
+
+      M.state.is_busy = false
+      vim.cmd("redraw")
+      if on_done then on_done(data) end
+      return
     end
   end
 
@@ -871,9 +972,20 @@ process_agent_response = function(data, on_done)
   end
 
   -- 3. Process Active Target Jump and in-line diff
-  if data.active_target and data.active_target.path then
-    M.state.last_target = data.active_target
-    jump_to_target(data.active_target)
+  local at = data.active_target or {}
+  local path = at.path or data.path
+  if path and path ~= "" then
+    local target = {
+      path = path,
+      line = tonumber(at.line) or tonumber(data.line) or 1,
+      col = tonumber(at.col) or tonumber(data.col) or 1,
+      content = (type(at.content) == "string" and at.content) or (type(data.content) == "string" and data.content) or nil,
+      action = at.action or data.action or "replace",
+      old_lines_count = tonumber(at.old_lines_count) or tonumber(data.old_lines_count) or (at.action == "replace" and 1 or 0),
+      description = at.description or data.description,
+    }
+    M.state.last_target = target
+    jump_to_target(target)
   end
 
   M.state.is_busy = false
