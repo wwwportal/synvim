@@ -174,11 +174,21 @@ end
 function M.clear_diff()
   if M.state.pending_diff then
     local p = M.state.pending_diff
-    if p.bufnr and vim.api.nvim_buf_is_valid(p.bufnr) and p.mark_id then
-      pcall(vim.api.nvim_buf_del_extmark, p.bufnr, ns_diff, p.mark_id)
+    if p.bufnr and vim.api.nvim_buf_is_valid(p.bufnr) then
+      if p.bound_keys then
+        for _, k in ipairs(p.bound_keys) do
+          pcall(vim.keymap.del, "n", k, { buffer = p.bufnr })
+        end
+      end
+      if p.mark_id then
+        pcall(vim.api.nvim_buf_del_extmark, p.bufnr, ns_diff, p.mark_id)
+      end
     end
     if p.toolbar_win and vim.api.nvim_win_is_valid(p.toolbar_win) then
       pcall(vim.api.nvim_win_close, p.toolbar_win, true)
+    end
+    if p.origin_win and vim.api.nvim_win_is_valid(p.origin_win) then
+      pcall(vim.api.nvim_set_current_win, p.origin_win)
     end
     M.state.pending_diff = nil
   end
@@ -192,6 +202,7 @@ function M.accept_diff()
   end
   local p = M.state.pending_diff
   local bufnr = p.bufnr
+  local origin_win = p.origin_win
   local target_line = p.target_line
   local new_lines = p.new_lines
   local old_count = p.old_count or 0
@@ -206,6 +217,9 @@ function M.accept_diff()
     vim.bo[bufnr].modifiable = true
     vim.api.nvim_buf_set_lines(bufnr, s_line, e_line, false, new_lines)
     vim.bo[bufnr].modifiable = was_mod
+    if origin_win and vim.api.nvim_win_is_valid(origin_win) then
+      pcall(vim.api.nvim_set_current_win, origin_win)
+    end
     vim.notify("✓ Agent: Implementation accepted and applied to buffer", vim.log.levels.INFO)
   end
 end
@@ -217,6 +231,11 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count)
 
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then return end
   if type(new_content) ~= "string" or vim.trim(new_content) == "" then return end
+
+  local origin_win = get_primary_editor_win()
+  if vim.api.nvim_win_is_valid(origin_win) then
+    vim.api.nvim_set_current_win(origin_win)
+  end
 
   target_line = math.max(1, (type(target_line) == "number" and target_line) or 1)
   local total_lines = vim.api.nvim_buf_line_count(bufnr)
@@ -260,7 +279,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count)
   local t_text = " [a] Accept   [r] Reject   [w] Write / Revise   [<Esc>] Dismiss "
   vim.api.nvim_buf_set_lines(t_buf, 0, -1, false, { t_text })
 
-  local t_win = vim.api.nvim_open_win(t_buf, false, {
+  local t_win = vim.api.nvim_open_win(t_buf, true, {
     relative = "cursor",
     row = 1,
     col = 0,
@@ -274,23 +293,30 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count)
 
   M.state.pending_diff = {
     bufnr = bufnr,
+    origin_win = origin_win,
     target_line = target_line,
     new_lines = new_lines,
     old_count = old_lines_count,
     mark_id = mark_id,
     toolbar_win = t_win,
     toolbar_buf = t_buf,
+    bound_keys = {},
   }
 
-  local function bind_keys(target_b)
+  -- Bind keys on toolbar buffer (floating action menu)
+  local function bind_toolbar_keys(tb)
     vim.keymap.set("n", "a", function()
       M.accept_diff()
-    end, { buffer = target_b, silent = true, nowait = true })
+    end, { buffer = tb, silent = true, nowait = true })
+
+    vim.keymap.set("n", "<CR>", function()
+      M.accept_diff()
+    end, { buffer = tb, silent = true, nowait = true })
 
     vim.keymap.set("n", "r", function()
       M.clear_diff()
       M.reject("")
-    end, { buffer = target_b, silent = true, nowait = true })
+    end, { buffer = tb, silent = true, nowait = true })
 
     vim.keymap.set("n", "w", function()
       M.clear_diff()
@@ -302,20 +328,26 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count)
           M.run(input, true)
         end
       end
-    end, { buffer = target_b, silent = true, nowait = true })
+    end, { buffer = tb, silent = true, nowait = true })
 
     vim.keymap.set("n", "<Esc>", function()
       M.clear_diff()
       vim.notify("Agent: Dismissed in-line diff preview", vim.log.levels.INFO)
-    end, { buffer = target_b, silent = true, nowait = true })
+    end, { buffer = tb, silent = true, nowait = true })
 
     vim.keymap.set("n", "q", function()
       M.clear_diff()
-    end, { buffer = target_b, silent = true, nowait = true })
+    end, { buffer = tb, silent = true, nowait = true })
   end
 
-  bind_keys(t_buf)
-  bind_keys(bufnr)
+  bind_toolbar_keys(t_buf)
+
+  -- On bufnr, ONLY bind <Esc> to clear diff if user focuses the buffer (never hijack 'w', 'a', 'r')
+  vim.keymap.set("n", "<Esc>", function()
+    M.clear_diff()
+    vim.notify("Agent: Dismissed in-line diff preview", vim.log.levels.INFO)
+  end, { buffer = bufnr, silent = true, nowait = true })
+  table.insert(M.state.pending_diff.bound_keys, "<Esc>")
 
   vim.cmd("redraw")
 end
@@ -648,8 +680,9 @@ function M.run(prompt, is_rejection, on_done)
 
   local system_prompt = [[
 You are an autonomous Neovim code navigation agent.
-CRITICAL RULE: NEVER reply with conversational chat, apologies, or natural language prose.
-You communicate EXCLUSIVELY by emitting a single STRICT JSON object.
+CRITICAL INSTRUCTION: Do NOT call any tools or commands (do NOT run bash, grep, find, view_file, or any tools). All context is provided directly in this prompt.
+NEVER reply with conversational chat, apologies, or natural language prose.
+Output your verdict IMMEDIATELY in this turn as a single STRICT JSON object.
 
 Repository context:
 Current file: ]] .. ctx.current_file .. [[ (line ]] .. ctx.current_line .. [[)
@@ -684,10 +717,15 @@ Output STRICT JSON matching this schema:
 Emit ONLY raw JSON. No markdown code blocks, no text before or after.
 ]]
 
+  if M.state.active_job then
+    pcall(function() M.state.active_job:kill(9) end)
+    M.state.active_job = nil
+  end
+
   local agy_bin = vim.fn.exepath("agy")
   local cmd = {}
   if agy_bin ~= "" then
-    cmd = { agy_bin, "-p", system_prompt, "--model", "gemini-3.8-flash-low", "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low", "--output-format", "stream-json" }
+    cmd = { agy_bin, "-p", system_prompt, "--model", "gemini-3.8-flash-low", "--print-timeout", "30s", "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low", "--output-format", "stream-json" }
   else
     local opencode_bin = vim.fn.exepath("opencode")
     if opencode_bin ~= "" then
@@ -703,13 +741,33 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
   vim.api.nvim_echo({ { "● [Agent] Analyzing codebase...", "ModeMsg" } }, false, {})
   vim.cmd("redraw")
 
+  local job_timeout = vim.uv.new_timer()
+  job_timeout:start(30000, 0, vim.schedule_wrap(function()
+    if M.state.active_job then
+      vim.notify("Agent: Request timed out after 30s. Cancelled.", vim.log.levels.WARN)
+      pcall(function() M.state.active_job:kill(9) end)
+      M.state.active_job = nil
+      M.state.is_busy = false
+      if on_done then on_done(nil) end
+    end
+    if job_timeout then
+      pcall(function() job_timeout:stop(); job_timeout:close() end)
+      job_timeout = nil
+    end
+  end))
+
   local stdout_chunks = {}
-  vim.system(cmd, {
+  M.state.active_job = vim.system(cmd, {
     text = true,
     stdout = function(_, data)
       if data then table.insert(stdout_chunks, data) end
     end,
   }, vim.schedule_wrap(function(res)
+    M.state.active_job = nil
+    if job_timeout then
+      pcall(function() job_timeout:stop(); job_timeout:close() end)
+      job_timeout = nil
+    end
     local raw = table.concat(stdout_chunks, "")
     local data = nil
 
@@ -943,8 +1001,9 @@ function M.lgcc(parts, on_done)
 
   local system_prompt = [[
 You are the Logical Compiler (lgcc) and autonomous code agent for Neovim.
+CRITICAL INSTRUCTION: Do NOT call any tools or commands (do NOT run bash, grep, find, view_file, or any tools). All context is provided directly in this prompt.
 CRITICAL RULE: NEVER reply with conversational chat, apologies, or natural language prose.
-You communicate EXCLUSIVELY by emitting a single STRICT JSON object.
+Output your verdict IMMEDIATELY in this turn as a single STRICT JSON object.
 
 Analyze the provided source code, Code Graph IR, and specifications for logical bugs, invariant violations, missing module implementations, or semantic flaws.
 
@@ -993,6 +1052,11 @@ Output STRICT JSON matching schema:
 Emit ONLY raw JSON. No markdown code blocks, no text before or after.
 ]]
 
+  if M.state.active_job then
+    pcall(function() M.state.active_job:kill(9) end)
+    M.state.active_job = nil
+  end
+
   M.state.is_busy = true
   local file_basename = vim.fn.fnamemodify(target_file, ":t")
   vim.api.nvim_echo({ { "● [Agent lgcc] Analyzing Code Graph IR for " .. file_basename .. "...", "ModeMsg" } }, false, {})
@@ -1002,7 +1066,7 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
   local cmd = {}
   local model = model_override or "gemini-3.8-flash-low"
   if agy_bin ~= "" then
-    cmd = { agy_bin, "-p", system_prompt, "--model", model, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low", "--output-format", "stream-json" }
+    cmd = { agy_bin, "-p", system_prompt, "--model", model, "--print-timeout", "30s", "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low", "--output-format", "stream-json" }
   else
     local opencode_bin = vim.fn.exepath("opencode")
     if opencode_bin ~= "" then
@@ -1015,13 +1079,33 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
     end
   end
 
+  local job_timeout = vim.uv.new_timer()
+  job_timeout:start(30000, 0, vim.schedule_wrap(function()
+    if M.state.active_job then
+      vim.notify("Agent lgcc: Request timed out after 30s. Cancelled.", vim.log.levels.WARN)
+      pcall(function() M.state.active_job:kill(9) end)
+      M.state.active_job = nil
+      M.state.is_busy = false
+      if on_done then on_done(nil) end
+    end
+    if job_timeout then
+      pcall(function() job_timeout:stop(); job_timeout:close() end)
+      job_timeout = nil
+    end
+  end))
+
   local stdout_chunks = {}
-  vim.system(cmd, {
+  M.state.active_job = vim.system(cmd, {
     text = true,
     stdout = function(_, data)
       if data then table.insert(stdout_chunks, data) end
     end,
   }, vim.schedule_wrap(function(res)
+    M.state.active_job = nil
+    if job_timeout then
+      pcall(function() job_timeout:stop(); job_timeout:close() end)
+      job_timeout = nil
+    end
     local raw = table.concat(stdout_chunks, "")
     local data = nil
 
@@ -1063,6 +1147,18 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
   end))
 end
 
+--- Stop any active background agent/lgcc job and clear all previews/diffs
+function M.stop()
+  if M.state.active_job then
+    pcall(function() M.state.active_job:kill(9) end)
+    M.state.active_job = nil
+  end
+  M.state.is_busy = false
+  M.clear_diff()
+  M.close_dir_preview()
+  vim.notify("Agent: Stopped active job and cleared state", vim.log.levels.INFO)
+end
+
 function M.setup()
   setup_highlights()
 
@@ -1071,7 +1167,9 @@ function M.setup()
     local parts = vim.split(raw_args, "%s+", { trimempty = true })
     local sub = (parts[1] or ""):lower()
 
-    if sub == "listen" then
+    if sub == "stop" or sub == "cancel" or sub == "kill" then
+      M.stop()
+    elseif sub == "listen" then
       M.record_voice(function(prompt)
         M.run(prompt, false)
       end)
@@ -1098,23 +1196,22 @@ function M.setup()
         vim.notify("Usage: :Agent diff [accept|reject|clear]", vim.log.levels.INFO)
       end
     elseif sub == "clear" then
+      M.stop()
       M.state.queue = {}
       M.state.queue_index = 0
-      M.close_dir_preview()
-      M.clear_diff()
       vim.cmd("cclose")
       vim.notify("Agent: Cleared queue, diffs, and previews", vim.log.levels.INFO)
     elseif raw_args ~= "" then
       M.run(raw_args, false)
     else
-      vim.notify("Usage: :Agent [<prompt> | listen | lgcc [opts] | reject [msg|listen] | next | prev | queue | accept | clear]", vim.log.levels.INFO)
+      vim.notify("Usage: :Agent [<prompt> | listen | lgcc [opts] | reject [msg|listen] | next | prev | queue | accept | clear | stop]", vim.log.levels.INFO)
     end
   end, {
     nargs = "*",
     complete = function(arglead, cmdline)
       local parts = vim.split(vim.trim(cmdline), "%s+")
       if #parts <= 2 and not cmdline:match("%s+$") then
-        local subcmds = { "listen", "lgcc", "reject", "next", "prev", "queue", "accept", "diff", "clear" }
+        local subcmds = { "listen", "lgcc", "reject", "next", "prev", "queue", "accept", "diff", "clear", "stop", "cancel" }
         return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
       elseif parts[2] == "lgcc" then
         local lgcc_flags = { "clear", "cancel", "stop", "--flash", "--sonnet", "--opencode", "--agy", "--argon", "-s", "--speak", "-b", "--bundle", "--no-bundle", "--budget", "--spec", "-l", "--local" }
