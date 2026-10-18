@@ -649,10 +649,14 @@ require("specs")
 require("onboarding").setup()
 
 vim.opt.rtp:append("/home/yassine/code/syntra-nvim/nvim")
+vim.opt.rtp:append("/home/yassine/code/syn-nvim/nvim")
 -- ── Voice Transcription (:Listen) ──
 require("voice").setup()
 
--- ── Logical Compiler (:Lgcc [-s]) ──
+-- ── Autonomous Silent Code Agent (:Agent) ──
+require("agent").setup()
+
+-- ── Logical Compiler (:Lgcc) ──
 require("lgcc")
 
 -- Ergonomic shortcuts to stay in source code

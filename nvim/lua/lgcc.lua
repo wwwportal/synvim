@@ -607,69 +607,20 @@ M.stop = M.clear
 -- def lgcc_cli_router_hook : Bool := ir_schema_formatter
 -- theorem lgcc_cli_router_hook_verified : lgcc_cli_router_hook = true := by rfl
 
--- Unified :Lgcc Command
+-- :Lgcc command (phased out inline linting in favor of :Agent)
 vim.api.nvim_create_user_command("Lgcc", function(ctx)
-  local fargs = ctx.fargs or {}
-  local speak = false
-  local bundle = true -- default to true for smart context routing
-  local user_budget = nil
-  local spec_path = nil
-  local open_qf = false
-  local engine = "agy" -- default to agy, with automatic opencode failover
-  local model_override = nil
-  local target_file = nil
-  local i = 1
-
-  while i <= #fargs do
-    local arg = fargs[i]
-    if arg == "-s" or arg == "--speak" or arg == "speak" then
-      speak = true
-    elseif arg == "-b" or arg == "--bundle" or arg == "bundle" then
-      bundle = true
-    elseif arg == "--no-bundle" or arg == "no-bundle" then
-      bundle = false
-    elseif arg == "--qf" or arg == "qf" then
-      open_qf = true
-    elseif arg == "--flash" or arg == "flash" then
-      model_override = "gemini-3.8-flash-low"
-    elseif arg == "--sonnet" or arg == "sonnet" then
-      model_override = "claude-sonnet-5-5-low"
-    elseif arg == "--argon" or arg == "argon" then
-      model_override = "gemini-4-argon-medium"
-    elseif arg == "--model" or arg == "model" then
-      i = i + 1
-      model_override = fargs[i]
-    elseif arg == "--budget" or arg == "budget" then
-      i = i + 1
-      user_budget = tonumber(fargs[i])
-    elseif arg == "--opencode" or arg == "opencode" then
-      engine = "opencode"
-    elseif arg == "--agy" or arg == "agy" then
-      engine = "agy"
-    elseif arg == "-l" or arg == "--local" or arg == "local" then
-      engine = "local"
-    elseif arg == "clear" or arg == "cancel" or arg == "stop" or arg == "kill" then
-      M.clear()
-      return
-    elseif arg == "--spec" or arg == "spec" then
-      i = i + 1
-      spec_path = fargs[i]
-    elseif not target_file and arg ~= "" and not arg:match("^-") then
-      target_file = arg
-    end
-    i = i + 1
+  local arg = vim.trim(ctx.args or "")
+  if arg == "clear" or arg == "cancel" or arg == "stop" or arg == "kill" then
+    M.clear()
+    return
   end
-
-  M.lint({
-    file = target_file,
-    spec = spec_path,
-    engine = engine,
-    model = model_override,
-    speak = speak,
-    bundle = bundle,
-    budget = user_budget,
-    qf = open_qf,
-  })
+  vim.notify("lgcc: Inline linting/highlighting has been phased out. Use ':Agent <prompt>' or ':Agent listen'.", vim.log.levels.INFO)
+  if arg ~= "" and not arg:match("^-") then
+    local ok, agent = pcall(require, "agent")
+    if ok and agent.run then
+      agent.run(arg, false)
+    end
+  end
 end, {
   nargs = "*",
   complete = function(arglead, cmdline)
