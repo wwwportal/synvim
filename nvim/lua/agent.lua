@@ -385,9 +385,13 @@ function M.record_voice(callback)
 end
 
 --- Execute prompt against LLM and process silent structured response
-function M.run(prompt, is_rejection)
-  if not prompt or prompt == "" then return end
+function M.run(prompt, is_rejection, on_done)
+  if not prompt or prompt == "" then
+    if on_done then on_done(nil) end
+    return
+  end
   M.state.last_prompt = prompt
+  M.state.is_busy = true
 
   local ctx = collect_context()
   local file_list_str = table.concat(ctx.files, "\n")
@@ -465,47 +469,78 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
     end,
   }, vim.schedule_wrap(function(res)
     local raw = table.concat(stdout_chunks, "")
-    local final_text = ""
+    local data = nil
+
+    -- 1. Try finding stream-json result event
     for line in raw:gmatch("[^\r\n]+") do
-      local resp = line:match('"response"%s*:%s*"(.-)"')
-      if resp then
-        final_text = final_text .. resp:gsub("\\n", "\n"):gsub('\\"', '"'):gsub("\\\\", "\\")
+      if line:find('"event"%s*:%s*"result"') then
+        local ok, res_obj = pcall(vim.fn.json_decode, line)
+        if ok and res_obj and res_obj.result and res_obj.result.response then
+          local resp_str = res_obj.result.response
+          local rok, rdata = pcall(vim.fn.json_decode, resp_str)
+          if rok and type(rdata) == "table" then
+            data = rdata
+            break
+          end
+          local sub = resp_str:match("(%b{})")
+          if sub then
+            local sok, sdata = pcall(vim.fn.json_decode, sub)
+            if sok and type(sdata) == "table" then
+              data = sdata
+              break
+            end
+          end
+        end
       end
     end
-    if final_text == "" then final_text = raw end
 
-    -- Extract JSON substring
-    local json_str = final_text:match("(%b{})")
-    if not json_str then
-      -- Try stripping markdown code fences
-      final_text = final_text:gsub("```json%s*", ""):gsub("```%s*", "")
-      json_str = final_text:match("(%b{})")
+    -- 2. Fallback: search for balanced JSON in full raw output
+    if not data then
+      for candidate in raw:gmatch("(%b{})") do
+        local ok, cand_obj = pcall(vim.fn.json_decode, candidate)
+        if ok and type(cand_obj) == "table" then
+          if cand_obj.action or cand_obj.active_target or cand_obj.queue or cand_obj.dir_preview then
+            data = cand_obj
+            break
+          end
+        end
+      end
     end
 
-    if not json_str then
+    if not data then
+      M.state.is_busy = false
       vim.notify("Agent: Received invalid response from model", vim.log.levels.ERROR)
-      return
-    end
-
-    local ok, data = pcall(vim.fn.json_decode, json_str)
-    if not ok or type(data) ~= "table" then
-      vim.notify("Agent: Failed to parse JSON response", vim.log.levels.ERROR)
+      if on_done then on_done(nil) end
       return
     end
 
     -- Process Directory Preview Modal
-    if data.dir_preview and data.dir_preview.entries and #data.dir_preview.entries > 0 then
-      local base = data.dir_preview.base_dir or ""
-      local sugg = data.dir_preview.suggested or data.dir_preview.entries[1]
-      local pending_path = (base ~= "" and not base:match("/$") and (base .. "/") or base) .. sugg
-      M.state.pending_target = {
-        path = pending_path,
-        line = 1,
-        col = 1,
-      }
-      M.show_dir_preview(base, data.dir_preview.entries, sugg, function()
-        M.accept()
-      end)
+    if data.action == "propose_dir" or (data.dir_preview and not data.active_target) then
+      local base_dir = ""
+      local entries = {}
+      local sugg = nil
+      if type(data.dir_preview) == "table" then
+        if data.dir_preview.entries then
+          base_dir = data.dir_preview.base_dir or ""
+          entries = data.dir_preview.entries
+          sugg = data.dir_preview.suggested or entries[1]
+        elseif #data.dir_preview > 0 then
+          entries = data.dir_preview
+          sugg = entries[1]
+        end
+      end
+
+      if #entries > 0 then
+        local pending_path = (base_dir ~= "" and not base_dir:match("/$") and (base_dir .. "/") or base_dir) .. (sugg or "")
+        M.state.pending_target = {
+          path = pending_path,
+          line = 1,
+          col = 1,
+        }
+        M.show_dir_preview(base_dir, entries, sugg, function()
+          M.accept()
+        end)
+      end
     end
 
     -- Process Multi-Target Queue
@@ -521,7 +556,9 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
       jump_to_target(data.active_target)
     end
 
+    M.state.is_busy = false
     vim.cmd("redraw")
+    if on_done then on_done(data) end
   end))
 end
 
