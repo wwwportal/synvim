@@ -216,12 +216,14 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count)
   setup_highlights()
 
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then return end
-  target_line = math.max(1, target_line or 1)
+  if type(new_content) ~= "string" or vim.trim(new_content) == "" then return end
+
+  target_line = math.max(1, (type(target_line) == "number" and target_line) or 1)
   local total_lines = vim.api.nvim_buf_line_count(bufnr)
   if target_line > total_lines then target_line = total_lines end
 
-  local new_lines = vim.split(new_content or "", "\n")
-  old_lines_count = old_lines_count or 0
+  local new_lines = vim.split(new_content, "\n")
+  old_lines_count = (type(old_lines_count) == "number") and old_lines_count or 0
 
   -- Extract existing lines if replacing
   local deleted_lines = {}
@@ -424,8 +426,8 @@ local function jump_to_target(target, win)
   vim.cmd("normal! zz")
 
   -- If code implementation was suggested, display in-line green-red diff!
-  if target.content and target.content ~= "" then
-    local old_count = target.old_lines_count or ((target.action == "replace") and 1 or 0)
+  if type(target.content) == "string" and vim.trim(target.content) ~= "" then
+    local old_count = (type(target.old_lines_count) == "number") and target.old_lines_count or ((target.action == "replace") and 1 or 0)
     M.show_inline_diff(bufnr, line, target.content, old_count)
   end
 end
@@ -793,10 +795,9 @@ process_agent_response = function(data, on_done)
       M.state.pending_target = {
         path = pending_path,
         line = 1,
-        col = 1,
-        content = data.active_target and data.active_target.content or nil,
-        action = data.active_target and data.active_target.action or nil,
-        old_lines_count = data.active_target and data.active_target.old_lines_count or nil,
+        content = (data.active_target and type(data.active_target.content) == "string") and data.active_target.content or nil,
+        action = (data.active_target and type(data.active_target.action) == "string") and data.active_target.action or nil,
+        old_lines_count = (data.active_target and type(data.active_target.old_lines_count) == "number") and data.active_target.old_lines_count or nil,
       }
       M.show_dir_preview(base_dir, entries, sugg, function(origin_win)
         M.accept()
