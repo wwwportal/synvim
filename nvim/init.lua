@@ -656,12 +656,12 @@ require("voice").setup()
 -- ── Autonomous Silent Code Agent (:Agent) ──
 require("agent").setup()
 
--- ── Logical Compiler (:Lgcc) ──
+-- ── Logical Compiler (:Agent lgcc) ──
 require("lgcc")
 
 -- Ergonomic shortcuts to stay in source code
-vim.keymap.set("n", "<leader>l", "<Cmd>Lgcc<CR>", { silent = true, desc = "Run Lgcc in-line on active buffer" })
-vim.keymap.set("n", "<leader>lx", "<Cmd>Lgcc clear<CR>", { silent = true, desc = "Clear Lgcc in-line diagnostics" })
+vim.keymap.set("n", "<leader>l", "<Cmd>Agent lgcc<CR>", { silent = true, desc = "Run Agent lgcc on active buffer" })
+vim.keymap.set("n", "<leader>lx", "<Cmd>Agent lgcc clear<CR>", { silent = true, desc = "Clear Agent lgcc diagnostics" })
 vim.keymap.set("n", "<leader>ls", "<Cmd>Specs<CR>", { silent = true, desc = "Open in-tree specs list" })
 vim.keymap.set("n", "<leader>lg", "<Cmd>Specs graph<CR>", { silent = true, desc = "Open visual specs DAG" })
 
