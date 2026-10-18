@@ -23,6 +23,8 @@ if vim.fn.filereadable(transcribe_script) ~= 1 then
   transcribe_script = vim.fn.expand("/home/yassine/code/syn-nvim/bin/agent_transcribe.py")
 end
 
+local process_agent_response = nil
+
 local function setup_highlights()
   vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#107c10", bg = "#e6f4ea", bold = true, default = false })
   vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#d93025", bg = "#fce8e6", strikethrough = true, default = false })
@@ -755,7 +757,7 @@ end
 --- - content: in-line green-red diff (showing deleted lines in red, added in green)
 --- - queue: multi-location step queue
 --- - clean: notify clean logic check
-local function process_agent_response(data, on_done)
+process_agent_response = function(data, on_done)
   if not data or type(data) ~= "table" then
     M.state.is_busy = false
     vim.notify("Agent: Received invalid response from model", vim.log.levels.ERROR)
