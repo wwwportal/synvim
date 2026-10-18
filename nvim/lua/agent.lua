@@ -63,6 +63,24 @@ local function get_primary_editor_win()
   return cur
 end
 
+--- Locate native lgcc Rust binary
+local function find_lgcc_bin()
+  local exepath = vim.fn.exepath("lgcc")
+  if exepath ~= "" and vim.fn.executable(exepath) == 1 then
+    return exepath
+  end
+  local candidates = {
+    vim.fn.expand("~/code/syn-nvim/bin/lgcc"),
+    vim.fn.expand("~/.local/bin/lgcc"),
+    vim.fn.expand("~/.config/nvim/bin/lgcc"),
+    "/usr/local/bin/lgcc",
+  }
+  for _, p in ipairs(candidates) do
+    if vim.fn.executable(p) == 1 then return p end
+  end
+  return nil
+end
+
 --- Collect repository context summary (git files and active buffer context)
 local function collect_context()
   local root = get_root_dir()
@@ -405,7 +423,7 @@ local function jump_to_target(target, win)
 
   -- If code implementation was suggested, display in-line green-red diff!
   if target.content and target.content ~= "" then
-    local old_count = (target.action == "replace") and 1 or 0
+    local old_count = target.old_lines_count or ((target.action == "replace") and 1 or 0)
     M.show_inline_diff(bufnr, line, target.content, old_count)
   end
 end
@@ -727,60 +745,79 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
       end
     end
 
-    if not data then
-      M.state.is_busy = false
-      vim.notify("Agent: Received invalid response from model", vim.log.levels.ERROR)
-      if on_done then on_done(nil) end
-      return
-    end
-
-    -- Process Directory Preview Modal (STRICTLY for paths/directories)
-    if data.action == "propose_dir" or (data.dir_preview and not data.active_target) then
-      local base_dir = ""
-      local entries = {}
-      local sugg = nil
-      if type(data.dir_preview) == "table" then
-        if data.dir_preview.entries then
-          base_dir = data.dir_preview.base_dir or ""
-          entries = data.dir_preview.entries
-          sugg = data.dir_preview.suggested or entries[1]
-        elseif #data.dir_preview > 0 then
-          entries = data.dir_preview
-          sugg = entries[1]
-        end
-      end
-
-      if #entries > 0 then
-        local pending_path = (base_dir ~= "" and not base_dir:match("/$") and (base_dir .. "/") or base_dir) .. (sugg or "")
-        M.state.pending_target = {
-          path = pending_path,
-          line = 1,
-          col = 1,
-          content = data.active_target and data.active_target.content or nil,
-        }
-        M.show_dir_preview(base_dir, entries, sugg, function(origin_win)
-          M.accept()
-        end)
-      end
-    end
-
-    -- Process Multi-Target Queue
-    if data.queue and #data.queue > 0 then
-      M.state.queue = data.queue
-      M.state.queue_index = 1
-      update_queue_display(true)
-    end
-
-    -- Process Active Target Jump and in-line diff
-    if data.active_target and data.active_target.path then
-      M.state.last_target = data.active_target
-      jump_to_target(data.active_target)
-    end
-
-    M.state.is_busy = false
-    vim.cmd("redraw")
-    if on_done then on_done(data) end
+    process_agent_response(data, on_done)
   end))
+end
+
+--- Shared processor for agent and lgcc JSON output:
+--- - propose_dir / dir_preview: path-only floating preview modal
+--- - active_target: jump to file & line in primary editor split
+--- - content: in-line green-red diff (showing deleted lines in red, added in green)
+--- - queue: multi-location step queue
+--- - clean: notify clean logic check
+local function process_agent_response(data, on_done)
+  if not data or type(data) ~= "table" then
+    M.state.is_busy = false
+    vim.notify("Agent: Received invalid response from model", vim.log.levels.ERROR)
+    if on_done then on_done(nil) end
+    return
+  end
+
+  if data.action == "clean" then
+    M.state.is_busy = false
+    vim.notify("✓ Agent: Code logic check clean. No logical errors found.", vim.log.levels.INFO)
+    if on_done then on_done(data) end
+    return
+  end
+
+  -- 1. Process Directory Preview Modal (STRICTLY for paths/directories)
+  if data.action == "propose_dir" or (data.dir_preview and not data.active_target) then
+    local base_dir = ""
+    local entries = {}
+    local sugg = nil
+    if type(data.dir_preview) == "table" then
+      if data.dir_preview.entries then
+        base_dir = data.dir_preview.base_dir or ""
+        entries = data.dir_preview.entries
+        sugg = data.dir_preview.suggested or entries[1]
+      elseif #data.dir_preview > 0 then
+        entries = data.dir_preview
+        sugg = entries[1]
+      end
+    end
+
+    if #entries > 0 then
+      local pending_path = (base_dir ~= "" and not base_dir:match("/$") and (base_dir .. "/") or base_dir) .. (sugg or "")
+      M.state.pending_target = {
+        path = pending_path,
+        line = 1,
+        col = 1,
+        content = data.active_target and data.active_target.content or nil,
+        action = data.active_target and data.active_target.action or nil,
+        old_lines_count = data.active_target and data.active_target.old_lines_count or nil,
+      }
+      M.show_dir_preview(base_dir, entries, sugg, function(origin_win)
+        M.accept()
+      end)
+    end
+  end
+
+  -- 2. Process Multi-Target Queue
+  if data.queue and #data.queue > 0 then
+    M.state.queue = data.queue
+    M.state.queue_index = 1
+    update_queue_display(true)
+  end
+
+  -- 3. Process Active Target Jump and in-line diff
+  if data.active_target and data.active_target.path then
+    M.state.last_target = data.active_target
+    jump_to_target(data.active_target)
+  end
+
+  M.state.is_busy = false
+  vim.cmd("redraw")
+  if on_done then on_done(data) end
 end
 
 --- Reject current location and re-route
@@ -811,38 +848,27 @@ function M.reject(arg)
   M.run(arg, true)
 end
 
---- Run native logical compiler / code graph analysis (:Agent lgcc [args])
-function M.lgcc(parts)
-  local ok, lgcc = pcall(require, "lgcc")
-  if not ok then
-    vim.notify("Agent: lgcc module not available", vim.log.levels.ERROR)
-    return
-  end
-
+--- Run Code Graph logic analysis (:Agent lgcc [args]) with path finding and in-line diff suggestions
+function M.lgcc(parts, on_done)
   local fargs = vim.list_slice(parts, 2)
-  local speak = false
-  local bundle = true
   local user_budget = nil
   local spec_path = nil
-  local open_qf = false
-  local engine = "agy"
   local model_override = nil
   local target_file = nil
+  local bundle = true
   local i = 1
 
   while i <= #fargs do
     local arg = fargs[i]
     if arg == "clear" or arg == "cancel" or arg == "stop" or arg == "kill" then
-      lgcc.clear()
+      M.clear_diff()
+      M.close_dir_preview()
+      M.state.queue = {}
+      M.state.queue_index = 0
+      vim.cmd("cclose")
+      vim.notify("Agent lgcc: Cleared diagnostics, diffs, and queue", vim.log.levels.INFO)
+      if on_done then on_done(nil) end
       return
-    elseif arg == "-s" or arg == "--speak" or arg == "speak" then
-      speak = true
-    elseif arg == "-b" or arg == "--bundle" or arg == "bundle" then
-      bundle = true
-    elseif arg == "--no-bundle" or arg == "no-bundle" then
-      bundle = false
-    elseif arg == "--qf" or arg == "qf" then
-      open_qf = true
     elseif arg == "--flash" or arg == "flash" then
       model_override = "gemini-3.8-flash-low"
     elseif arg == "--sonnet" or arg == "sonnet" then
@@ -855,31 +881,183 @@ function M.lgcc(parts)
     elseif arg == "--budget" or arg == "budget" then
       i = i + 1
       user_budget = tonumber(fargs[i])
-    elseif arg == "--opencode" or arg == "opencode" then
-      engine = "opencode"
-    elseif arg == "--agy" or arg == "agy" then
-      engine = "agy"
-    elseif arg == "-l" or arg == "--local" or arg == "local" then
-      engine = "local"
     elseif arg == "--spec" or arg == "spec" then
       i = i + 1
       spec_path = fargs[i]
+    elseif arg == "--no-bundle" or arg == "no-bundle" then
+      bundle = false
     elseif not target_file and arg ~= "" and not arg:match("^-") then
       target_file = arg
     end
     i = i + 1
   end
 
-  lgcc.lint({
-    file = target_file,
-    spec = spec_path,
-    engine = engine,
-    model = model_override,
-    speak = speak,
-    bundle = bundle,
-    budget = user_budget,
-    qf = open_qf,
-  })
+  local cur_win = get_primary_editor_win()
+  local cur_buf = vim.api.nvim_win_get_buf(cur_win)
+  if not target_file or target_file == "" then
+    target_file = vim.api.nvim_buf_get_name(cur_buf)
+  else
+    target_file = vim.fn.expand(target_file)
+  end
+
+  if target_file == "" or vim.uv.fs_stat(target_file) == nil then
+    vim.notify("Agent lgcc: Target file not found or buffer not saved: " .. (target_file ~= "" and target_file or "[unnamed]"), vim.log.levels.WARN)
+    if on_done then on_done(nil) end
+    return
+  end
+
+  local budget = user_budget or 4000
+  local code_section = ""
+  if bundle then
+    local lgcc_bin = find_lgcc_bin()
+    local git_root = vim.fs.root(target_file, { ".git" })
+    if lgcc_bin and git_root then
+      local ok, res = pcall(function()
+        return vim.system({ lgcc_bin, "--route", target_file, "--budget", tostring(budget), "--format", "ir" }, { text = true }):wait(3000)
+      end)
+      if ok and res and res.code == 0 and res.stdout and res.stdout ~= "" then
+        code_section = res.stdout
+      end
+    end
+  end
+
+  if code_section == "" then
+    local lines = vim.fn.readfile(target_file)
+    local numbered = {}
+    for idx, l in ipairs(lines) do
+      table.insert(numbered, string.format("%d: %s", idx, l))
+    end
+    code_section = string.format("--- SOURCE CODE (prefixed with line numbers) ---\nFile: %s\n%s", target_file, table.concat(numbered, "\n"))
+  end
+
+  local spec_section = ""
+  if spec_path and spec_path ~= "" then
+    local s_path = vim.fn.expand(spec_path)
+    if vim.fn.filereadable(s_path) == 1 then
+      spec_section = string.format("\n--- SPECIFICATION CONTRACT ---\n%s\n", table.concat(vim.fn.readfile(s_path), "\n"))
+    end
+  end
+
+  local system_prompt = [[
+You are the Logical Compiler (lgcc) and autonomous code agent for Neovim.
+CRITICAL RULE: NEVER reply with conversational chat, apologies, or natural language prose.
+You communicate EXCLUSIVELY by emitting a single STRICT JSON object.
+
+Analyze the provided source code, Code Graph IR, and specifications for logical bugs, invariant violations, missing module implementations, or semantic flaws.
+
+If there are NO logical bugs or flaws, output STRICTLY:
+{"action": "clean"}
+
+If logical flaws, invariant violations, or missing implementations exist:
+- Provide the exact corrected code implementation to fix the flaw!
+- If a new file or directory is needed (e.g., missing module), use "action": "create_and_jump" or "propose_dir", with "dir_preview" proposing the path.
+- If modifying existing code, set "active_target" with:
+  "path": target file path,
+  "line": starting line number where fix should be applied,
+  "action": "replace" or "insert",
+  "old_lines_count": number of lines being deleted/replaced (0 if pure insertion),
+  "content": replacement/new code lines,
+  "description": concise description of the logical flaw and fix
+- If multiple flaws exist across files/locations, populate "queue" with all targets.
+
+Target File: ]] .. target_file .. [[
+
+]] .. spec_section .. [[
+
+]] .. code_section .. [[
+
+Output STRICT JSON matching schema:
+{
+  "action": "replace" | "insert" | "create_and_jump" | "propose_dir" | "clean",
+  "active_target": {
+    "path": "path/to/file",
+    "line": 1,
+    "col": 1,
+    "action": "replace" | "insert",
+    "old_lines_count": 1,
+    "content": "replacement code",
+    "description": "Fix logic bug"
+  },
+  "queue": [
+    {"path": "file1", "line": 10, "col": 1, "description": "Fix flaw A"}
+  ],
+  "dir_preview": {
+    "base_dir": "path/to/dir",
+    "entries": ["f1", "f2"],
+    "suggested": "f2"
+  }
+}
+Emit ONLY raw JSON. No markdown code blocks, no text before or after.
+]]
+
+  M.state.is_busy = true
+  local file_basename = vim.fn.fnamemodify(target_file, ":t")
+  vim.api.nvim_echo({ { "● [Agent lgcc] Analyzing Code Graph IR for " .. file_basename .. "...", "ModeMsg" } }, false, {})
+  vim.cmd("redraw")
+
+  local agy_bin = vim.fn.exepath("agy")
+  local cmd = {}
+  local model = model_override or "gemini-3.8-flash-low"
+  if agy_bin ~= "" then
+    cmd = { agy_bin, "-p", system_prompt, "--model", model, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low", "--output-format", "stream-json" }
+  else
+    local opencode_bin = vim.fn.exepath("opencode")
+    if opencode_bin ~= "" then
+      cmd = { opencode_bin, "run", "--auto", system_prompt }
+    else
+      M.state.is_busy = false
+      vim.notify("Agent lgcc: Neither 'agy' nor 'opencode' found in PATH", vim.log.levels.ERROR)
+      if on_done then on_done(nil) end
+      return
+    end
+  end
+
+  local stdout_chunks = {}
+  vim.system(cmd, {
+    text = true,
+    stdout = function(_, data)
+      if data then table.insert(stdout_chunks, data) end
+    end,
+  }, vim.schedule_wrap(function(res)
+    local raw = table.concat(stdout_chunks, "")
+    local data = nil
+
+    for line in raw:gmatch("[^\r\n]+") do
+      if line:find('"event"%s*:%s*"result"') then
+        local ok, res_obj = pcall(vim.fn.json_decode, line)
+        if ok and res_obj and res_obj.result and res_obj.result.response then
+          local resp_str = res_obj.result.response
+          local rok, rdata = pcall(vim.fn.json_decode, resp_str)
+          if rok and type(rdata) == "table" then
+            data = rdata
+            break
+          end
+          local sub = resp_str:match("(%b{})")
+          if sub then
+            local sok, sdata = pcall(vim.fn.json_decode, sub)
+            if sok and type(sdata) == "table" then
+              data = sdata
+              break
+            end
+          end
+        end
+      end
+    end
+
+    if not data then
+      for candidate in raw:gmatch("(%b{})") do
+        local ok, cand_obj = pcall(vim.fn.json_decode, candidate)
+        if ok and type(cand_obj) == "table" then
+          if cand_obj.action or cand_obj.active_target or cand_obj.queue or cand_obj.dir_preview then
+            data = cand_obj
+            break
+          end
+        end
+      end
+    end
+
+    process_agent_response(data, on_done)
+  end))
 end
 
 function M.setup()
