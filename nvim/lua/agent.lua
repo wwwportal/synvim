@@ -16,6 +16,11 @@ M.state = {
   status_tail = "",
   is_busy = false,
   origin_win = nil,
+  last_terminal_cwd = nil,
+  last_terminal_buf = nil,
+  last_terminal_win = nil,
+  latest_focus_cwd = nil,
+  latest_focus_type = nil,
 }
 
 local py_bin = vim.fn.expand("~/myenv/bin/python")
@@ -62,25 +67,114 @@ local function resolve_suggested_path(base_dir, sugg)
   return base_dir .. "/" .. sugg
 end
 
---- Get root directory of current project
-local function get_root_dir()
-  local buf_name = vim.api.nvim_buf_get_name(0)
-  if buf_name ~= "" then
-    local root = vim.fs.root(buf_name, { ".git", "Cargo.toml", "Makefile" })
-    if root then return root end
+--- Resolve current working directory of a terminal buffer via /proc/<pid>/cwd or term:// URI
+local function get_terminal_cwd(buf)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then return nil end
+  if vim.bo[buf].buftype ~= "terminal" then return nil end
+
+  local chan = vim.bo[buf].channel
+  if not chan or chan <= 0 then
+    chan = vim.b[buf].terminal_job_id
   end
-  local git_root = vim.fn.system("git rev-parse --show-toplevel 2>/dev/null"):gsub("[\r\n]+", "")
-  if vim.v.shell_error == 0 and git_root ~= "" then
-    return git_root
+  if chan and chan > 0 then
+    local ok, pid = pcall(vim.fn.jobpid, chan)
+    if ok and pid and pid > 0 then
+      local cwd = vim.uv.fs_realpath("/proc/" .. pid .. "/cwd")
+      if cwd and cwd ~= "" and vim.fn.isdirectory(cwd) == 1 then
+        return cwd
+      end
+    end
   end
-  return vim.fn.getcwd()
+
+  local name = vim.api.nvim_buf_get_name(buf)
+  local term_path = name:match("^term://(.-)//")
+  if term_path and term_path ~= "" then
+    local expanded = vim.fn.expand(term_path)
+    if vim.fn.isdirectory(expanded) == 1 then
+      return vim.uv.fs_realpath(expanded) or expanded
+    end
+  end
+  return nil
 end
 
---- Get primary non-floating editor split window (skipping quickfix/nofile)
+--- Get root directory of current project, prioritizing active or latest-navigated terminal split
+local function get_root_dir()
+  local cur_win = vim.api.nvim_get_current_win()
+  local cur_buf = vim.api.nvim_win_get_buf(cur_win)
+  local candidate = nil
+
+  -- 1. If currently in a terminal split, its live CWD is primary
+  if vim.bo[cur_buf].buftype == "terminal" then
+    candidate = get_terminal_cwd(cur_buf)
+  end
+
+  -- 2. If currently in an editor buffer with a valid saved file on disk
+  if not candidate and vim.bo[cur_buf].buftype == "" then
+    local name = vim.api.nvim_buf_get_name(cur_buf)
+    if name ~= "" and not name:match("^%a+://") and vim.fn.filereadable(name) == 1 then
+      local root = vim.fs.root(name, { ".git", "Cargo.toml", "Makefile", "pyproject.toml", "package.json" })
+      if root and root ~= vim.fn.expand("~") and root ~= "/" then
+        candidate = root
+      else
+        candidate = vim.fn.fnamemodify(name, ":p:h")
+      end
+    end
+  end
+
+  -- 3. If latest focused split was a terminal, check live CWD of that terminal buffer
+  if not candidate and M.state.last_terminal_buf and vim.api.nvim_buf_is_valid(M.state.last_terminal_buf) then
+    candidate = get_terminal_cwd(M.state.last_terminal_buf)
+  end
+
+  -- 4. Check active terminal buffers in open windows
+  if not candidate then
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      local b = vim.api.nvim_win_get_buf(win)
+      if vim.bo[b].buftype == "terminal" then
+        local tc = get_terminal_cwd(b)
+        if tc and tc ~= vim.fn.expand("~") and tc ~= "/" then
+          candidate = tc
+          break
+        end
+      end
+    end
+  end
+
+  -- 5. Fallback to tracked last_terminal_cwd or latest_focus_cwd
+  if not candidate and M.state.last_terminal_cwd and vim.fn.isdirectory(M.state.last_terminal_cwd) == 1 then
+    candidate = M.state.last_terminal_cwd
+  end
+  if not candidate and M.state.latest_focus_cwd and vim.fn.isdirectory(M.state.latest_focus_cwd) == 1 then
+    candidate = M.state.latest_focus_cwd
+  end
+
+  -- 6. Fallback to git root of Neovim cwd if not in home
+  if not candidate then
+    local git_root = vim.fn.system("git rev-parse --show-toplevel 2>/dev/null"):gsub("[\r\n]+", "")
+    if vim.v.shell_error == 0 and git_root ~= "" and git_root ~= vim.fn.expand("~") and git_root ~= "/" then
+      candidate = git_root
+    end
+  end
+
+  if not candidate or candidate == "" then
+    candidate = vim.fn.getcwd()
+  end
+
+  -- Resolve to project/repo root if inside a subdirectory
+  local repo_root = vim.fs.root(candidate, { ".git", "Cargo.toml", "Makefile", "pyproject.toml", "package.json" })
+  if repo_root and repo_root ~= vim.fn.expand("~") and repo_root ~= "/" then
+    return repo_root
+  end
+
+  return candidate
+end
+
+--- Get primary non-floating editor split window (skipping quickfix/terminal)
 local function get_primary_editor_win()
   local cur = vim.api.nvim_get_current_win()
   local cur_cfg = vim.api.nvim_win_get_config(cur)
-  if cur_cfg.relative == "" and vim.bo[vim.api.nvim_win_get_buf(cur)].buftype == "" then
+  local cur_buf = vim.api.nvim_win_get_buf(cur)
+  if cur_cfg.relative == "" and vim.bo[cur_buf].buftype == "" then
     return cur
   end
   for _, win in ipairs(vim.api.nvim_list_wins()) do
@@ -91,6 +185,13 @@ local function get_primary_editor_win()
         return win
       end
     end
+  end
+  -- If only terminal or quickfix exists, create an editor split
+  if vim.bo[cur_buf].buftype == "terminal" or vim.bo[cur_buf].buftype == "quickfix" then
+    vim.cmd("aboveleft split")
+    local new_win = vim.api.nvim_get_current_win()
+    vim.cmd("enew")
+    return new_win
   end
   return cur
 end
@@ -113,8 +214,8 @@ local function find_lgcc_bin()
   return nil
 end
 
---- Collect repository context summary (git files and active buffer context)
-local function collect_context()
+--- Collect repository context summary (git files, active buffer context, and query keyword search)
+local function collect_context(prompt)
   local root = get_root_dir()
   local files_out = vim.fn.system({ "git", "-C", root, "ls-files" })
   local file_list = {}
@@ -126,11 +227,80 @@ local function collect_context()
     end
   end
 
+  -- Fallback to find if not a git repo or git ls-files is empty
+  if #file_list == 0 then
+    local find_out = vim.fn.system({ "find", root, "-maxdepth", "3", "-not", "-path", "*/.*", "-not", "-path", "*/target/*", "-not", "-path", "*/node_modules/*", "-type", "f" })
+    if vim.v.shell_error == 0 and find_out ~= "" then
+      for line in find_out:gmatch("[^\r\n]+") do
+        local rel = line:gsub("^" .. vim.pesc(root) .. "/?", "")
+        if rel ~= "" and #file_list < 150 then
+          table.insert(file_list, rel)
+        end
+      end
+    end
+  end
+
+  -- Search matches in repository for query keywords
+  local search_matches = {}
+  if prompt and prompt ~= "" then
+    local stop_words = {
+      ["where"]=true, ["did"]=true, ["we"]=true, ["implement"]=true, ["the"]=true,
+      ["a"]=true, ["an"]=true, ["in"]=true, ["is"]=true, ["of"]=true, ["to"]=true,
+      ["and"]=true, ["or"]=true, ["for"]=true, ["with"]=true, ["find"]=true,
+      ["show"]=true, ["me"]=true, ["how"]=true, ["what"]=true, ["which"]=true,
+      ["can"]=true, ["you"]=true, ["go"]=true, ["at"]=true, ["on"]=true,
+      ["file"]=true, ["line"]=true, ["code"]=true, ["function"]=true, ["class"]=true,
+      ["this"]=true, ["that"]=true, ["there"]=true, ["are"]=true, ["was"]=true,
+      ["were"]=true, ["our"]=true, ["us"]=true, ["it"]=true, ["its"]=true,
+      ["my"]=true, ["i"]=true, ["do"]=true, ["does"]=true, ["done"]=true,
+      ["have"]=true, ["has"]=true, ["had"]=true, ["be"]=true, ["been"]=true,
+      ["get"]=true, ["got"]=true, ["put"]=true, ["set"]=true,
+    }
+    local keywords = {}
+    for word in prompt:lower():gmatch("[%a%d_-]+") do
+      if #word >= 3 and not stop_words[word] then
+        table.insert(keywords, word)
+      end
+    end
+
+    for _, kw in ipairs(keywords) do
+      local grep_out = vim.fn.system({ "git", "-C", root, "grep", "-n", "-I", "-i", kw, "--", ":!*.jsonl", ":!*.log", ":!*.json", ":!*.ipynb", ":!*.olean", ":!specs/.lexlean/*", ":!logs/*" })
+      if vim.v.shell_error ~= 0 or grep_out == "" then
+        local rg_bin = vim.fn.exepath("rg")
+        if rg_bin ~= "" then
+          grep_out = vim.fn.system({ rg_bin, "-n", "--no-heading", "-i", "-g", "!*.jsonl", "-g", "!*.log", "-g", "!*.json", "-g", "!*.ipynb", "-g", "!*.olean", "-g", "!specs/.lexlean/*", "-g", "!logs/*", kw, root })
+        else
+          grep_out = vim.fn.system({ "grep", "-rn", "-I", "-i", "--exclude-dir=.git", "--exclude-dir=target", "--exclude-dir=logs", "--exclude-dir=.lexlean", "--exclude=*.jsonl", "--exclude=*.log", "--exclude=*.json", "--exclude=*.ipynb", "--exclude=*.olean", kw, root })
+        end
+      end
+      if grep_out and grep_out ~= "" then
+        for gline in grep_out:gmatch("[^\r\n]+") do
+          local rel = gline:gsub("^" .. vim.pesc(root) .. "/", "")
+          local filepart = rel:match("^([^:]+)") or rel
+          if not filepart:match("%.json")
+            and not filepart:match("%.log")
+            and not filepart:match("%.ipynb")
+            and not filepart:match("%.olean")
+            and not filepart:match("/%.")
+            and not filepart:match("^%.")
+            and not filepart:match("^logs/") then
+            if #search_matches < 35 then
+              table.insert(search_matches, rel)
+            else
+              break
+            end
+          end
+        end
+      end
+      if #search_matches >= 35 then break end
+    end
+  end
+
   local cur_win = get_primary_editor_win()
   local cur_buf = vim.api.nvim_win_get_buf(cur_win)
   local cur_file = vim.api.nvim_buf_get_name(cur_buf)
   local rel_cur_file = ""
-  if cur_file ~= "" then
+  if cur_file ~= "" and not cur_file:match("^%a+://") then
     rel_cur_file = vim.fn.fnamemodify(cur_file, ":.")
   end
 
@@ -155,6 +325,7 @@ local function collect_context()
     current_col = cur_col,
     snippet = snippet,
     files = file_list,
+    search_matches = search_matches,
   }
 end
 
@@ -417,6 +588,12 @@ jump_to_target = function(target, win)
     path = root .. "/" .. path
   end
 
+  -- Never open a directory as an editable file (prevents Netrw file listings)
+  if vim.fn.isdirectory(path) == 1 then
+    vim.notify("Agent: Target is a directory, not a file: " .. vim.fn.fnamemodify(path, ":."), vim.log.levels.WARN)
+    return
+  end
+
   local origin_win = win or M.state.origin_win
   if not origin_win or not vim.api.nvim_win_is_valid(origin_win) then
     origin_win = get_primary_editor_win()
@@ -605,10 +782,11 @@ update_queue_display = function(show_window)
   local root = get_root_dir()
   for idx, item in ipairs(M.state.queue) do
     local fullpath = item.path:match("^/") and item.path or (root .. "/" .. item.path)
-    local is_new = item.is_new_file or (item.action == "create")
-    local tag = is_new and "[NEW FILE]" or "[DIFF]"
+    local is_nav = (item.action == "navigate")
+    local is_new = not is_nav and (item.is_new_file or (item.action == "create"))
+    local tag = is_nav and "[MATCH]" or (is_new and "[NEW FILE]" or "[DIFF]")
     local status = item.done and "✓ [DONE]" or ((idx == M.state.queue_index) and "▶ [ACTIVE]" or "  [PENDING]")
-    local desc = item.description or (is_new and ("Create " .. item.path) or ("Modify " .. item.path))
+    local desc = item.description or (is_nav and item.path or (is_new and ("Create " .. item.path) or ("Modify " .. item.path)))
     table.insert(qf, {
       filename = fullpath,
       lnum = item.line or 1,
@@ -811,7 +989,10 @@ function M.run(prompt, is_rejection, on_done)
   M.state.last_prompt = prompt
   M.state.is_busy = true
 
-  local ctx = collect_context()
+  local root = get_root_dir()
+  pcall(vim.fn.chdir, root)
+
+  local ctx = collect_context(prompt)
   local file_list_str = table.concat(ctx.files, "\n")
 
   local rejection_context = ""
@@ -824,6 +1005,11 @@ function M.run(prompt, is_rejection, on_done)
     )
   end
 
+  local search_section = ""
+  if ctx.search_matches and #ctx.search_matches > 0 then
+    search_section = "\nSearch matches in repository for query terms:\n" .. table.concat(ctx.search_matches, "\n") .. "\n"
+  end
+
   local system_prompt = [[
 You are an autonomous Neovim code navigation agent.
 CRITICAL INSTRUCTION: Do NOT call any tools or commands (do NOT run bash, grep, find, view_file, or any tools). All context is provided directly in this prompt.
@@ -831,15 +1017,27 @@ NEVER reply with conversational chat, apologies, or natural language prose.
 Output your verdict IMMEDIATELY in this turn as a single STRICT JSON object.
 
 Repository context:
+Project Root: ]] .. root .. [[
+
 Current file: ]] .. ctx.current_file .. [[ (line ]] .. ctx.current_line .. [[)
 Available repository files:
 ]] .. file_list_str .. [[
+]] .. search_section .. [[
 
 Snippet around cursor:
 ]] .. ctx.snippet .. rejection_context .. [[
 
 User Instruction:
 ]] .. prompt .. [[
+
+Navigation rules:
+- For navigation questions ("where did we implement X", "where is X", "find X", "show X"):
+  - Set "action": "navigate"
+  - Pinpoint the exact implementation file and line as "active_target"
+  - Populate "queue" with ALL other relevant matching files and lines from the search matches or file list
+  - active_target.path MUST point to an actual file (NEVER a directory, NEVER ".")
+- For new file requests: set "action": "create_and_jump" or "propose_dir"
+- NEVER suggest a directory as active_target.path. Always choose a specific file.
 
 Output STRICT JSON matching this schema:
 {
@@ -848,11 +1046,12 @@ Output STRICT JSON matching this schema:
     "path": "relative/path/to/file",
     "line": 1,
     "col": 1,
+    "description": "Brief description of this match",
     "content": "optional code snippet or implementation to suggest in-line"
   },
   "queue": [
-    {"path": "file1", "line": 10, "col": 1, "description": "Step 1"},
-    {"path": "file2", "line": 40, "col": 1, "description": "Step 2"}
+    {"path": "file1", "line": 10, "col": 1, "description": "Match 1"},
+    {"path": "file2", "line": 40, "col": 1, "description": "Match 2"}
   ],
   "dir_preview": {
     "base_dir": "path/to/directory",
@@ -981,7 +1180,7 @@ process_agent_response = function(data, on_done)
 
   -- 1. Determine primary target (file edit, new file, or proposed dir)
   local primary_target = nil
-  if data.action == "propose_dir" or data.dir_preview then
+  if (data.action == "propose_dir" and not data.active_target) or (data.dir_preview and not data.active_target and not data.path) then
     local base_dir = ""
     local sugg = nil
     if type(data.dir_preview) == "table" then
@@ -1009,34 +1208,46 @@ process_agent_response = function(data, on_done)
     local root = get_root_dir()
     local fullpath = path:match("^/") and path or (root .. "/" .. path)
     local file_exists = (vim.fn.filereadable(fullpath) == 1)
-    local is_new = not file_exists or (data.action == "create_and_jump" or data.action == "create" or at.action == "create")
+    local is_nav = (data.action == "navigate" or at.action == "navigate")
+    local is_new = not is_nav and (not file_exists or (data.action == "create_and_jump" or data.action == "create" or at.action == "create"))
+    local final_action = is_nav and "navigate" or (is_new and "create" or (at.action or data.action or "replace"))
     primary_target = {
       path = path,
       line = tonumber(at.line) or tonumber(data.line) or 1,
       col = tonumber(at.col) or tonumber(data.col) or 1,
       content = (type(at.content) == "string" and at.content) or (type(data.content) == "string" and data.content) or nil,
-      action = is_new and "create" or (at.action or data.action or "replace"),
-      old_lines_count = is_new and 0 or (tonumber(at.old_lines_count) or tonumber(data.old_lines_count) or (at.action == "replace" and 1 or 0)),
+      action = final_action,
+      old_lines_count = (is_new or is_nav) and 0 or (tonumber(at.old_lines_count) or tonumber(data.old_lines_count) or (at.action == "replace" and 1 or 0)),
       is_new_file = is_new,
-      description = at.description or data.description or (is_new and ("Create " .. path) or ("Modify " .. path)),
+      description = at.description or data.description or (is_nav and ("Jump to " .. path) or (is_new and ("Create " .. path) or ("Modify " .. path))),
     }
   end
 
-  -- 2. Build unified queue for bottom task pane
+  -- 2. Build unified queue for bottom task pane, filtering out directory paths
+  local root = get_root_dir()
+  local function is_dir(p)
+    if not p or p == "" or p == "." or p == "./" then return true end
+    local full = p:match("^/") and p or (root .. "/" .. p)
+    return vim.fn.isdirectory(full) == 1
+  end
+
   local queue = {}
-  if primary_target then
+  if primary_target and not is_dir(primary_target.path) then
     table.insert(queue, primary_target)
   end
   if data.queue and #data.queue > 0 then
     for _, q_item in ipairs(data.queue) do
-      local q_path = q_item.path
-      local q_root = get_root_dir()
-      local q_full = q_path:match("^/") and q_path or (q_root .. "/" .. q_path)
-      local q_exists = (vim.fn.filereadable(q_full) == 1)
-      local q_is_new = not q_exists or (q_item.action == "create")
-      q_item.is_new_file = q_is_new
-      if not primary_target or q_item.path ~= primary_target.path or q_item.line ~= primary_target.line then
-        table.insert(queue, q_item)
+      if not is_dir(q_item.path) then
+        local q_path = q_item.path
+        local q_full = q_path:match("^/") and q_path or (root .. "/" .. q_path)
+        local q_exists = (vim.fn.filereadable(q_full) == 1)
+        local q_is_nav = (data.action == "navigate" or q_item.action == "navigate")
+        local q_is_new = not q_is_nav and (not q_exists or (q_item.action == "create"))
+        q_item.is_new_file = q_is_new
+        if q_is_nav then q_item.action = "navigate" end
+        if not primary_target or q_item.path ~= primary_target.path or q_item.line ~= primary_target.line then
+          table.insert(queue, q_item)
+        end
       end
     end
   end
@@ -1048,6 +1259,8 @@ process_agent_response = function(data, on_done)
     local cur = queue[1]
     M.state.last_target = cur
     jump_to_target(cur, origin_win)
+  else
+    vim.notify("Agent: Found no specific file matches to open", vim.log.levels.WARN)
   end
 
   M.state.is_busy = false
@@ -1338,6 +1551,34 @@ end
 function M.setup()
   setup_highlights()
 
+  vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter", "TermEnter", "TermOpen" }, {
+    callback = function(args)
+      local buf = args.buf
+      if not buf or not vim.api.nvim_buf_is_valid(buf) then return end
+      local bt = vim.bo[buf].buftype
+      if bt == "terminal" then
+        local cwd = get_terminal_cwd(buf)
+        if cwd then
+          M.state.last_terminal_cwd = cwd
+          M.state.last_terminal_buf = buf
+          M.state.last_terminal_win = vim.api.nvim_get_current_win()
+          M.state.latest_focus_cwd = cwd
+          M.state.latest_focus_type = "terminal"
+        end
+      elseif bt == "" then
+        local name = vim.api.nvim_buf_get_name(buf)
+        if name ~= "" and not name:match("^%a+://") and vim.fn.filereadable(name) == 1 then
+          local dir = vim.fs.root(name, { ".git", "Cargo.toml", "Makefile", "pyproject.toml" }) or vim.fn.fnamemodify(name, ":p:h")
+          if dir and dir ~= vim.fn.expand("~") and dir ~= "/" then
+            M.state.latest_focus_cwd = dir
+            M.state.latest_focus_type = "editor"
+          end
+        end
+      end
+    end,
+    desc = "Track active directory across terminal and editor splits",
+  })
+
   vim.api.nvim_create_autocmd("FileType", {
     pattern = "qf",
     callback = function(args)
@@ -1436,6 +1677,12 @@ function M.setup()
       M.write_revision()
     end
   end, { nargs = "*", desc = "Revise current agent instruction in natural language" })
+
+  M.get_root_dir = get_root_dir
+  M.collect_context = collect_context
 end
+
+M.get_root_dir = get_root_dir
+M.collect_context = collect_context
 
 return M
