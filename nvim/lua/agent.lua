@@ -15,6 +15,7 @@ M.state = {
   active_job = nil,
   status_tail = "",
   is_busy = false,
+  origin_win = nil,
 }
 
 local py_bin = vim.fn.expand("~/myenv/bin/python")
@@ -42,6 +43,22 @@ local function setup_highlights()
   end
 end
 
+--- Resolve suggested target path cleanly without doubling base_dir
+local function resolve_suggested_path(base_dir, sugg)
+  if not sugg or sugg == "" then return base_dir or "" end
+  sugg = sugg:gsub("^%./", "")
+  base_dir = (base_dir or ""):gsub("^%./", ""):gsub("/+$", "")
+
+  if sugg:match("^/") then return sugg end
+  if base_dir == "" or base_dir == "." then return sugg end
+
+  if sugg == base_dir or sugg:find("^" .. vim.pesc(base_dir) .. "/") then
+    return sugg
+  end
+
+  return base_dir .. "/" .. sugg
+end
+
 --- Get root directory of current project
 local function get_root_dir()
   local buf_name = vim.api.nvim_buf_get_name(0)
@@ -56,11 +73,11 @@ local function get_root_dir()
   return vim.fn.getcwd()
 end
 
---- Get primary non-floating editor split window
+--- Get primary non-floating editor split window (skipping quickfix/nofile)
 local function get_primary_editor_win()
   local cur = vim.api.nvim_get_current_win()
-  local config = vim.api.nvim_win_get_config(cur)
-  if config.relative == "" then
+  local cur_cfg = vim.api.nvim_win_get_config(cur)
+  if cur_cfg.relative == "" and vim.bo[vim.api.nvim_win_get_buf(cur)].buftype == "" then
     return cur
   end
   for _, win in ipairs(vim.api.nvim_list_wins()) do
@@ -427,145 +444,73 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count)
   vim.cmd("redraw")
 end
 
---- Show terminal ls-style directory preview in an ephemeral floating window.
---- ONLY paths and directories are suggested in this floating window.
---- Option buttons are navigable with arrows (<Left>, <Right>, <Up>, <Down>), snapping directly to buttons, and <CR> to select.
+--- Show terminal ephemeral floating window with suggested path and ONLY Accept/Reject options
 function M.show_dir_preview(base_dir, entries, suggested, on_accept)
   M.close_dir_preview()
-  local origin_win = get_primary_editor_win()
+  local origin_win = M.state.origin_win or get_primary_editor_win()
   setup_highlights()
 
-  if not entries or #entries == 0 then
-    entries = { suggested or "new_file" }
-  end
-
-  local width = math.min(78, math.max(56, vim.o.columns - 6))
-  local sep = string.rep("─", width - 2)
   local clean_base = (base_dir ~= "" and not base_dir:match("/$")) and (base_dir .. "/") or base_dir
-
-  -- Build items array: paths followed by action buttons
-  local items = {}
-  local default_idx = 1
-  for i, entry in ipairs(entries) do
-    local is_sugg = (entry == suggested)
-    if is_sugg then default_idx = i end
-    table.insert(items, {
-      type = "path",
-      entry = entry,
-      label = entry,
-      is_sugg = is_sugg,
-    })
+  local sugg_entry = suggested
+  if not sugg_entry or sugg_entry == "" then
+    sugg_entry = (entries and entries[1]) or "new_file"
   end
+  local target_path = resolve_suggested_path(base_dir, sugg_entry)
 
-  local reject_idx = #items + 1
-  table.insert(items, {
-    type = "action",
-    action_id = "reject",
-    label = "Reject",
-    hotkey = "[r]",
-  })
+  local width = math.min(78, math.max(60, vim.o.columns - 6))
+  local sep = string.rep("─", width - 2)
 
-  local dismiss_idx = #items + 1
-  table.insert(items, {
-    type = "action",
-    action_id = "dismiss",
-    label = "Dismiss",
-    hotkey = "[Esc]",
-  })
-
-  local selected_idx = default_idx
-  local num_cols = (#entries > 5) and 2 or 1
-  local col_w = math.floor((width - 6) / num_cols)
+  local options = {
+    { id = "accept", label = "Accept", key = "a", hotkey = "[a]" },
+    { id = "reject", label = "Reject", key = "r", hotkey = "[r]" },
+    { id = "dismiss", label = "Dismiss", key = "Esc", hotkey = "[Esc]" },
+  }
+  local selected_idx = 1
 
   local function build_display_and_positions()
     local lines = {}
-    table.insert(lines, string.format(" Directory: %s", clean_base ~= "" and clean_base or "./"))
+    table.insert(lines, string.format(" Suggested Path: %s", target_path))
+    if clean_base ~= "" and clean_base ~= "./" then
+      table.insert(lines, string.format(" Directory:      %s", clean_base))
+    end
+    if entries and #entries > 1 then
+      local other_entries = {}
+      for _, e in ipairs(entries) do
+        if e ~= sugg_entry and #other_entries < 6 then
+          table.insert(other_entries, e)
+        end
+      end
+      if #other_entries > 0 then
+        table.insert(lines, string.format(" Other in dir:   %s%s", table.concat(other_entries, ", "), #entries > 7 and "..." or ""))
+      end
+    end
     table.insert(lines, " " .. sep)
     table.insert(lines, "")
 
-    if num_cols == 1 then
-      for i = 1, #entries do
-        local item = items[i]
-        local is_sel = (i == selected_idx)
-        local pointer = is_sel and "▶ " or "  "
-        local sugg_badge = item.is_sugg and " ★ (suggested)" or ""
-        local btn_text = string.format("[%d] %s", i, item.label)
-        local full_btn = string.format("%s[ %s ]%s", pointer, btn_text, sugg_badge)
-        table.insert(lines, "  " .. full_btn)
+    -- Buttons line: [a] Accept, [r] Reject, [Esc] Dismiss
+    local btn_pieces = {}
+    for i, opt in ipairs(options) do
+      local is_sel = (i == selected_idx)
+      local ptr = is_sel and "▶ " or "  "
+      table.insert(btn_pieces, string.format("%s[%s] %s", ptr, opt.key, opt.label))
+    end
+    local btn_line = "      " .. table.concat(btn_pieces, "          ")
+    table.insert(lines, btn_line)
 
-        local line_idx = #lines
-        local btn_start = 4
-        local btn_len = #btn_text + 4
-        item.row = line_idx
-        item.col_start = btn_start
-        item.col_end = btn_start + btn_len
-        item.grid_r = i
-        item.grid_c = 1
-      end
-    else
-      local num_rows = math.ceil(#entries / 2)
-      for r = 1, num_rows do
-        local row_str = "  "
-        for c = 1, 2 do
-          local i = (r - 1) * 2 + c
-          if i <= #entries then
-            local item = items[i]
-            local is_sel = (i == selected_idx)
-            local pointer = is_sel and "▶ " or "  "
-            local sugg_badge = item.is_sugg and " ★" or ""
-            local max_label_len = col_w - 12
-            local disp_label = item.label
-            if #disp_label > max_label_len and max_label_len > 4 then
-              disp_label = disp_label:sub(1, max_label_len - 3) .. "..."
-            end
-            local btn_text = string.format("[%d] %s%s", i, disp_label, sugg_badge)
-            local full_btn = string.format("%s[ %s ]", pointer, btn_text)
-            local pad = string.rep(" ", math.max(2, col_w - #full_btn))
-
-            local col_pos = #row_str
-            item.row = #lines + 1
-            item.col_start = col_pos + 2
-            item.col_end = item.col_start + #btn_text + 4
-            item.grid_r = r
-            item.grid_c = c
-
-            row_str = row_str .. full_btn .. pad
-          end
-        end
-        table.insert(lines, row_str)
-      end
+    local btn_row = #lines
+    local cur_c = 6
+    for i, opt in ipairs(options) do
+      local is_sel = (i == selected_idx)
+      local tag = string.format("%s[%s] %s", is_sel and "▶ " or "  ", opt.key, opt.label)
+      opt.row = btn_row
+      opt.col_start = cur_c + (is_sel and 4 or 2)
+      opt.col_end = cur_c + #tag
+      cur_c = cur_c + #tag + 10
     end
 
     table.insert(lines, "")
-
-    -- Action buttons row
-    local reject_item = items[reject_idx]
-    local dismiss_item = items[dismiss_idx]
-    local is_rej_sel = (selected_idx == reject_idx)
-    local is_dis_sel = (selected_idx == dismiss_idx)
-
-    local rej_ptr = is_rej_sel and "▶ " or "  "
-    local dis_ptr = is_dis_sel and "▶ " or "  "
-    local rej_btn = rej_ptr .. "[ ✗ Reject (r) ]"
-    local dis_btn = dis_ptr .. "[ ✕ Dismiss (Esc) ]"
-
-    table.insert(lines, "   " .. rej_btn .. "       " .. dis_btn)
-
-    local act_row = #lines
-    reject_item.row = act_row
-    reject_item.col_start = 5
-    reject_item.col_end = 5 + #"[ ✗ Reject (r) ]"
-    reject_item.grid_r = 999
-    reject_item.grid_c = 1
-
-    dismiss_item.row = act_row
-    dismiss_item.col_start = 5 + #rej_btn + 7
-    dismiss_item.col_end = dismiss_item.col_start + #"[ ✕ Dismiss (Esc) ]"
-    dismiss_item.grid_r = 999
-    dismiss_item.grid_c = 2
-
     table.insert(lines, " " .. sep)
-    table.insert(lines, "  ←/→/↑/↓: Snap to Option | <CR>: Select | [r] Reject | [Esc] Dismiss")
+    table.insert(lines, "  ←/→/↑/↓: Snap between Options  |  <CR>: Choose  |  [a] Accept  [r] Reject")
 
     return lines
   end
@@ -589,7 +534,7 @@ function M.show_dir_preview(base_dir, entries, suggested, on_accept)
     col = col,
     style = "minimal",
     border = "rounded",
-    title = " Agent Path Suggestion (←/→/↑/↓: Navigate, <CR>: Choose) ",
+    title = " Agent Path Suggestion (←/→ Navigate, <CR> Choose) ",
     title_pos = "center",
   })
 
@@ -603,19 +548,17 @@ function M.show_dir_preview(base_dir, entries, suggested, on_accept)
     end
   end
 
-  local function close_and_accept(chosen_entry)
+  local function close_and_accept()
     M.close_dir_preview()
     if vim.api.nvim_win_is_valid(origin_win) then
       vim.api.nvim_set_current_win(origin_win)
     end
     if on_accept then
-      on_accept(origin_win, chosen_entry)
+      on_accept(origin_win, target_path)
     elseif M.state.pending_target then
       local target = M.state.pending_target
       M.state.pending_target = nil
-      if chosen_entry and chosen_entry ~= "" then
-        target.path = clean_base .. chosen_entry
-      end
+      target.path = target_path
       M.state.last_target = target
       jump_to_target(target, origin_win)
     end
@@ -629,27 +572,25 @@ function M.show_dir_preview(base_dir, entries, suggested, on_accept)
     vim.bo[buf].modifiable = false
 
     pcall(vim.api.nvim_buf_clear_namespace, buf, ns_diff, 0, -1)
-    for i, it in ipairs(items) do
+    for i, it in ipairs(options) do
       if it.row and it.col_start and it.col_end then
         local hl = (i == selected_idx) and "AgentDiffMenuSel" or "AgentDiffMenuBtn"
         pcall(vim.api.nvim_buf_add_highlight, buf, ns_diff, hl, it.row - 1, it.col_start, it.col_end)
       end
     end
 
-    -- Snap cursor directly to active option button
-    local cur_it = items[selected_idx]
+    local cur_it = options[selected_idx]
     if cur_it and cur_it.row and cur_it.col_start then
-      pcall(vim.api.nvim_win_set_cursor, win, { cur_it.row, cur_it.col_start + 1 })
+      pcall(vim.api.nvim_win_set_cursor, win, { cur_it.row, cur_it.col_start })
     end
   end
 
   render_menu()
 
   M.state.on_path_accept = function()
-    local cur_it = items[selected_idx]
-    if cur_it and cur_it.type == "path" then
-      close_and_accept(cur_it.entry)
-    elseif cur_it and cur_it.action_id == "reject" then
+    if selected_idx == 1 then
+      close_and_accept()
+    elseif selected_idx == 2 then
       close_fn()
       M.reject("")
     else
@@ -657,84 +598,45 @@ function M.show_dir_preview(base_dir, entries, suggested, on_accept)
     end
   end
 
-  -- Bind interactive arrow navigation and hotkeys
   local function nav_right()
-    selected_idx = (selected_idx % #items) + 1
+    selected_idx = (selected_idx % #options) + 1
     render_menu()
   end
 
   local function nav_left()
-    selected_idx = (selected_idx - 2 + #items) % #items + 1
+    selected_idx = (selected_idx - 2 + #options) % #options + 1
     render_menu()
   end
 
-  local function nav_down()
-    if num_cols == 1 then
-      selected_idx = (selected_idx % #items) + 1
-    else
-      if selected_idx <= #entries then
-        local next_r = selected_idx + 2
-        if next_r <= #entries then
-          selected_idx = next_r
-        else
-          selected_idx = (selected_idx % 2 == 1) and reject_idx or dismiss_idx
-        end
-      elseif selected_idx == reject_idx or selected_idx == dismiss_idx then
-        selected_idx = (selected_idx == reject_idx) and 1 or math.min(2, #entries)
-      else
-        selected_idx = (selected_idx % #items) + 1
-      end
-    end
-    render_menu()
-  end
-
-  local function nav_up()
-    if num_cols == 1 then
-      selected_idx = (selected_idx - 2 + #items) % #items + 1
-    else
-      if selected_idx == reject_idx or selected_idx == dismiss_idx then
-        local last_r = math.ceil(#entries / 2)
-        local target_c = (selected_idx == reject_idx) and 1 or 2
-        local cand = (last_r - 1) * 2 + target_c
-        if cand > #entries then cand = #entries end
-        selected_idx = cand
-      elseif selected_idx > 2 then
-        selected_idx = selected_idx - 2
-      else
-        selected_idx = (selected_idx == 1) and reject_idx or dismiss_idx
-      end
-    end
-    render_menu()
-  end
+  vim.keymap.set("n", "<Right>", nav_right, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<Left>", nav_left, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<Down>", nav_right, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<Up>", nav_left, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "l", nav_right, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "h", nav_left, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "j", nav_right, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "k", nav_left, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<Tab>", nav_right, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<S-Tab>", nav_left, { buffer = buf, silent = true, nowait = true })
 
   local function execute_current()
-    local cur_it = items[selected_idx]
-    if not cur_it then return end
-    if cur_it.type == "path" then
-      close_and_accept(cur_it.entry)
-    elseif cur_it.action_id == "reject" then
+    if selected_idx == 1 then
+      close_and_accept()
+    elseif selected_idx == 2 then
       close_fn()
       M.reject("")
-    elseif cur_it.action_id == "dismiss" then
+    else
       close_fn()
       vim.notify("Agent: Dismissed path suggestion", vim.log.levels.INFO)
     end
   end
 
-  vim.keymap.set("n", "<Right>", nav_right, { buffer = buf, silent = true, nowait = true })
-  vim.keymap.set("n", "<Left>", nav_left, { buffer = buf, silent = true, nowait = true })
-  vim.keymap.set("n", "<Down>", nav_down, { buffer = buf, silent = true, nowait = true })
-  vim.keymap.set("n", "<Up>", nav_up, { buffer = buf, silent = true, nowait = true })
-
-  vim.keymap.set("n", "l", nav_right, { buffer = buf, silent = true, nowait = true })
-  vim.keymap.set("n", "h", nav_left, { buffer = buf, silent = true, nowait = true })
-  vim.keymap.set("n", "j", nav_down, { buffer = buf, silent = true, nowait = true })
-  vim.keymap.set("n", "k", nav_up, { buffer = buf, silent = true, nowait = true })
-  vim.keymap.set("n", "<Tab>", nav_right, { buffer = buf, silent = true, nowait = true })
-  vim.keymap.set("n", "<S-Tab>", nav_left, { buffer = buf, silent = true, nowait = true })
-
   vim.keymap.set("n", "<CR>", execute_current, { buffer = buf, silent = true, nowait = true })
   vim.keymap.set("n", "<Space>", execute_current, { buffer = buf, silent = true, nowait = true })
+
+  vim.keymap.set("n", "a", function()
+    close_and_accept()
+  end, { buffer = buf, silent = true, nowait = true })
 
   vim.keymap.set("n", "r", function()
     close_fn()
@@ -750,17 +652,9 @@ function M.show_dir_preview(base_dir, entries, suggested, on_accept)
     close_fn()
     vim.notify("Agent: Dismissed path suggestion", vim.log.levels.INFO)
   end, { buffer = buf, silent = true, nowait = true })
-
-  for i = 1, math.min(9, #entries) do
-    vim.keymap.set("n", tostring(i), function()
-      selected_idx = i
-      render_menu()
-      close_and_accept(entries[i])
-    end, { buffer = buf, silent = true, nowait = true })
-  end
 end
 
---- Jump to a target location in the primary editor split
+--- Jump to a target location in the primary editor split (never creates a new split)
 local function jump_to_target(target, win)
   if not target or not target.path or target.path == "" then return end
   local root = get_root_dir()
@@ -769,7 +663,16 @@ local function jump_to_target(target, win)
     path = root .. "/" .. path
   end
 
-  local origin_win = win or get_primary_editor_win()
+  local origin_win = win or M.state.origin_win
+  if not origin_win or not vim.api.nvim_win_is_valid(origin_win) then
+    origin_win = get_primary_editor_win()
+  else
+    local b = vim.api.nvim_win_get_buf(origin_win)
+    local cfg = vim.api.nvim_win_get_config(origin_win)
+    if vim.bo[b].buftype ~= "" or cfg.relative ~= "" then
+      origin_win = get_primary_editor_win()
+    end
+  end
   if vim.api.nvim_win_is_valid(origin_win) then
     vim.api.nvim_set_current_win(origin_win)
   end
@@ -784,14 +687,14 @@ local function jump_to_target(target, win)
     vim.fn.writefile({ "" }, path)
   end
 
-  -- Switch buffer in primary editor split
+  -- Switch buffer in the calling split
   vim.cmd("edit " .. vim.fn.fnameescape(path))
   local bufnr = vim.api.nvim_get_current_buf()
 
-  local line = target.line or 1
-  local col = math.max(0, (target.col or 1) - 1)
+  local line = tonumber(target.line) or 1
+  local col = math.max(0, (tonumber(target.col) or 1) - 1)
   local line_count = vim.api.nvim_buf_line_count(bufnr)
-  if line > line_count then line = line_count end
+  if line > line_count then line = math.max(1, line_count) end
   if line < 1 then line = 1 end
 
   pcall(vim.api.nvim_win_set_cursor, origin_win, { line, col })
@@ -802,6 +705,100 @@ local function jump_to_target(target, win)
     local old_count = (type(target.old_lines_count) == "number") and target.old_lines_count or ((target.action == "replace") and 1 or 0)
     M.show_inline_diff(bufnr, line, target.content, old_count)
   end
+end
+
+--- Route jumps from quickfix window directly into calling split without splitting
+local function setup_agent_qf_keymaps(origin_win, qf_buf)
+  if not qf_buf or not vim.api.nvim_buf_is_valid(qf_buf) then
+    local qf_win = vim.api.nvim_get_current_win()
+    qf_buf = vim.api.nvim_win_get_buf(qf_win)
+  end
+
+  local function jump_in_origin(close_qf)
+    local cur_win = vim.api.nvim_get_current_win()
+    local idx = vim.fn.line(".")
+    local qf_list = vim.fn.getqflist()
+    local item = qf_list[idx]
+    if not item then return end
+
+    local filepath = (item.filename and item.filename ~= "") and item.filename
+    if not filepath or filepath == "" then
+      if item.bufnr and item.bufnr > 0 and vim.api.nvim_buf_is_valid(item.bufnr) then
+        filepath = vim.api.nvim_buf_get_name(item.bufnr)
+      end
+    end
+
+    if not filepath or filepath == "" then return end
+
+    local target_win = origin_win
+    if not target_win or not vim.api.nvim_win_is_valid(target_win) or target_win == cur_win then
+      target_win = M.state.origin_win
+    end
+    if not target_win or not vim.api.nvim_win_is_valid(target_win) or target_win == cur_win then
+      target_win = get_primary_editor_win()
+    end
+
+    if not target_win or not vim.api.nvim_win_is_valid(target_win) or target_win == cur_win then
+      for _, w in ipairs(vim.api.nvim_list_wins()) do
+        if w ~= cur_win then
+          local cfg = vim.api.nvim_win_get_config(w)
+          if cfg.relative == "" then
+            local b = vim.api.nvim_win_get_buf(w)
+            if vim.bo[b].buftype == "" then
+              target_win = w
+              break
+            end
+          end
+        end
+      end
+    end
+
+    if close_qf then
+      vim.cmd("cclose")
+    end
+
+    if target_win and vim.api.nvim_win_is_valid(target_win) then
+      vim.api.nvim_set_current_win(target_win)
+      vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+      local lnum = math.max(1, item.lnum or 1)
+      local col = math.max(0, (item.col or 1) - 1)
+      pcall(vim.api.nvim_win_set_cursor, target_win, { lnum, col })
+      vim.cmd("normal! zz")
+
+      if M.state.queue and #M.state.queue >= idx then
+        M.state.queue_index = idx
+        local cur = M.state.queue[idx]
+        if cur and type(cur.content) == "string" and vim.trim(cur.content) ~= "" then
+          local b = vim.api.nvim_win_get_buf(target_win)
+          local old_cnt = cur.old_lines_count or (cur.action == "replace" and 1 or 0)
+          M.show_inline_diff(b, lnum, cur.content, old_cnt)
+        end
+      end
+    end
+  end
+
+  vim.keymap.set("n", "<CR>", function()
+    jump_in_origin(false)
+  end, { buffer = qf_buf, silent = true, noremap = true, desc = "Jump to task in calling split" })
+
+  vim.keymap.set("n", "<2-LeftMouse>", function()
+    jump_in_origin(false)
+  end, { buffer = qf_buf, silent = true, noremap = true, desc = "Jump to task in calling split" })
+
+  vim.keymap.set("n", "o", function()
+    jump_in_origin(true)
+  end, { buffer = qf_buf, silent = true, noremap = true, desc = "Jump to task and close bottom pane" })
+
+  vim.keymap.set("n", "q", function()
+    vim.cmd("cclose")
+    local cur_target = origin_win
+    if not cur_target or not vim.api.nvim_win_is_valid(cur_target) then
+      cur_target = M.state.origin_win or get_primary_editor_win()
+    end
+    if cur_target and vim.api.nvim_win_is_valid(cur_target) then
+      vim.api.nvim_set_current_win(cur_target)
+    end
+  end, { buffer = qf_buf, silent = true, noremap = true, desc = "Close bottom pane" })
 end
 
 --- Populate the Neovim Quickfix queue unified with :Tasks
@@ -824,7 +821,11 @@ local function update_queue_display(show_window)
   vim.fn.setqflist({}, "a", { title = string.format("Agent Task Queue [%d/%d]", M.state.queue_index, #M.state.queue) })
 
   if show_window then
+    local orig_win = M.state.origin_win or get_primary_editor_win()
     vim.cmd("botright copen 6")
+    local qf_w = vim.api.nvim_get_current_win()
+    local qf_b = vim.api.nvim_win_get_buf(qf_w)
+    setup_agent_qf_keymaps(orig_win, qf_b)
     vim.cmd("wincmd p")
   end
 end
@@ -875,6 +876,7 @@ end
 
 --- Toggle queue display
 function M.toggle_queue()
+  M.state.origin_win = get_primary_editor_win()
   local qf_open = false
   for _, win in ipairs(vim.api.nvim_list_wins()) do
     local buf = vim.api.nvim_win_get_buf(win)
@@ -1002,6 +1004,7 @@ function M.run(prompt, is_rejection, on_done)
     if on_done then on_done(nil) end
     return
   end
+  M.state.origin_win = get_primary_editor_win()
   M.state.last_prompt = prompt
   M.state.is_busy = true
 
@@ -1189,7 +1192,7 @@ process_agent_response = function(data, on_done)
     end
 
     if #entries > 0 then
-      local pending_path = (base_dir ~= "" and not base_dir:match("/$") and (base_dir .. "/") or base_dir) .. (sugg or "")
+      local pending_path = resolve_suggested_path(base_dir, sugg or entries[1])
       local at = data.active_target or {}
       local target_content = (type(at.content) == "string" and at.content) or (type(data.content) == "string" and data.content) or nil
       local target_line = tonumber(at.line) or tonumber(data.line) or 1
@@ -1198,7 +1201,7 @@ process_agent_response = function(data, on_done)
       local target_old_count = tonumber(at.old_lines_count) or tonumber(data.old_lines_count) or (target_action == "replace" and 1 or 0)
 
       M.state.pending_target = {
-        path = at.path or pending_path,
+        path = at.path and resolve_suggested_path(base_dir, at.path) or pending_path,
         line = target_line,
         col = target_col,
         content = target_content,
@@ -1218,8 +1221,7 @@ process_agent_response = function(data, on_done)
         M.state.pending_target = nil
         if target then
           if chosen_entry and chosen_entry ~= "" then
-            local clean_base = (base_dir ~= "" and not base_dir:match("/$")) and (base_dir .. "/") or base_dir
-            target.path = clean_base .. chosen_entry
+            target.path = resolve_suggested_path(base_dir, chosen_entry)
           end
           M.state.last_target = target
           jump_to_target(target, origin_win)
@@ -1292,6 +1294,7 @@ end
 
 --- Run Code Graph logic analysis (:Agent lgcc [args]) with path finding and in-line diff suggestions
 function M.lgcc(parts, on_done)
+  M.state.origin_win = get_primary_editor_win()
   local fargs = vim.list_slice(parts, 2)
   local user_budget = nil
   local spec_path = nil
@@ -1543,7 +1546,17 @@ end
 function M.setup()
   setup_highlights()
 
+  vim.api.nvim_create_autocmd("FileType", {
+    pattern = "qf",
+    callback = function(args)
+      local origin = M.state.origin_win or get_primary_editor_win()
+      setup_agent_qf_keymaps(origin, args.buf)
+    end,
+    desc = "Route quickfix jumps directly into calling split without splitting",
+  })
+
   vim.api.nvim_create_user_command("Agent", function(ctx)
+    M.state.origin_win = get_primary_editor_win()
     local raw_args = vim.trim(ctx.args or "")
     local parts = vim.split(raw_args, "%s+", { trimempty = true })
     local sub = (parts[1] or ""):lower()
