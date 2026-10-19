@@ -183,12 +183,12 @@ local function get_root_dir()
   return candidate
 end
 
---- Get primary non-floating editor split window (skipping quickfix/terminal)
+--- Get primary editor split window (never creating splits)
 local function get_primary_editor_win()
   local cur = vim.api.nvim_get_current_win()
   local cur_cfg = vim.api.nvim_win_get_config(cur)
   local cur_buf = vim.api.nvim_win_get_buf(cur)
-  if cur_cfg.relative == "" and vim.bo[cur_buf].buftype == "" then
+  if cur_cfg.relative == "" and vim.bo[cur_buf].buftype ~= "quickfix" then
     return cur
   end
   for _, win in ipairs(vim.api.nvim_list_wins()) do
@@ -199,13 +199,6 @@ local function get_primary_editor_win()
         return win
       end
     end
-  end
-  -- If only terminal or quickfix exists, create an editor split
-  if vim.bo[cur_buf].buftype == "terminal" or vim.bo[cur_buf].buftype == "quickfix" then
-    vim.cmd("aboveleft split")
-    local new_win = vim.api.nvim_get_current_win()
-    vim.cmd("enew")
-    return new_win
   end
   return cur
 end
@@ -632,7 +625,7 @@ local function find_or_open_tab(filepath)
   return vim.api.nvim_get_current_win()
 end
 
---- Jump to a target location in the editor (reusing or creating clean full-screen tabs)
+--- Jump to a target location in the editor, replacing what's in the current split in-place
 jump_to_target = function(target, win)
   if not target or not target.path or target.path == "" then return end
   local root = get_root_dir()
@@ -657,9 +650,43 @@ jump_to_target = function(target, win)
     end
   end
 
-  local target_win = find_or_open_tab(path)
-  local bufnr = vim.api.nvim_win_get_buf(target_win)
+  -- Determine target split: calling window, origin_win, or current window
+  local target_win = win
+  if not target_win or not vim.api.nvim_win_is_valid(target_win) then
+    target_win = M.state.origin_win
+  end
+  if not target_win or not vim.api.nvim_win_is_valid(target_win) then
+    target_win = vim.api.nvim_get_current_win()
+  end
 
+  -- If target window is quickfix, redirect to non-quickfix window in current tab
+  local cur_buf = vim.api.nvim_win_get_buf(target_win)
+  if vim.bo[cur_buf].buftype == "quickfix" then
+    for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      local b = vim.api.nvim_win_get_buf(w)
+      if vim.bo[b].buftype ~= "quickfix" then
+        target_win = w
+        cur_buf = b
+        break
+      end
+    end
+  end
+
+  vim.api.nvim_set_current_win(target_win)
+
+  -- If current split is a terminal, record terminal_origin so SmartQuit (:q) seamlessly returns to terminal
+  if vim.bo[cur_buf].buftype == "terminal" then
+    vim.w[target_win].terminal_origin = cur_buf
+  end
+
+  -- Open file directly in current split, replacing the previous buffer in-place
+  local fullpath = vim.fn.fnamemodify(path, ":p")
+  local ok = pcall(vim.cmd, "edit " .. vim.fn.fnameescape(fullpath))
+  if not ok then
+    pcall(vim.cmd, "edit! " .. vim.fn.fnameescape(fullpath))
+  end
+
+  local bufnr = vim.api.nvim_win_get_buf(target_win)
   local line = tonumber(target.line) or 1
   local col = math.max(0, (tonumber(target.col) or 1) - 1)
   local line_count = vim.api.nvim_buf_line_count(bufnr)
@@ -791,8 +818,18 @@ update_queue_display = function(show_window)
   vim.fn.setqflist(qf, "r")
   vim.fn.setqflist({}, "a", { title = string.format("Agent Task Queue [%d/%d] | :Accept  :Reject  :Revise", M.state.queue_index, #M.state.queue) })
 
-  if show_window then
-    local orig_win = M.state.origin_win or get_primary_editor_win()
+  -- If quickfix window is already open in the current tab, refresh it in place without splitting
+  local qf_win = nil
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local buf = vim.api.nvim_win_get_buf(win)
+    if vim.bo[buf].buftype == "quickfix" then
+      qf_win = win
+      break
+    end
+  end
+
+  if show_window and not qf_win then
+    local orig_win = M.state.origin_win or vim.api.nvim_get_current_win()
     vim.cmd("botright copen 6")
     local qf_w = vim.api.nvim_get_current_win()
     local qf_b = vim.api.nvim_win_get_buf(qf_w)
@@ -800,6 +837,10 @@ update_queue_display = function(show_window)
     if orig_win and vim.api.nvim_win_is_valid(orig_win) then
       vim.api.nvim_set_current_win(orig_win)
     end
+  elseif qf_win then
+    local orig_win = M.state.origin_win or vim.api.nvim_get_current_win()
+    local qf_b = vim.api.nvim_win_get_buf(qf_win)
+    setup_agent_qf_keymaps(orig_win, qf_b)
   end
 end
 
@@ -1274,7 +1315,7 @@ process_agent_response = function(data, on_done)
   if #queue > 0 then
     M.state.queue = queue
     M.state.queue_index = 1
-    update_queue_display(true)
+    update_queue_display(false)
     local cur = queue[1]
     M.state.last_target = cur
     jump_to_target(cur, origin_win)
@@ -1718,11 +1759,11 @@ function M.find(query)
   local candidates = search_and_rank(query, root)
 
   if #candidates > 0 then
-    -- Instant fast-jump to highest-ranked match!
+    -- Instant fast-jump to highest-ranked match replacing current split
     local best = candidates[1]
     M.state.queue = candidates
     M.state.queue_index = 1
-    update_queue_display(true)
+    update_queue_display(false)
     jump_to_target(best)
 
     vim.api.nvim_echo({
@@ -1805,7 +1846,7 @@ function M.compile(kind, target_arg)
 
     M.state.queue = queue
     M.state.queue_index = 1
-    update_queue_display(#queue > 1)
+    update_queue_display(false)
     jump_to_target(queue[1])
 
     vim.api.nvim_echo({
@@ -1966,7 +2007,7 @@ function M.search(subcmd, query)
 
   M.state.queue = results
   M.state.queue_index = 1
-  update_queue_display(true)
+  update_queue_display(false)
   jump_to_target(results[1])
 
   vim.api.nvim_echo({
@@ -2101,10 +2142,12 @@ function M.setup()
   })
 
   vim.api.nvim_create_user_command("Find", function(ctx)
+    M.state.origin_win = vim.api.nvim_get_current_win()
     M.find(ctx.args)
   end, { nargs = "*", desc = "Find implementation or definition across repository (:Find <query>)" })
 
   vim.api.nvim_create_user_command("Compile", function(ctx)
+    M.state.origin_win = vim.api.nvim_get_current_win()
     local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
     M.compile(parts[1], table.concat(vim.list_slice(parts, 2), " "))
   end, {
@@ -2120,6 +2163,7 @@ function M.setup()
   })
 
   vim.api.nvim_create_user_command("Search", function(ctx)
+    M.state.origin_win = vim.api.nvim_get_current_win()
     local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
     M.search(parts[1], table.concat(vim.list_slice(parts, 2), " "))
   end, {
