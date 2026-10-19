@@ -650,28 +650,34 @@ jump_to_target = function(target, win)
     end
   end
 
-  -- Determine target split: calling window, origin_win, or current window
-  local target_win = win
-  if not target_win or not vim.api.nvim_win_is_valid(target_win) then
-    target_win = M.state.origin_win
-  end
-  if not target_win or not vim.api.nvim_win_is_valid(target_win) then
-    target_win = vim.api.nvim_get_current_win()
+  -- Determine target split: calling window, origin_win, or current editor window
+  local qf_win = nil
+  for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local b = vim.api.nvim_win_get_buf(w)
+    if vim.bo[b].buftype == "quickfix" then
+      qf_win = w
+      break
+    end
   end
 
-  -- If target window is quickfix, redirect to non-quickfix window in current tab
-  local cur_buf = vim.api.nvim_win_get_buf(target_win)
-  if vim.bo[cur_buf].buftype == "quickfix" then
+  local target_win = win
+  if not target_win or not vim.api.nvim_win_is_valid(target_win) or target_win == qf_win then
+    target_win = M.state.origin_win
+  end
+  if not target_win or not vim.api.nvim_win_is_valid(target_win) or target_win == qf_win then
     for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-      local b = vim.api.nvim_win_get_buf(w)
-      if vim.bo[b].buftype ~= "quickfix" then
+      if w ~= qf_win then
         target_win = w
-        cur_buf = b
         break
       end
     end
   end
+  if not target_win or not vim.api.nvim_win_is_valid(target_win) or target_win == qf_win then
+    vim.cmd("aboveleft split")
+    target_win = vim.api.nvim_get_current_win()
+  end
 
+  local cur_buf = vim.api.nvim_win_get_buf(target_win)
   vim.api.nvim_set_current_win(target_win)
 
   -- If current split is a terminal, record terminal_origin so SmartQuit (:q) seamlessly returns to terminal
@@ -714,7 +720,7 @@ setup_agent_qf_keymaps = function(origin_win, qf_buf)
   for _, w in ipairs(vim.api.nvim_list_wins()) do
     if vim.api.nvim_win_get_buf(w) == qf_buf then
       pcall(function()
-        vim.wo[w].statusline = "%#AgentDiffHeader# ● AGENT TASK PANE %#AgentDiffMenuSel# [a] :Accept %#AgentDiffHeader#  %#AgentDiffMenuBtn# [r] :Reject %#AgentDiffHeader#  %#AgentDiffMenuBtn# [w] :Revise %#AgentDiffHeader#  %#AgentDiffMenuBtn# [<CR>] Jump %#AgentDiffHeader#  %#Normal# [q] Close %="
+        vim.wo[w].statusline = "%#AgentDiffHeader# ● RESULTS %#AgentDiffMenuSel# [<CR>] Jump (Stays Open) %#AgentDiffHeader#  %#AgentDiffMenuBtn# [<Tab>] Focus File %#AgentDiffHeader#  %#AgentDiffMenuBtn# [o] Jump & Close %#AgentDiffHeader#  %#Normal# [q] Close %="
       end)
     end
   end
@@ -734,10 +740,6 @@ setup_agent_qf_keymaps = function(origin_win, qf_buf)
 
     if not filepath or filepath == "" then return end
 
-    if close_qf then
-      vim.cmd("cclose")
-    end
-
     local cur_item = (M.state.queue and M.state.queue[idx]) or {
       path = filepath,
       line = item.lnum or 1,
@@ -745,8 +747,39 @@ setup_agent_qf_keymaps = function(origin_win, qf_buf)
       action = "navigate",
     }
     M.state.queue_index = idx
-    jump_to_target(cur_item)
+
+    -- Target editor split in current tab
+    local qf_w = vim.api.nvim_get_current_win()
+    local editor_win = origin_win
+    if not editor_win or not vim.api.nvim_win_is_valid(editor_win) or editor_win == qf_w or vim.bo[vim.api.nvim_win_get_buf(editor_win)].buftype == "quickfix" then
+      editor_win = nil
+      for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        local b = vim.api.nvim_win_get_buf(w)
+        if vim.bo[b].buftype ~= "quickfix" then
+          editor_win = w
+          break
+        end
+      end
+    end
+
+    if close_qf then
+      vim.cmd("cclose")
+    end
+
+    jump_to_target(cur_item, editor_win)
     update_queue_display(false)
+
+    -- If NOT closing quickfix, LEAVE RESULTS OPEN and keep cursor in quickfix for continuous browsing!
+    if not close_qf then
+      for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        local b = vim.api.nvim_win_get_buf(w)
+        if vim.bo[b].buftype == "quickfix" then
+          vim.api.nvim_set_current_win(w)
+          pcall(vim.api.nvim_win_set_cursor, w, { idx, 0 })
+          break
+        end
+      end
+    end
   end
 
   vim.keymap.set("n", "<CR>", function()
@@ -1315,7 +1348,7 @@ process_agent_response = function(data, on_done)
   if #queue > 0 then
     M.state.queue = queue
     M.state.queue_index = 1
-    update_queue_display(false)
+    update_queue_display(#queue > 1)
     local cur = queue[1]
     M.state.last_target = cur
     jump_to_target(cur, origin_win)
@@ -1763,7 +1796,7 @@ function M.find(query)
     local best = candidates[1]
     M.state.queue = candidates
     M.state.queue_index = 1
-    update_queue_display(false)
+    update_queue_display(#candidates > 1)
     jump_to_target(best)
 
     vim.api.nvim_echo({
@@ -2007,7 +2040,7 @@ function M.search(subcmd, query)
 
   M.state.queue = results
   M.state.queue_index = 1
-  update_queue_display(false)
+  update_queue_display(#results > 1)
   jump_to_target(results[1])
 
   vim.api.nvim_echo({
@@ -2195,6 +2228,18 @@ function M.setup()
       M.write_revision()
     end
   end, { nargs = "*", desc = "Revise current agent instruction in natural language" })
+
+  vim.api.nvim_create_user_command("Results", function()
+    M.toggle_queue()
+  end, { desc = "Toggle the bottom query results list (:Results)" })
+
+  vim.api.nvim_create_user_command("Queue", function()
+    M.toggle_queue()
+  end, { desc = "Toggle the bottom query results list (:Queue)" })
+
+  vim.api.nvim_create_user_command("Tasks", function()
+    M.toggle_queue()
+  end, { desc = "Toggle the bottom task queue (:Tasks)" })
 
   M.get_root_dir = get_root_dir
   M.collect_context = collect_context
