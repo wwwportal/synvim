@@ -666,10 +666,17 @@ vim.keymap.set("n", "<leader>ls", "<Cmd>Specs<CR>", { silent = true, desc = "Ope
 vim.keymap.set("n", "<leader>lg", "<Cmd>Specs graph<CR>", { silent = true, desc = "Open visual specs DAG" })
 
 
--- Split statusline with lgcc integration and zero hit-enter prompts
-vim.o.laststatus = 2
+-- ── Tab Navigation (Focused Full-Screen Tabs) ──
+for i = 1, 9 do
+	vim.keymap.set({ "n", "t", "i" }, string.format("<A-%d>", i), string.format("<Cmd>%dtabnext<CR>", i), { desc = string.format("Go to tab %d", i) })
+end
+vim.keymap.set({ "n", "t", "i" }, "<A-t>", "<Cmd>tabnew<CR>", { desc = "New tab" })
+vim.keymap.set({ "n", "t", "i" }, "<A-]>", "<Cmd>tabnext<CR>", { desc = "Next tab" })
+vim.keymap.set({ "n", "t", "i" }, "<A-[>", "<Cmd>tabprev<CR>", { desc = "Previous tab" })
+
+-- Global statusline with lgcc and lualine integration
+vim.o.laststatus = 3
 vim.opt.shortmess:append("cFWsAI")
-vim.o.statusline = "%<%f %h%w%m%r %= %{%v:lua.require('lgcc').status()%} %-14.(%l,%c%) %P"
 
 -- ── Plugin manager (lazy.nvim) ──
 local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"

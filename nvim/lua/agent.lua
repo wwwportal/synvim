@@ -160,6 +160,20 @@ local function get_root_dir()
     candidate = vim.fn.getcwd()
   end
 
+  -- If candidate is home directory or root, scan open buffers to find active project directory
+  if candidate == vim.fn.expand("~") or candidate == "/" then
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      local bname = vim.api.nvim_buf_get_name(buf)
+      if bname ~= "" and not bname:match("^%a+://") and vim.fn.filereadable(bname) == 1 then
+        local r = vim.fs.root(bname, { ".git", "Cargo.toml", "Makefile", "pyproject.toml", "package.json" })
+        if r and r ~= vim.fn.expand("~") and r ~= "/" then
+          candidate = r
+          break
+        end
+      end
+    end
+  end
+
   -- Resolve to project/repo root if inside a subdirectory
   local repo_root = vim.fs.root(candidate, { ".git", "Cargo.toml", "Makefile", "pyproject.toml", "package.json" })
   if repo_root and repo_root ~= vim.fn.expand("~") and repo_root ~= "/" then
@@ -579,7 +593,46 @@ function M.show_dir_preview(base_dir, entries, suggested, on_accept)
   end
 end
 
---- Jump to a target location in the primary editor split (never creates a new split)
+--- Find existing tab displaying filepath, or open in a clean tab without disturbing splits
+local function find_or_open_tab(filepath)
+  local fullpath = vim.fn.fnamemodify(filepath, ":p")
+
+  -- 1. Check if fullpath is already open in any window across any tab
+  for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+      local b = vim.api.nvim_win_get_buf(win)
+      local bname = vim.api.nvim_buf_get_name(b)
+      if bname ~= "" and vim.fn.fnamemodify(bname, ":p") == fullpath then
+        vim.api.nvim_set_current_tabpage(tab)
+        vim.api.nvim_set_current_win(win)
+        return win
+      end
+    end
+  end
+
+  -- 2. If current window in current tab is an empty unnamed buffer, reuse it
+  local cur_win = vim.api.nvim_get_current_win()
+  local cur_buf = vim.api.nvim_win_get_buf(cur_win)
+  if vim.bo[cur_buf].buftype == "" and vim.api.nvim_buf_get_name(cur_buf) == "" and not vim.bo[cur_buf].modified then
+    vim.cmd("edit " .. vim.fn.fnameescape(fullpath))
+    return cur_win
+  end
+
+  -- 3. If current window is terminal or quickfix, open in a full-screen tab so terminal context is preserved
+  if vim.bo[cur_buf].buftype == "terminal" or vim.bo[cur_buf].buftype == "quickfix" then
+    vim.cmd("tabedit " .. vim.fn.fnameescape(fullpath))
+    return vim.api.nvim_get_current_win()
+  end
+
+  -- 4. Otherwise switch buffer in current editor window
+  local ok = pcall(vim.cmd, "edit " .. vim.fn.fnameescape(fullpath))
+  if not ok then
+    pcall(vim.cmd, "tabedit " .. vim.fn.fnameescape(fullpath))
+  end
+  return vim.api.nvim_get_current_win()
+end
+
+--- Jump to a target location in the editor (reusing or creating clean full-screen tabs)
 jump_to_target = function(target, win)
   if not target or not target.path or target.path == "" then return end
   local root = get_root_dir()
@@ -594,20 +647,6 @@ jump_to_target = function(target, win)
     return
   end
 
-  local origin_win = win or M.state.origin_win
-  if not origin_win or not vim.api.nvim_win_is_valid(origin_win) then
-    origin_win = get_primary_editor_win()
-  else
-    local b = vim.api.nvim_win_get_buf(origin_win)
-    local cfg = vim.api.nvim_win_get_config(origin_win)
-    if vim.bo[b].buftype ~= "" or cfg.relative ~= "" then
-      origin_win = get_primary_editor_win()
-    end
-  end
-  if vim.api.nvim_win_is_valid(origin_win) then
-    vim.api.nvim_set_current_win(origin_win)
-  end
-
   local file_exists = (vim.fn.filereadable(path) == 1)
   local is_new = not file_exists or target.is_new_file or (target.action == "create")
 
@@ -616,15 +655,10 @@ jump_to_target = function(target, win)
     if vim.fn.isdirectory(parent) ~= 1 then
       vim.fn.mkdir(parent, "p")
     end
-    -- Note: unwritten buffer is created with :edit below, avoiding writing empty stubs to disk
   end
 
-  -- Switch buffer in the calling split
-  local ok = pcall(vim.cmd, "edit " .. vim.fn.fnameescape(path))
-  if not ok then
-    pcall(vim.cmd, "edit! " .. vim.fn.fnameescape(path))
-  end
-  local bufnr = vim.api.nvim_get_current_buf()
+  local target_win = find_or_open_tab(path)
+  local bufnr = vim.api.nvim_win_get_buf(target_win)
 
   local line = tonumber(target.line) or 1
   local col = math.max(0, (tonumber(target.col) or 1) - 1)
@@ -632,17 +666,13 @@ jump_to_target = function(target, win)
   if line > line_count then line = math.max(1, line_count) end
   if line < 1 then line = 1 end
 
-  pcall(vim.api.nvim_win_set_cursor, origin_win, { line, col })
+  pcall(vim.api.nvim_win_set_cursor, target_win, { line, col })
   vim.cmd("normal! zz")
 
   -- If code implementation was suggested, display in-line green-red diff!
   if type(target.content) == "string" and vim.trim(target.content) ~= "" then
     local old_count = is_new and 0 or ((type(target.old_lines_count) == "number") and target.old_lines_count or ((target.action == "replace") and 1 or 0))
     M.show_inline_diff(bufnr, line, target.content, old_count, is_new)
-  end
-
-  if origin_win and vim.api.nvim_win_is_valid(origin_win) then
-    vim.api.nvim_set_current_win(origin_win)
   end
 end
 
@@ -663,7 +693,6 @@ setup_agent_qf_keymaps = function(origin_win, qf_buf)
   end
 
   local function jump_in_origin(close_qf)
-    local cur_win = vim.api.nvim_get_current_win()
     local idx = vim.fn.line(".")
     local qf_list = vim.fn.getqflist()
     local item = qf_list[idx]
@@ -678,56 +707,19 @@ setup_agent_qf_keymaps = function(origin_win, qf_buf)
 
     if not filepath or filepath == "" then return end
 
-    local target_win = origin_win
-    if not target_win or not vim.api.nvim_win_is_valid(target_win) or target_win == cur_win then
-      target_win = M.state.origin_win
-    end
-    if not target_win or not vim.api.nvim_win_is_valid(target_win) or target_win == cur_win then
-      target_win = get_primary_editor_win()
-    end
-
-    if not target_win or not vim.api.nvim_win_is_valid(target_win) or target_win == cur_win then
-      for _, w in ipairs(vim.api.nvim_list_wins()) do
-        if w ~= cur_win then
-          local cfg = vim.api.nvim_win_get_config(w)
-          if cfg.relative == "" then
-            local b = vim.api.nvim_win_get_buf(w)
-            if vim.bo[b].buftype == "" then
-              target_win = w
-              break
-            end
-          end
-        end
-      end
-    end
-
     if close_qf then
       vim.cmd("cclose")
     end
 
-    if target_win and vim.api.nvim_win_is_valid(target_win) then
-      vim.api.nvim_set_current_win(target_win)
-      local ok = pcall(vim.cmd, "edit " .. vim.fn.fnameescape(filepath))
-      if not ok then
-        pcall(vim.cmd, "edit! " .. vim.fn.fnameescape(filepath))
-      end
-      local lnum = math.max(1, item.lnum or 1)
-      local col = math.max(0, (item.col or 1) - 1)
-      pcall(vim.api.nvim_win_set_cursor, target_win, { lnum, col })
-      vim.cmd("normal! zz")
-
-      if M.state.queue and #M.state.queue >= idx then
-        M.state.queue_index = idx
-        local cur = M.state.queue[idx]
-        if cur and type(cur.content) == "string" and vim.trim(cur.content) ~= "" then
-          local b = vim.api.nvim_win_get_buf(target_win)
-          local is_new = cur.is_new_file or (cur.action == "create")
-          local old_cnt = is_new and 0 or (cur.old_lines_count or (cur.action == "replace" and 1 or 0))
-          M.show_inline_diff(b, lnum, cur.content, old_cnt, is_new)
-        end
-        update_queue_display(false)
-      end
-    end
+    local cur_item = (M.state.queue and M.state.queue[idx]) or {
+      path = filepath,
+      line = item.lnum or 1,
+      col = item.col or 1,
+      action = "navigate",
+    }
+    M.state.queue_index = idx
+    jump_to_target(cur_item)
+    update_queue_display(false)
   end
 
   vim.keymap.set("n", "<CR>", function()
@@ -1070,7 +1062,7 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
   local agy_bin = vim.fn.exepath("agy")
   local cmd = {}
   if agy_bin ~= "" then
-    cmd = { agy_bin, "-p", system_prompt, "--model", "gemini-3.8-flash-low", "--print-timeout", "30s", "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low", "--output-format", "stream-json" }
+    cmd = { agy_bin, "-p", system_prompt, "--model", "gemini-3.8-flash-low", "--print-timeout", "30s", "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low", "--output-format", "json" }
   else
     local opencode_bin = vim.fn.exepath("opencode")
     if opencode_bin ~= "" then
@@ -1116,40 +1108,67 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
     local raw = table.concat(stdout_chunks, "")
     local data = nil
 
-    -- 1. Try finding stream-json result event
-    for line in raw:gmatch("[^\r\n]+") do
-      if line:find('"event"%s*:%s*"result"') then
-        local ok, res_obj = pcall(vim.fn.json_decode, line)
-        if ok and res_obj and res_obj.result and res_obj.result.response then
-          local resp_str = res_obj.result.response
-          local rok, rdata = pcall(vim.fn.json_decode, resp_str)
-          if rok and type(rdata) == "table" then
-            data = rdata
-            break
-          end
-          local sub = resp_str:match("(%b{})")
+    -- 1. Direct parse of json output ({ "status": "SUCCESS", "response": "..." })
+    local ok, res_obj = pcall(vim.fn.json_decode, raw)
+    if ok and type(res_obj) == "table" then
+      if res_obj.response and type(res_obj.response) == "string" then
+        local rok, rdata = pcall(vim.fn.json_decode, res_obj.response)
+        if rok and type(rdata) == "table" then
+          data = rdata
+        else
+          local sub = res_obj.response:match("(%b{})")
           if sub then
             local sok, sdata = pcall(vim.fn.json_decode, sub)
             if sok and type(sdata) == "table" then
               data = sdata
+            end
+          end
+        end
+      elseif res_obj.action or res_obj.active_target or res_obj.queue or res_obj.dir_preview then
+        data = res_obj
+      end
+    end
+
+    -- 2. Try finding stream-json result event if stream format was used
+    if not data then
+      for line in raw:gmatch("[^\r\n]+") do
+        if line:find('"event"%s*:%s*"result"') then
+          local rok, robj = pcall(vim.fn.json_decode, line)
+          if rok and robj and robj.result and robj.result.response then
+            local resp_str = robj.result.response
+            local sok, sdata = pcall(vim.fn.json_decode, resp_str)
+            if sok and type(sdata) == "table" then
+              data = sdata
               break
+            end
+            local sub = resp_str:match("(%b{})")
+            if sub then
+              local tok, tdata = pcall(vim.fn.json_decode, sub)
+              if tok and type(tdata) == "table" then
+                data = tdata
+                break
+              end
             end
           end
         end
       end
     end
 
-    -- 2. Fallback: search for balanced JSON in full raw output
+    -- 3. Fallback: search for balanced JSON in full raw output
     if not data then
       for candidate in raw:gmatch("(%b{})") do
-        local ok, cand_obj = pcall(vim.fn.json_decode, candidate)
-        if ok and type(cand_obj) == "table" then
+        local cok, cand_obj = pcall(vim.fn.json_decode, candidate)
+        if cok and type(cand_obj) == "table" then
           if cand_obj.action or cand_obj.active_target or cand_obj.queue or cand_obj.dir_preview then
             data = cand_obj
             break
           end
         end
       end
+    end
+
+    if not data then
+      print("RAW_DEBUG=" .. raw)
     end
 
     process_agent_response(data, on_done)
@@ -1548,6 +1567,414 @@ function M.stop()
   vim.notify("Agent: Stopped active job and cleared state", vim.log.levels.INFO)
 end
 
+--- Extract core search keywords from natural language or symbol queries
+local function extract_search_keywords(query)
+  local stop_words = {
+    ["where"]=true, ["did"]=true, ["we"]=true, ["implement"]=true, ["implementation"]=true,
+    ["the"]=true, ["a"]=true, ["an"]=true, ["in"]=true, ["is"]=true, ["of"]=true, ["to"]=true,
+    ["and"]=true, ["or"]=true, ["for"]=true, ["with"]=true, ["find"]=true, ["show"]=true,
+    ["me"]=true, ["how"]=true, ["what"]=true, ["which"]=true, ["can"]=true, ["you"]=true,
+    ["at"]=true, ["on"]=true, ["file"]=true, ["line"]=true, ["code"]=true, ["function"]=true,
+    ["class"]=true, ["this"]=true, ["that"]=true, ["there"]=true, ["are"]=true, ["was"]=true,
+    ["our"]=true, ["us"]=true, ["it"]=true, ["its"]=true, ["my"]=true, ["i"]=true,
+    ["definition"]=true, ["defined"]=true, ["locate"]=true, ["look"]=true, ["up"]=true,
+  }
+  local keywords = {}
+  for word in query:lower():gmatch("[%a%d_-]+") do
+    if #word >= 3 and not stop_words[word] then
+      table.insert(keywords, word)
+    end
+  end
+  if #keywords == 0 then
+    for word in query:gmatch("%S+") do
+      table.insert(keywords, word:lower())
+    end
+  end
+  return keywords
+end
+
+--- Search codebase and rank matches by definition confidence
+local function search_and_rank(query, root)
+  local keywords = extract_search_keywords(query)
+  if #keywords == 0 then return {} end
+
+  local grep_matches = {}
+  local pattern = table.concat(keywords, "|")
+  local git_cmd = { "git", "-C", root, "grep", "-n", "-I", "-i", "-E", pattern, "--",
+    ":!*.jsonl", ":!*.log", ":!*.json", ":!*.ipynb", ":!*.olean", ":!specs/.lexlean/*", ":!logs/*", ":!target/*" }
+  local git_out = vim.fn.system(git_cmd)
+
+  if vim.v.shell_error == 0 and git_out ~= "" then
+    for line in git_out:gmatch("[^\r\n]+") do
+      table.insert(grep_matches, line)
+    end
+  else
+    local rg_bin = vim.fn.exepath("rg")
+    if rg_bin ~= "" then
+      local rg_cmd = { rg_bin, "-n", "--no-heading", "-i", "-e", pattern,
+        "-g", "!*.jsonl", "-g", "!*.log", "-g", "!*.json", "-g", "!*.ipynb", "-g", "!*.olean", "-g", "!specs/.lexlean/*", "-g", "!logs/*", "-g", "!target/*", root }
+      local rg_out = vim.fn.system(rg_cmd)
+      if rg_out and rg_out ~= "" then
+        for line in rg_out:gmatch("[^\r\n]+") do
+          local rel = line:gsub("^" .. vim.pesc(root) .. "/", "")
+          table.insert(grep_matches, rel)
+        end
+      end
+    end
+  end
+
+  local candidates = {}
+  for _, line in ipairs(grep_matches) do
+    local fpath, lnum, txt = line:match("^([^:]+):(%d+):(.*)$")
+    if fpath and lnum and txt then
+      local lnum_num = tonumber(lnum) or 1
+      local txt_low = txt:lower()
+      local fpath_low = fpath:lower()
+      local score = 10
+
+      -- Definition keywords (+50)
+      if txt_low:find("%f[%a]struct%f[%A]")
+        or txt_low:find("%f[%a]class%f[%A]")
+        or txt_low:find("%f[%a]def%f[%A]")
+        or txt_low:find("%f[%a]fn%f[%A]")
+        or txt_low:find("%f[%a]theorem%f[%A]")
+        or txt_low:find("%f[%a]lemma%f[%A]")
+        or txt_low:find("%f[%a]axiom%f[%A]")
+        or txt_low:find("%f[%a]type%f[%A]")
+        or txt_low:find("%f[%a]typedef%f[%A]")
+        or txt_low:find("%f[%a]enum%f[%A]")
+        or txt_low:find("%f[%a]interface%f[%A]") then
+        score = score + 50
+      end
+
+      -- Explanatory comment (+35)
+      if txt_low:find("^%s*//") or txt_low:find("^%s*/%*") or txt_low:find("^%s*#") or txt_low:find("^%s*%-%-") then
+        score = score + 35
+      end
+
+      -- Keyword match in filename (+30)
+      for _, kw in ipairs(keywords) do
+        if fpath_low:find(vim.pesc(kw)) then
+          score = score + 30
+          break
+        end
+      end
+
+      -- Penalize generated tex / documentation files or huge lines (-50)
+      if fpath_low:match("%.tex$") or fpath_low:match("%.md$") or fpath_low:match("%.txt$") or fpath_low:match("%.rst$") or #txt > 500 then
+        score = score - 50
+      end
+
+      -- Boost code implementation files (+40)
+      if fpath_low:match("%.hpp$") or fpath_low:match("%.cpp$") or fpath_low:match("%.rs$") or fpath_low:match("%.c$") or fpath_low:match("%.h$") or fpath_low:match("%.lean$") or fpath_low:match("%.py$") or fpath_low:match("%.lua$") or fpath_low:match("%.go$") then
+        score = score + 40
+      end
+
+      -- Core source directories (+30)
+      if fpath_low:find("^src/") or fpath_low:find("^lib/") or fpath_low:find("^include/") then
+        score = score + 30
+      end
+
+      -- Penalize includes/imports (-25)
+      if txt_low:find("^%s*#include") or txt_low:find("^%s*import%s") or txt_low:find("^%s*from%s.*import") then
+        score = score - 25
+      end
+
+      -- Penalize tests if query is not asking for tests (-20)
+      if (fpath_low:find("test") or fpath_low:find("tests/")) and not query:lower():find("test") then
+        score = score - 20
+      end
+
+      table.insert(candidates, {
+        path = fpath,
+        line = lnum_num,
+        col = 1,
+        action = "navigate",
+        description = vim.trim(txt),
+        score = score,
+      })
+    end
+  end
+
+  table.sort(candidates, function(a, b)
+    if a.score ~= b.score then
+      return a.score > b.score
+    end
+    return a.path < b.path
+  end)
+
+  return candidates
+end
+
+--- Specialized Code Search & Implementation Finder (:Agent find <description|symbol>)
+function M.find(query)
+  query = vim.trim(query or "")
+  if query == "" then
+    vim.notify("Usage: :Agent find <description or symbol name>", vim.log.levels.INFO)
+    return
+  end
+
+  local root = get_root_dir()
+  local candidates = search_and_rank(query, root)
+
+  if #candidates > 0 then
+    -- Instant fast-jump to highest-ranked match!
+    local best = candidates[1]
+    M.state.queue = candidates
+    M.state.queue_index = 1
+    update_queue_display(true)
+    jump_to_target(best)
+
+    vim.api.nvim_echo({
+      { "● [Agent Find] ", "ModeMsg" },
+      { string.format("%s:%d", best.path, best.line), "Directory" },
+      { string.format(" — %s (found %d matches)", best.description, #candidates), "Normal" },
+    }, false, {})
+    return
+  end
+
+  -- Fallback to LLM semantic synthesis if no direct grep candidates found
+  local prompt = "where did we implement " .. query .. " (find definition, implementation, and references)"
+  M.run(prompt, false, function(res)
+    if res and res.active_target then
+      vim.api.nvim_echo({
+        { "● [Agent Find] ", "ModeMsg" },
+        { string.format("%s:%d", res.active_target.path, res.active_target.line or 1), "Directory" },
+        { res.active_target.description and (" — " .. res.active_target.description) or "", "Comment" },
+      }, false, {})
+    end
+  end)
+end
+
+--- Specialized Build & Logic Specification Navigator (:Agent compile [syntax|logic] [arg])
+function M.compile(kind, target_arg)
+  kind = (kind or ""):lower()
+  target_arg = vim.trim(target_arg or "")
+  local root = get_root_dir()
+
+  if kind == "syntax" or kind == "build" then
+    local candidates = {
+      "Makefile", "makefile", "GNUmakefile",
+      "Cargo.toml",
+      "build.sh", "scripts/build.sh", "compile.sh",
+      "CMakeLists.txt",
+      "lakefile.lean", "specs/lakefile.lean", "lakefile.toml",
+      "justfile",
+      "pyproject.toml",
+      "flake.nix",
+      "package.json",
+    }
+    local found = {}
+    for _, c in ipairs(candidates) do
+      local p = root .. "/" .. c
+      if vim.fn.filereadable(p) == 1 then
+        table.insert(found, { path = c, fullpath = p })
+      end
+    end
+
+    if #found == 0 then
+      vim.notify("Agent compile syntax: No build file found in " .. vim.fn.fnamemodify(root, ":."), vim.log.levels.WARN)
+      return
+    end
+
+    local primary = found[1]
+    local target_line = 1
+
+    if target_arg ~= "" then
+      local lines = vim.fn.readfile(primary.fullpath)
+      for lnum, line in ipairs(lines) do
+        if line:find("^%s*" .. vim.pesc(target_arg) .. "%s*:")
+          or line:find("%[" .. vim.pesc(target_arg) .. "%]")
+          or line:lower():find(vim.pesc(target_arg:lower())) then
+          target_line = lnum
+          break
+        end
+      end
+    end
+
+    local queue = {}
+    for i, item in ipairs(found) do
+      table.insert(queue, {
+        path = item.path,
+        line = (i == 1 and target_line or 1),
+        col = 1,
+        action = "navigate",
+        description = "Build configuration: " .. item.path,
+      })
+    end
+
+    M.state.queue = queue
+    M.state.queue_index = 1
+    update_queue_display(#queue > 1)
+    jump_to_target(queue[1])
+
+    vim.api.nvim_echo({
+      { "● [Agent Compile Syntax] ", "ModeMsg" },
+      { string.format("%s:%d", primary.path, target_line), "Directory" },
+      { " (compilation entrypoint)", "Comment" },
+    }, false, {})
+
+  elseif kind == "logic" or kind == "spec" or kind == "specs" then
+    local candidates = {
+      "specs/SPEC.md", "SPEC.md",
+      "specs/specs.json",
+      "specs/src/ProverEngine.lean", "specs/ProverEngine.lean",
+      "specs/contracts.lean",
+      "specs/model.lean",
+    }
+    local found = {}
+    for _, c in ipairs(candidates) do
+      local p = root .. "/" .. c
+      if vim.fn.filereadable(p) == 1 then
+        table.insert(found, { path = c, fullpath = p })
+      end
+    end
+
+    if #found == 0 then
+      local glob_specs = vim.fn.globpath(root .. "/specs", "*.lean", false, true)
+      for _, gp in ipairs(glob_specs) do
+        local rel = vim.fn.fnamemodify(gp, ":.")
+        table.insert(found, { path = rel, fullpath = gp })
+      end
+    end
+
+    if #found == 0 then
+      local new_spec_path = "specs/SPEC.md"
+      jump_to_target({
+        path = new_spec_path,
+        line = 1,
+        col = 1,
+        action = "create",
+        is_new_file = true,
+        content = "# Specification & Logic Verification Contract\n\n## Target Files for LLM Logic Analysis\n- [ ] specify target files here\n",
+        description = "Create new logic specification contract",
+      })
+      vim.notify("Agent compile logic: Created logic specification stub at specs/SPEC.md. Run :Agent lgcc to verify.", vim.log.levels.INFO)
+      return
+    end
+
+    local primary = found[1]
+    local target_line = 1
+    if target_arg ~= "" then
+      local lines = vim.fn.readfile(primary.fullpath)
+      for lnum, line in ipairs(lines) do
+        if line:lower():find(vim.pesc(target_arg:lower())) then
+          target_line = lnum
+          break
+        end
+      end
+    end
+
+    local queue = {}
+    for i, item in ipairs(found) do
+      table.insert(queue, {
+        path = item.path,
+        line = (i == 1 and target_line or 1),
+        col = 1,
+        action = "navigate",
+        description = "Logic specification contract: " .. item.path,
+      })
+    end
+
+    M.state.queue = queue
+    M.state.queue_index = 1
+    update_queue_display(#queue > 1)
+    jump_to_target(queue[1])
+
+    vim.api.nvim_echo({
+      { "● [Agent Compile Logic] ", "ModeMsg" },
+      { string.format("%s:%d", primary.path, target_line), "Directory" },
+      { " (specify analysis targets here; run :Agent lgcc to verify)", "Comment" },
+    }, false, {})
+  else
+    vim.notify("Usage: :Agent compile [syntax [target] | logic [spec_name]]", vim.log.levels.INFO)
+  end
+end
+
+--- Specialized Task & Contract Search (:Agent search [TODO|DONE] [query])
+function M.search(subcmd, query)
+  local mode = (subcmd or ""):upper()
+  if mode == "TODO" or mode == "DONE" then
+    -- query is passed directly
+  else
+    query = vim.trim((subcmd or "") .. " " .. (query or ""))
+    mode = "ALL"
+  end
+  query = vim.trim(query or "")
+  local root = get_root_dir()
+
+  local results = {}
+  local is_todo = (mode == "TODO")
+  local is_done = (mode == "DONE")
+
+  local pattern = ""
+  if is_todo then
+    pattern = "TODO|FIXME|XXX|BUG|\\[ \\]|SPEC\\([^)]*\\)"
+  elseif is_done then
+    pattern = "verified|done|\\[x\\]|\\[X\\]|theorem.*verified"
+  else
+    pattern = query ~= "" and vim.pesc(query) or "TODO|SPEC"
+  end
+
+  local grep_cmd = { "git", "-C", root, "grep", "-n", "-I", "-E", "-i", pattern, "--", ":!*.json*", ":!*.log", ":!*.ipynb", ":!*.olean", ":!specs/.lexlean/*", ":!logs/*" }
+  local grep_out = vim.fn.system(grep_cmd)
+
+  if vim.v.shell_error ~= 0 or grep_out == "" then
+    local rg_bin = vim.fn.exepath("rg")
+    if rg_bin ~= "" then
+      grep_cmd = { rg_bin, "-n", "--no-heading", "-i", "-e", pattern, "-g", "!*.json*", "-g", "!*.log", "-g", "!*.ipynb", "-g", "!*.olean", "-g", "!specs/.lexlean/*", "-g", "!logs/*", root }
+      grep_out = vim.fn.system(grep_cmd)
+    end
+  end
+
+  if grep_out and grep_out ~= "" then
+    for line in grep_out:gmatch("[^\r\n]+") do
+      local rel = line:gsub("^" .. vim.pesc(root) .. "/", "")
+      local fpath, lnum, txt = rel:match("^([^:]+):(%d+):(.*)$")
+      if fpath and lnum then
+        local match_ok = true
+        if query ~= "" then
+          local q_low = query:lower()
+          local line_low = (fpath .. " " .. txt):lower()
+          if not line_low:find(vim.pesc(q_low)) then
+            match_ok = false
+          end
+        end
+        if is_done and txt:find("TODO") then
+          match_ok = false
+        end
+
+        if match_ok and #results < 50 then
+          local tag = is_todo and "[TODO]" or (is_done and "[DONE]" or "[SEARCH]")
+          table.insert(results, {
+            path = fpath,
+            line = tonumber(lnum) or 1,
+            col = 1,
+            action = "navigate",
+            is_new_file = false,
+            description = tag .. " " .. vim.trim(txt),
+          })
+        end
+      end
+    end
+  end
+
+  if #results == 0 then
+    vim.notify(string.format("Agent search %s: No items found matching '%s'", mode, query), vim.log.levels.WARN)
+    return
+  end
+
+  M.state.queue = results
+  M.state.queue_index = 1
+  update_queue_display(true)
+  jump_to_target(results[1])
+
+  vim.api.nvim_echo({
+    { string.format("● [Agent Search %s] ", mode), "ModeMsg" },
+    { string.format("Found %d matches (active: %s:%d)", #results, results[1].path, results[1].line), "Directory" },
+  }, false, {})
+end
+
 function M.setup()
   setup_highlights()
 
@@ -1596,6 +2023,13 @@ function M.setup()
 
     if sub == "stop" or sub == "cancel" or sub == "kill" then
       M.stop()
+    elseif sub == "find" or sub == "where" or sub == "where's" or sub == "locate" or (sub == "show" and (parts[2] == "me" or parts[2] == "where")) then
+      local query_str = (sub == "find") and table.concat(vim.list_slice(parts, 2), " ") or raw_args
+      M.find(query_str)
+    elseif sub == "compile" then
+      M.compile(parts[2], table.concat(vim.list_slice(parts, 3), " "))
+    elseif sub == "search" then
+      M.search(parts[2], table.concat(vim.list_slice(parts, 3), " "))
     elseif sub == "listen" then
       M.record_voice(function(prompt)
         M.run(prompt, false)
@@ -1639,15 +2073,21 @@ function M.setup()
     elseif raw_args ~= "" then
       M.run(raw_args, false)
     else
-      vim.notify("Usage: :Agent [<prompt> | listen | lgcc [opts] | reject [msg|listen] | next | prev | queue | accept | clear | stop]", vim.log.levels.INFO)
+      vim.notify("Usage: :Agent [find <query> | compile [syntax|logic] | search [TODO|DONE] [query] | listen | lgcc | reject | accept | revise | next | prev | queue | clear | stop]", vim.log.levels.INFO)
     end
   end, {
     nargs = "*",
     complete = function(arglead, cmdline)
       local parts = vim.split(vim.trim(cmdline), "%s+")
       if #parts <= 2 and not cmdline:match("%s+$") then
-        local subcmds = { "listen", "lgcc", "reject", "accept", "revise", "write", "next", "prev", "queue", "diff", "clear", "stop", "cancel" }
+        local subcmds = { "find", "compile", "search", "listen", "lgcc", "reject", "accept", "revise", "write", "next", "prev", "queue", "tasks", "diff", "clear", "stop", "cancel" }
         return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
+      elseif parts[2] == "compile" then
+        local comp_sub = { "syntax", "logic", "build", "spec" }
+        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, comp_sub)
+      elseif parts[2] == "search" then
+        local search_sub = { "TODO", "DONE" }
+        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, search_sub)
       elseif parts[2] == "lgcc" then
         local lgcc_flags = { "clear", "cancel", "stop", "--flash", "--sonnet", "--opencode", "--agy", "--argon", "-s", "--speak", "-b", "--bundle", "--no-bundle", "--budget", "--spec", "-l", "--local" }
         return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, lgcc_flags)
@@ -1657,7 +2097,41 @@ function M.setup()
       end
       return {}
     end,
-    desc = "Autonomous Silent Code Agent (:Agent [listen|lgcc|reject|next|prev|queue|accept|revise])",
+    desc = "Autonomous Silent Code Agent (:Agent [find|compile|search|lgcc|listen|accept|reject|revise|next|prev|queue])",
+  })
+
+  vim.api.nvim_create_user_command("Find", function(ctx)
+    M.find(ctx.args)
+  end, { nargs = "*", desc = "Find implementation or definition across repository (:Find <query>)" })
+
+  vim.api.nvim_create_user_command("Compile", function(ctx)
+    local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
+    M.compile(parts[1], table.concat(vim.list_slice(parts, 2), " "))
+  end, {
+    nargs = "*",
+    complete = function(arglead, cmdline)
+      local parts = vim.split(vim.trim(cmdline), "%s+")
+      if #parts <= 2 and not cmdline:match("%s+$") then
+        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "syntax", "logic", "build", "spec" })
+      end
+      return {}
+    end,
+    desc = "Navigate compilation entrypoints (:Compile syntax [target] | :Compile logic [spec])",
+  })
+
+  vim.api.nvim_create_user_command("Search", function(ctx)
+    local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
+    M.search(parts[1], table.concat(vim.list_slice(parts, 2), " "))
+  end, {
+    nargs = "*",
+    complete = function(arglead, cmdline)
+      local parts = vim.split(vim.trim(cmdline), "%s+")
+      if #parts <= 2 and not cmdline:match("%s+$") then
+        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "TODO", "DONE" })
+      end
+      return {}
+    end,
+    desc = "Search repository tasks and contracts (:Search TODO [query] | :Search DONE [query])",
   })
 
   vim.api.nvim_create_user_command("Accept", function()
@@ -1680,9 +2154,15 @@ function M.setup()
 
   M.get_root_dir = get_root_dir
   M.collect_context = collect_context
+  M.find = M.find
+  M.compile = M.compile
+  M.search = M.search
 end
 
 M.get_root_dir = get_root_dir
 M.collect_context = collect_context
+M.find = M.find
+M.compile = M.compile
+M.search = M.search
 
 return M
