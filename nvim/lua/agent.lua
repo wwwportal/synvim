@@ -429,33 +429,157 @@ end
 
 --- Show terminal ls-style directory preview in an ephemeral floating window.
 --- ONLY paths and directories are suggested in this floating window.
+--- Option buttons are navigable with arrows (<Left>, <Right>, <Up>, <Down>), snapping directly to buttons, and <CR> to select.
 function M.show_dir_preview(base_dir, entries, suggested, on_accept)
   M.close_dir_preview()
   local origin_win = get_primary_editor_win()
+  setup_highlights()
 
-  local width = math.min(78, math.max(50, vim.o.columns - 6))
-  local header = string.format(" Directory: %s", base_dir ~= "" and base_dir or "./")
-  local sep = string.rep("─", width - 2)
-  local ls_rows = format_ls_columns(entries, suggested, width - 4)
-
-  local lines = {
-    header,
-    " " .. sep,
-  }
-  for _, r in ipairs(ls_rows) do
-    table.insert(lines, r)
+  if not entries or #entries == 0 then
+    entries = { suggested or "new_file" }
   end
-  table.insert(lines, " " .. sep)
-  table.insert(lines, " [*] Suggested | <CR>: Select Path | q / <Esc>: Dismiss | :Agent reject: Re-route")
 
-  local height = #lines
-  local row = math.max(1, math.floor((vim.o.lines - height) / 2) - 2)
+  local width = math.min(78, math.max(56, vim.o.columns - 6))
+  local sep = string.rep("─", width - 2)
+  local clean_base = (base_dir ~= "" and not base_dir:match("/$")) and (base_dir .. "/") or base_dir
+
+  -- Build items array: paths followed by action buttons
+  local items = {}
+  local default_idx = 1
+  for i, entry in ipairs(entries) do
+    local is_sugg = (entry == suggested)
+    if is_sugg then default_idx = i end
+    table.insert(items, {
+      type = "path",
+      entry = entry,
+      label = entry,
+      is_sugg = is_sugg,
+    })
+  end
+
+  local reject_idx = #items + 1
+  table.insert(items, {
+    type = "action",
+    action_id = "reject",
+    label = "Reject",
+    hotkey = "[r]",
+  })
+
+  local dismiss_idx = #items + 1
+  table.insert(items, {
+    type = "action",
+    action_id = "dismiss",
+    label = "Dismiss",
+    hotkey = "[Esc]",
+  })
+
+  local selected_idx = default_idx
+  local num_cols = (#entries > 5) and 2 or 1
+  local col_w = math.floor((width - 6) / num_cols)
+
+  local function build_display_and_positions()
+    local lines = {}
+    table.insert(lines, string.format(" Directory: %s", clean_base ~= "" and clean_base or "./"))
+    table.insert(lines, " " .. sep)
+    table.insert(lines, "")
+
+    if num_cols == 1 then
+      for i = 1, #entries do
+        local item = items[i]
+        local is_sel = (i == selected_idx)
+        local pointer = is_sel and "▶ " or "  "
+        local sugg_badge = item.is_sugg and " ★ (suggested)" or ""
+        local btn_text = string.format("[%d] %s", i, item.label)
+        local full_btn = string.format("%s[ %s ]%s", pointer, btn_text, sugg_badge)
+        table.insert(lines, "  " .. full_btn)
+
+        local line_idx = #lines
+        local btn_start = 4
+        local btn_len = #btn_text + 4
+        item.row = line_idx
+        item.col_start = btn_start
+        item.col_end = btn_start + btn_len
+        item.grid_r = i
+        item.grid_c = 1
+      end
+    else
+      local num_rows = math.ceil(#entries / 2)
+      for r = 1, num_rows do
+        local row_str = "  "
+        for c = 1, 2 do
+          local i = (r - 1) * 2 + c
+          if i <= #entries then
+            local item = items[i]
+            local is_sel = (i == selected_idx)
+            local pointer = is_sel and "▶ " or "  "
+            local sugg_badge = item.is_sugg and " ★" or ""
+            local max_label_len = col_w - 12
+            local disp_label = item.label
+            if #disp_label > max_label_len and max_label_len > 4 then
+              disp_label = disp_label:sub(1, max_label_len - 3) .. "..."
+            end
+            local btn_text = string.format("[%d] %s%s", i, disp_label, sugg_badge)
+            local full_btn = string.format("%s[ %s ]", pointer, btn_text)
+            local pad = string.rep(" ", math.max(2, col_w - #full_btn))
+
+            local col_pos = #row_str
+            item.row = #lines + 1
+            item.col_start = col_pos + 2
+            item.col_end = item.col_start + #btn_text + 4
+            item.grid_r = r
+            item.grid_c = c
+
+            row_str = row_str .. full_btn .. pad
+          end
+        end
+        table.insert(lines, row_str)
+      end
+    end
+
+    table.insert(lines, "")
+
+    -- Action buttons row
+    local reject_item = items[reject_idx]
+    local dismiss_item = items[dismiss_idx]
+    local is_rej_sel = (selected_idx == reject_idx)
+    local is_dis_sel = (selected_idx == dismiss_idx)
+
+    local rej_ptr = is_rej_sel and "▶ " or "  "
+    local dis_ptr = is_dis_sel and "▶ " or "  "
+    local rej_btn = rej_ptr .. "[ ✗ Reject (r) ]"
+    local dis_btn = dis_ptr .. "[ ✕ Dismiss (Esc) ]"
+
+    table.insert(lines, "   " .. rej_btn .. "       " .. dis_btn)
+
+    local act_row = #lines
+    reject_item.row = act_row
+    reject_item.col_start = 5
+    reject_item.col_end = 5 + #"[ ✗ Reject (r) ]"
+    reject_item.grid_r = 999
+    reject_item.grid_c = 1
+
+    dismiss_item.row = act_row
+    dismiss_item.col_start = 5 + #rej_btn + 7
+    dismiss_item.col_end = dismiss_item.col_start + #"[ ✕ Dismiss (Esc) ]"
+    dismiss_item.grid_r = 999
+    dismiss_item.grid_c = 2
+
+    table.insert(lines, " " .. sep)
+    table.insert(lines, "  ←/→/↑/↓: Snap to Option | <CR>: Select | [r] Reject | [Esc] Dismiss")
+
+    return lines
+  end
+
+  local initial_lines = build_display_and_positions()
+  local height = #initial_lines
+  local row = math.max(1, math.floor((vim.o.lines - height) / 2) - 1)
   local col = math.max(1, math.floor((vim.o.columns - width) / 2))
 
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "wipe"
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, initial_lines)
+  vim.bo[buf].modifiable = false
 
   local win = vim.api.nvim_open_win(buf, true, {
     relative = "editor",
@@ -465,7 +589,7 @@ function M.show_dir_preview(base_dir, entries, suggested, on_accept)
     col = col,
     style = "minimal",
     border = "rounded",
-    title = " Agent Path Suggestion ",
+    title = " Agent Path Suggestion (←/→/↑/↓: Navigate, <CR>: Choose) ",
     title_pos = "center",
   })
 
@@ -479,20 +603,161 @@ function M.show_dir_preview(base_dir, entries, suggested, on_accept)
     end
   end
 
-  local accept_fn = function()
+  local function close_and_accept(chosen_entry)
     M.close_dir_preview()
-    -- Restore focus to primary editor window before opening file!
     if vim.api.nvim_win_is_valid(origin_win) then
       vim.api.nvim_set_current_win(origin_win)
     end
-    if on_accept then on_accept(origin_win) end
+    if on_accept then
+      on_accept(origin_win, chosen_entry)
+    elseif M.state.pending_target then
+      local target = M.state.pending_target
+      M.state.pending_target = nil
+      if chosen_entry and chosen_entry ~= "" then
+        target.path = clean_base .. chosen_entry
+      end
+      M.state.last_target = target
+      jump_to_target(target, origin_win)
+    end
   end
 
-  M.state.on_path_accept = accept_fn
+  local function render_menu()
+    if not vim.api.nvim_buf_is_valid(buf) or not vim.api.nvim_win_is_valid(win) then return end
+    local lines = build_display_and_positions()
+    vim.bo[buf].modifiable = true
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.bo[buf].modifiable = false
 
-  vim.keymap.set("n", "<CR>", accept_fn, { buffer = buf, silent = true, nowait = true })
-  vim.keymap.set("n", "<Esc>", close_fn, { buffer = buf, silent = true, nowait = true })
-  vim.keymap.set("n", "q", close_fn, { buffer = buf, silent = true, nowait = true })
+    pcall(vim.api.nvim_buf_clear_namespace, buf, ns_diff, 0, -1)
+    for i, it in ipairs(items) do
+      if it.row and it.col_start and it.col_end then
+        local hl = (i == selected_idx) and "AgentDiffMenuSel" or "AgentDiffMenuBtn"
+        pcall(vim.api.nvim_buf_add_highlight, buf, ns_diff, hl, it.row - 1, it.col_start, it.col_end)
+      end
+    end
+
+    -- Snap cursor directly to active option button
+    local cur_it = items[selected_idx]
+    if cur_it and cur_it.row and cur_it.col_start then
+      pcall(vim.api.nvim_win_set_cursor, win, { cur_it.row, cur_it.col_start + 1 })
+    end
+  end
+
+  render_menu()
+
+  M.state.on_path_accept = function()
+    local cur_it = items[selected_idx]
+    if cur_it and cur_it.type == "path" then
+      close_and_accept(cur_it.entry)
+    elseif cur_it and cur_it.action_id == "reject" then
+      close_fn()
+      M.reject("")
+    else
+      close_fn()
+    end
+  end
+
+  -- Bind interactive arrow navigation and hotkeys
+  local function nav_right()
+    selected_idx = (selected_idx % #items) + 1
+    render_menu()
+  end
+
+  local function nav_left()
+    selected_idx = (selected_idx - 2 + #items) % #items + 1
+    render_menu()
+  end
+
+  local function nav_down()
+    if num_cols == 1 then
+      selected_idx = (selected_idx % #items) + 1
+    else
+      if selected_idx <= #entries then
+        local next_r = selected_idx + 2
+        if next_r <= #entries then
+          selected_idx = next_r
+        else
+          selected_idx = (selected_idx % 2 == 1) and reject_idx or dismiss_idx
+        end
+      elseif selected_idx == reject_idx or selected_idx == dismiss_idx then
+        selected_idx = (selected_idx == reject_idx) and 1 or math.min(2, #entries)
+      else
+        selected_idx = (selected_idx % #items) + 1
+      end
+    end
+    render_menu()
+  end
+
+  local function nav_up()
+    if num_cols == 1 then
+      selected_idx = (selected_idx - 2 + #items) % #items + 1
+    else
+      if selected_idx == reject_idx or selected_idx == dismiss_idx then
+        local last_r = math.ceil(#entries / 2)
+        local target_c = (selected_idx == reject_idx) and 1 or 2
+        local cand = (last_r - 1) * 2 + target_c
+        if cand > #entries then cand = #entries end
+        selected_idx = cand
+      elseif selected_idx > 2 then
+        selected_idx = selected_idx - 2
+      else
+        selected_idx = (selected_idx == 1) and reject_idx or dismiss_idx
+      end
+    end
+    render_menu()
+  end
+
+  local function execute_current()
+    local cur_it = items[selected_idx]
+    if not cur_it then return end
+    if cur_it.type == "path" then
+      close_and_accept(cur_it.entry)
+    elseif cur_it.action_id == "reject" then
+      close_fn()
+      M.reject("")
+    elseif cur_it.action_id == "dismiss" then
+      close_fn()
+      vim.notify("Agent: Dismissed path suggestion", vim.log.levels.INFO)
+    end
+  end
+
+  vim.keymap.set("n", "<Right>", nav_right, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<Left>", nav_left, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<Down>", nav_down, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<Up>", nav_up, { buffer = buf, silent = true, nowait = true })
+
+  vim.keymap.set("n", "l", nav_right, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "h", nav_left, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "j", nav_down, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "k", nav_up, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<Tab>", nav_right, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<S-Tab>", nav_left, { buffer = buf, silent = true, nowait = true })
+
+  vim.keymap.set("n", "<CR>", execute_current, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<Space>", execute_current, { buffer = buf, silent = true, nowait = true })
+
+  vim.keymap.set("n", "r", function()
+    close_fn()
+    M.reject("")
+  end, { buffer = buf, silent = true, nowait = true })
+
+  vim.keymap.set("n", "<Esc>", function()
+    close_fn()
+    vim.notify("Agent: Dismissed path suggestion", vim.log.levels.INFO)
+  end, { buffer = buf, silent = true, nowait = true })
+
+  vim.keymap.set("n", "q", function()
+    close_fn()
+    vim.notify("Agent: Dismissed path suggestion", vim.log.levels.INFO)
+  end, { buffer = buf, silent = true, nowait = true })
+
+  for i = 1, math.min(9, #entries) do
+    vim.keymap.set("n", tostring(i), function()
+      selected_idx = i
+      render_menu()
+      close_and_accept(entries[i])
+    end, { buffer = buf, silent = true, nowait = true })
+  end
 end
 
 --- Jump to a target location in the primary editor split
@@ -948,10 +1213,14 @@ process_agent_response = function(data, on_done)
         update_queue_display(true)
       end
 
-      M.show_dir_preview(base_dir, entries, sugg, function(origin_win)
+      M.show_dir_preview(base_dir, entries, sugg, function(origin_win, chosen_entry)
         local target = M.state.pending_target
         M.state.pending_target = nil
         if target then
+          if chosen_entry and chosen_entry ~= "" then
+            local clean_base = (base_dir ~= "" and not base_dir:match("/$")) and (base_dir .. "/") or base_dir
+            target.path = clean_base .. chosen_entry
+          end
           M.state.last_target = target
           jump_to_target(target, origin_win)
         end
