@@ -963,10 +963,8 @@ end
 --- - content: in-line green-red diff (showing deleted lines in red, added in green)
 --- - queue: multi-location step queue
 --- - clean: notify clean logic check
-M.process_response = function(data, on_done)
-process_agent_response = M.process_response
+process_agent_response = function(data, on_done)
   if not data or type(data) ~= "table" then
-    M.state.is_busy = false
     vim.notify("Agent: Received invalid response from model", vim.log.levels.ERROR)
     if on_done then on_done(nil) end
     return
@@ -1056,6 +1054,7 @@ process_agent_response = M.process_response
   vim.cmd("redraw")
   if on_done then on_done(data) end
 end
+M.process_response = process_agent_response
 
 --- Reject current location and re-route
 function M.reject(arg)
