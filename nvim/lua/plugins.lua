@@ -141,7 +141,7 @@ return {
         if agent.state.is_busy then
           return "● [Agent: analyzing...]"
         elseif agent.state.pending_diff then
-          return "● [DIFF: :Accept/:Reject]"
+          return "● [DIFF: :GitReview]"
         elseif agent.state.queue and #agent.state.queue > 0 then
           local cur = agent.state.queue[agent.state.queue_index]
           return string.format("● [%d/%d] %s", agent.state.queue_index, #agent.state.queue, cur and cur.path or "")

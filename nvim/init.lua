@@ -664,8 +664,7 @@ vim.keymap.set("n", "<leader>l", "<Cmd>Agent lgcc<CR>", { silent = true, desc = 
 vim.keymap.set("n", "<leader>lx", "<Cmd>Agent lgcc clear<CR>", { silent = true, desc = "Clear Agent lgcc diagnostics" })
 vim.keymap.set("n", "<leader>ls", "<Cmd>Specs<CR>", { silent = true, desc = "Open in-tree specs list" })
 vim.keymap.set("n", "<leader>lg", "<Cmd>Specs graph<CR>", { silent = true, desc = "Open visual specs DAG" })
-vim.keymap.set("n", "<leader>r", "<Cmd>Results<CR>", { silent = true, desc = "Toggle bottom query results list" })
-vim.keymap.set("n", "<leader>q", "<Cmd>Results<CR>", { silent = true, desc = "Toggle bottom query results list" })
+vim.keymap.set("n", "<leader>q", "<Cmd>Queue<CR>", { silent = true, desc = "Toggle task/query queue" })
 
 
 -- ── Tab Navigation (Focused Full-Screen Tabs) ──

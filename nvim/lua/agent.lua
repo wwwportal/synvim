@@ -2960,7 +2960,7 @@ function M.setup()
     complete = function(arglead, cmdline)
       local parts = vim.split(vim.trim(cmdline), "%s+")
       if #parts <= 2 and not cmdline:match("%s+$") then
-        local subcmds = { "review", "todo", "file", "find", "compile", "search", "listen", "lgcc", "reject", "accept", "revise", "write", "next", "prev", "queue", "tasks", "diff", "clear", "stop", "cancel" }
+        local subcmds = { "review", "todo", "file", "find", "compile", "search", "listen", "lgcc", "diff", "queue", "clear", "stop" }
         return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
       elseif parts[2] == "compile" then
         local comp_sub = { "syntax", "logic", "build", "spec" }
@@ -2977,7 +2977,7 @@ function M.setup()
       end
       return {}
     end,
-    desc = "Autonomous Silent Code Agent (:Agent [find|compile|search|lgcc|listen|accept|reject|revise|next|prev|queue])",
+    desc = "Autonomous Silent Code Agent (:Agent [todo|review|file|find|compile|search|lgcc|queue|diff])",
   })
 
   vim.api.nvim_create_user_command("Find", function(ctx)
@@ -3032,16 +3032,6 @@ function M.setup()
   }
 
   vim.api.nvim_create_user_command("GitReview", review_dispatcher, review_cmd_opts)
-  vim.api.nvim_create_user_command("GReview", review_dispatcher, review_cmd_opts)
-  vim.api.nvim_create_user_command("Review", review_dispatcher, review_cmd_opts)
-
-  vim.api.nvim_create_user_command("GitReviewAccept", function()
-    M.accept()
-  end, { desc = "Accept current git review implementation" })
-
-  vim.api.nvim_create_user_command("GitReviewReject", function(ctx)
-    M.reject(ctx.args)
-  end, { nargs = "*", desc = "Reject and revert current git review implementation" })
 
   -- If :Git command does not exist, provide :Git with review support
   if vim.fn.exists(":Git") ~= 2 then
@@ -3070,14 +3060,6 @@ function M.setup()
     })
   end
 
-  vim.api.nvim_create_user_command("Accept", function()
-    M.accept()
-  end, { desc = "Accept and apply current agent in-line diff or task (:GitReview accept)" })
-
-  vim.api.nvim_create_user_command("Reject", function(ctx)
-    M.reject(ctx.args)
-  end, { nargs = "*", desc = "Reject current agent diff or task (:GitReview reject)" })
-
   vim.api.nvim_create_user_command("Revise", function(ctx)
     local arg = vim.trim(ctx.args or "")
     if arg ~= "" then
@@ -3088,17 +3070,9 @@ function M.setup()
     end
   end, { nargs = "*", desc = "Revise current agent instruction in natural language" })
 
-  vim.api.nvim_create_user_command("Results", function()
-    M.toggle_queue()
-  end, { desc = "Toggle the bottom query results list (:Results)" })
-
   vim.api.nvim_create_user_command("Queue", function()
     M.toggle_queue()
-  end, { desc = "Toggle the bottom query results list (:Queue)" })
-
-  vim.api.nvim_create_user_command("Tasks", function()
-    M.toggle_queue()
-  end, { desc = "Toggle the bottom task queue (:Tasks)" })
+  end, { desc = "Toggle the bottom query results and task queue (:Queue)" })
 
   M.get_root_dir = get_root_dir
   M.collect_context = collect_context
