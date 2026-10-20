@@ -1,4 +1,4 @@
-# Syntra Neovim (`syntra-nvim`)
+# synvim (Syntra Neovim)
 
 High-performance, minimalist Neovim environment designed for distraction-free coding, **Code Graph** context routing for LLM static analysis, and **Task Graph** formal specification tracking:
 - **Monochrome Aesthetics**: Pure black and white, zero syntax noise, high-contrast readability.

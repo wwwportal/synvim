@@ -155,6 +155,7 @@ local function get_lgcc_bin()
     return exepath
   end
   local candidates = {
+    vim.fn.expand("~/code/synvim/bin/lgcc"),
     vim.fn.expand("~/code/syn-nvim/bin/lgcc"),
     vim.fn.expand("~/code/syntra-nvim/bin/lgcc"),
     vim.fn.expand("~/.local/bin/lgcc"),
@@ -175,15 +176,16 @@ end
 local function find_lint_tasks(target)
   local default_syn_prover = vim.fn.expand("~/code/syn-prover")
   local default_prover = vim.fn.expand("~/code/prover")
+  local default_synvim = vim.fn.expand("~/code/synvim")
   local default_syn = vim.fn.expand("~/code/syn-nvim")
   local default_syntra = vim.fn.expand("~/code/syntra-nvim")
 
   local prover_path = vim.uv.fs_stat(default_syn_prover) and default_syn_prover or default_prover
-  local syn_path = vim.uv.fs_stat(default_syn) and default_syn or default_syntra
+  local syn_path = vim.uv.fs_stat(default_synvim) and default_synvim or (vim.uv.fs_stat(default_syn) and default_syn or default_syntra)
 
   if target == "prover" and vim.uv.fs_stat(prover_path) then
     return prover_path
-  elseif (target == "syntra" or target == "syntra-nvim" or target == "syn" or target == "syn-nvim") and vim.uv.fs_stat(syn_path) then
+  elseif (target == "syntra" or target == "syntra-nvim" or target == "syn" or target == "syn-nvim" or target == "synvim") and vim.uv.fs_stat(syn_path) then
     return syn_path
   end
 

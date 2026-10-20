@@ -83,6 +83,7 @@ def find_lgcc_bin() -> Optional[str]:
         script_dir / "lgcc",
         Path.home() / ".local" / "bin" / "lgcc",
         Path.home() / ".config" / "nvim" / "bin" / "lgcc",
+        Path.home() / "code" / "synvim" / "bin" / "lgcc",
         Path.home() / "code" / "syn-nvim" / "bin" / "lgcc",
     ]
     for c in candidates:

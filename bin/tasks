@@ -24,6 +24,8 @@ if [ -x "$SCRIPT_DIR/lgcc" ]; then
     LGCC_BIN="$SCRIPT_DIR/lgcc"
 elif command -v lgcc &>/dev/null; then
     LGCC_BIN="$(command -v lgcc)"
+elif [ -x "$HOME/code/synvim/bin/lgcc" ]; then
+    LGCC_BIN="$HOME/code/synvim/bin/lgcc"
 elif [ -x "$HOME/code/syn-nvim/bin/lgcc" ]; then
     LGCC_BIN="$HOME/code/syn-nvim/bin/lgcc"
 elif [ -x "$HOME/code/syntra-nvim/bin/lgcc" ]; then
@@ -36,7 +38,7 @@ fi
 
 if [ -z "$LGCC_BIN" ]; then
     echo "tasks: Error: native lgcc binary not found in PATH or standard locations." >&2
-    echo "       Please run ./setup.sh in syn-nvim to install lgcc." >&2
+    echo "       Please run ./setup.sh in synvim to install lgcc." >&2
     exit 1
 fi
 

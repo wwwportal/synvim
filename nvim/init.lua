@@ -649,6 +649,7 @@ require("specs")
 require("onboarding").setup()
 
 vim.opt.rtp:append("/home/yassine/code/syntra-nvim/nvim")
+vim.opt.rtp:append("/home/yassine/code/synvim/nvim")
 vim.opt.rtp:append("/home/yassine/code/syn-nvim/nvim")
 -- ── Voice Transcription (:Listen) ──
 require("voice").setup()

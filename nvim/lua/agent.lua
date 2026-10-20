@@ -26,6 +26,9 @@ M.state = {
 local py_bin = vim.fn.expand("~/myenv/bin/python")
 local transcribe_script = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h:h") .. "/bin/agent_transcribe.py"
 if vim.fn.filereadable(transcribe_script) ~= 1 then
+  transcribe_script = vim.fn.expand("/home/yassine/code/synvim/bin/agent_transcribe.py")
+end
+if vim.fn.filereadable(transcribe_script) ~= 1 then
   transcribe_script = vim.fn.expand("/home/yassine/code/syn-nvim/bin/agent_transcribe.py")
 end
 
@@ -216,6 +219,7 @@ local function find_lgcc_bin()
     return exepath
   end
   local candidates = {
+    vim.fn.expand("~/code/synvim/bin/lgcc"),
     vim.fn.expand("~/code/syn-nvim/bin/lgcc"),
     vim.fn.expand("~/.local/bin/lgcc"),
     vim.fn.expand("~/.config/nvim/bin/lgcc"),
