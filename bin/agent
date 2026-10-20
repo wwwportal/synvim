@@ -457,8 +457,10 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
         return launch_nvim_interactive(file_path, start_line, new_content, old_count)
 
     if args.apply:
-        apply_changes(file_path, file_lines, start_line, old_count, new_lines)
-        print(f"{BOLD}{GREEN}✓ Successfully applied changes to {file_path}:{start_line}{RESET}")
+        meta = apply_changes(file_path, file_lines, start_line, old_count, new_lines, root, task_id, desc)
+        print(f"{BOLD}{GREEN}✓ Applied implementation to {file_path}:{start_line}{RESET}")
+        print(f"{BOLD}{YELLOW}● [Review] Recorded as UNREVIEWED (ID: {meta['id']}){RESET}")
+        print(f"{DIM}  Review anytime with ':Review' in Neovim or 'agent review' in CLI.{RESET}")
         return 0
 
     # Prompt user
@@ -469,8 +471,10 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
         return 0
 
     if choice == "y" or choice == "yes":
-        apply_changes(file_path, file_lines, start_line, old_count, new_lines)
+        meta = apply_changes(file_path, file_lines, start_line, old_count, new_lines, root, task_id, desc)
         print(f"{BOLD}{GREEN}✓ Successfully applied changes to {file_path}:{start_line}{RESET}")
+        print(f"{BOLD}{YELLOW}● [Review] Recorded as UNREVIEWED (ID: {meta['id']}){RESET}")
+        print(f"{DIM}  Review anytime with ':Review' in Neovim or 'agent review' in CLI.{RESET}")
         return 0
     elif choice == "i" or choice == "interactive":
         return launch_nvim_interactive(file_path, start_line, new_content, old_count)
@@ -479,11 +483,233 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
         return 0
 
 
-def apply_changes(file_path: Path, orig_lines: List[str], start_line: int, old_count: int, new_lines: List[str]):
+def get_reviews_dir(root: Path) -> Path:
+    rdir = root / ".agent" / "reviews"
+    rdir.mkdir(parents=True, exist_ok=True)
+    gi = root / ".gitignore"
+    if gi.exists():
+        try:
+            txt = gi.read_text(encoding="utf-8", errors="ignore")
+            if ".agent/" not in txt and ".agent" not in txt:
+                gi.write_text(txt.rstrip() + "\n.agent/\n", encoding="utf-8")
+        except Exception:
+            pass
+    return rdir
+
+
+def create_review_record(
+    root: Path,
+    file_path: Path,
+    orig_lines: List[str],
+    start_line: int,
+    old_count: int,
+    new_lines: List[str],
+    task_id: str,
+    description: str,
+    status: str = "unreviewed"
+) -> Dict[str, Any]:
+    rdir = get_reviews_dir(root)
+    timestamp = int(time.time())
+    rev_id = f"rev-{timestamp}-{abs(hash(task_id + str(start_line))) % 10000:04d}"
+
+    try:
+        rel_file = file_path.relative_to(root)
+    except ValueError:
+        rel_file = file_path
+
+    s_idx = max(0, start_line - 1)
+    e_idx = min(len(orig_lines), s_idx + old_count)
+    mod_lines = orig_lines[:s_idx] + new_lines + orig_lines[e_idx:]
+
+    diff = list(difflib.unified_diff(
+        [l + "\n" for l in orig_lines],
+        [l + "\n" for l in mod_lines],
+        fromfile=f"a/{rel_file}",
+        tofile=f"b/{rel_file}"
+    ))
+    patch_str = "".join(diff)
+
+    patch_file = rdir / f"{rev_id}.patch"
+    patch_file.write_text(patch_str, encoding="utf-8")
+
+    meta = {
+        "id": rev_id,
+        "task_id": task_id,
+        "target_file": str(rel_file),
+        "abs_file": str(file_path.resolve()),
+        "start_line": start_line,
+        "old_lines_count": old_count,
+        "new_lines_count": len(new_lines),
+        "old_lines": orig_lines[s_idx:e_idx],
+        "new_lines": new_lines,
+        "description": description,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "status": status,
+        "patch_file": str(patch_file.relative_to(root)),
+    }
+
+    meta_file = rdir / f"{rev_id}.json"
+    meta_file.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return meta
+
+
+def get_review_records(root: Path, status_filter: Optional[str] = "unreviewed") -> List[Dict[str, Any]]:
+    rdir = root / ".agent" / "reviews"
+    if not rdir.exists():
+        return []
+    records = []
+    for f in rdir.glob("*.json"):
+        try:
+            obj = json.loads(f.read_text(encoding="utf-8", errors="ignore"))
+            if isinstance(obj, dict) and "id" in obj:
+                if status_filter is None or obj.get("status") == status_filter:
+                    records.append(obj)
+        except Exception:
+            pass
+    records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    return records
+
+
+def revert_review_record(root: Path, rev: Dict[str, Any]) -> bool:
+    patch_path = root / rev.get("patch_file", "")
+    target_rel = rev.get("target_file", "")
+    target_file = root / target_rel
+
+    # 1. Try git apply -R
+    if patch_path.exists():
+        res = subprocess.run(["git", "apply", "-R", str(patch_path)], cwd=root, capture_output=True, text=True)
+        if res.returncode == 0:
+            rev["status"] = "rejected"
+            rev["reviewed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            meta_file = root / rev.get("patch_file", "").replace(".patch", ".json")
+            if meta_file.exists():
+                meta_file.write_text(json.dumps(rev, indent=2), encoding="utf-8")
+            return True
+
+    # 2. Line-replacement fallback
+    if target_file.exists() and "old_lines" in rev:
+        try:
+            lines = target_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+            s_idx = max(0, rev.get("start_line", 1) - 1)
+            new_cnt = rev.get("new_lines_count", len(rev.get("new_lines", [])))
+            restored = lines[:s_idx] + rev["old_lines"] + lines[s_idx + new_cnt:]
+            target_file.write_text("\n".join(restored) + "\n", encoding="utf-8")
+            rev["status"] = "rejected"
+            rev["reviewed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            meta_file = root / rev.get("patch_file", "").replace(".patch", ".json")
+            if meta_file.exists():
+                meta_file.write_text(json.dumps(rev, indent=2), encoding="utf-8")
+            return True
+        except Exception:
+            pass
+
+    return False
+
+
+def accept_review_record(root: Path, rev: Dict[str, Any]) -> bool:
+    rev["status"] = "accepted"
+    rev["reviewed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    meta_file = root / rev.get("patch_file", "").replace(".patch", ".json")
+    if meta_file.exists():
+        meta_file.write_text(json.dumps(rev, indent=2), encoding="utf-8")
+    return True
+
+
+def handle_review_command(args: argparse.Namespace, root: Path) -> int:
+    unreviewed = get_review_records(root, status_filter="unreviewed")
+
+    if getattr(args, "accept_id", None):
+        target_id = args.accept_id
+        for r in unreviewed:
+            if r["id"] == target_id or r["id"].endswith(target_id):
+                accept_review_record(root, r)
+                print(f"{BOLD}{GREEN}✓ Marked {r['id']} ({r['target_file']}) as ACCEPTED by human.{RESET}")
+                return 0
+        print(f"{RED}Error: Review ID '{target_id}' not found among unreviewed records.{RESET}")
+        return 1
+
+    if getattr(args, "reject_id", None):
+        target_id = args.reject_id
+        for r in unreviewed:
+            if r["id"] == target_id or r["id"].endswith(target_id):
+                if revert_review_record(root, r):
+                    print(f"{BOLD}{YELLOW}✓ Successfully REVERTED changes for {r['id']} on {r['target_file']}.{RESET}")
+                    return 0
+                else:
+                    print(f"{RED}Error: Failed to revert patch for {r['id']}.{RESET}")
+                    return 1
+        print(f"{RED}Error: Review ID '{target_id}' not found among unreviewed records.{RESET}")
+        return 1
+
+    if not unreviewed:
+        print(f"\n{BOLD}{GREEN}✓ All implementations have been reviewed by a human! (0 pending){RESET}\n")
+        return 0
+
+    print(f"\n{BOLD}{CYAN}=== Implementations Awaiting Human Review ({len(unreviewed)} pending) ==={RESET}")
+    print(f"{'#':<4} {'ID':<24} {'LOCATION':<32} {'TASK / DESCRIPTION'}")
+    print("─" * 90)
+    for idx, r in enumerate(unreviewed):
+        loc = f"{r['target_file']}:{r['start_line']}"
+        desc = r.get('description', '')[:35]
+        print(f"[{idx+1:<2}] {YELLOW}{r['id']:<24}{RESET} {loc:<32} {desc}")
+    print("─" * 90)
+
+    if args.list or not sys.stdin.isatty():
+        return 0
+
+    try:
+        choice = input(f"\n{BOLD}Select review # to inspect [1-{len(unreviewed)}], or [q]uit: {RESET}").strip().lower()
+        if choice in ("q", "quit", ""):
+            return 0
+        idx = int(choice) - 1
+        if not (0 <= idx < len(unreviewed)):
+            print(f"{YELLOW}Invalid choice.{RESET}")
+            return 0
+    except Exception:
+        return 0
+
+    rev = unreviewed[idx]
+    patch_path = root / rev.get("patch_file", "")
+    if patch_path.exists():
+        print(f"\n{BOLD}{CYAN}┌── Patch Diff for {rev['id']} ({rev['target_file']}:{rev['start_line']}) ──┐{RESET}")
+        for l in patch_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if l.startswith("+") and not l.startswith("+++"):
+                print(f"{GREEN}{l}{RESET}")
+            elif l.startswith("-") and not l.startswith("---"):
+                print(f"{RED}{l}{RESET}")
+            elif l.startswith("@"):
+                print(f"{CYAN}{l}{RESET}")
+            else:
+                print(f"{DIM}{l}{RESET}")
+        print(f"{BOLD}{CYAN}└──────────────────────────────────────────────────────────────┘{RESET}\n")
+
+    action = input(f"{BOLD}Action for {rev['id']}? [a]ccept (approved) / [r]eject (revert changes) / [i]nteractive nvim / [s]kip: {RESET}").strip().lower()
+    if action == "a" or action == "accept":
+        accept_review_record(root, rev)
+        print(f"{BOLD}{GREEN}✓ Implementation {rev['id']} accepted and approved by human.{RESET}")
+    elif action == "r" or action == "reject":
+        if revert_review_record(root, rev):
+            print(f"{BOLD}{YELLOW}✓ Implementation {rev['id']} rejected: cleanly reverted changes on {rev['target_file']}!{RESET}")
+        else:
+            print(f"{RED}Error: Reversion failed.{RESET}")
+    elif action == "i" or action == "interactive":
+        sock = get_active_nvim_socket()
+        if sock and os.path.exists(sock):
+            cmd = ["nvim", "--server", sock, "--remote-send", "<Cmd>Review<CR>"]
+            subprocess.run(cmd)
+            print(f"{BOLD}{BLUE}Opened review in active Neovim session.{RESET}")
+        else:
+            subprocess.call(["nvim", f"+{rev['start_line']}", "+Review", str(root / rev['target_file'])])
+    return 0
+
+
+def apply_changes(file_path: Path, orig_lines: List[str], start_line: int, old_count: int, new_lines: List[str], root: Path, task_id: str = "task", description: str = "") -> Dict[str, Any]:
     s_idx = max(0, start_line - 1)
     e_idx = min(len(orig_lines), s_idx + old_count)
     result_lines = orig_lines[:s_idx] + new_lines + orig_lines[e_idx:]
     file_path.write_text("\n".join(result_lines) + "\n", encoding="utf-8")
+    meta = create_review_record(root, file_path, orig_lines, start_line, old_count, new_lines, task_id, description, status="unreviewed")
+    return meta
 
 
 def launch_nvim_interactive(file_path: Path, start_line: int, new_content: str, old_count: int) -> int:
@@ -536,8 +762,14 @@ def main():
     parser.add_argument("--list", action="store_true", help="List all detected TODO tasks without executing")
     parser.add_argument("--budget", type=int, default=16000, help="Dependency context token budget for Code Graph IR")
     parser.add_argument("--dry-run", action="store_true", help="Print prompt and context without calling LLM")
+    parser.add_argument("--accept", dest="accept_id", type=str, default=None, help="Mark review ID as human-accepted")
+    parser.add_argument("--reject", dest="reject_id", type=str, default=None, help="Revert review ID patch immediately")
 
     args = parser.parse_args()
+
+    root = find_git_root()
+    if args.accept_id or args.reject_id or args.target in ("review", "reviews"):
+        return handle_review_command(args, root)
 
     raw_target = args.target
     target_line = args.line

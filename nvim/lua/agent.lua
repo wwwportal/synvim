@@ -412,6 +412,11 @@ end
 
 --- Accept and permanently apply the pending in-line diff
 function M.accept_diff()
+  if M.state.current_review then
+    local rev_id = M.state.current_review.id
+    M.accept_review(rev_id)
+    return
+  end
   if not M.state.pending_diff then
     vim.notify("Agent: No pending diff to accept", vim.log.levels.INFO)
     return
@@ -1459,6 +1464,11 @@ M.process_response = process_agent_response
 
 --- Reject current location and re-route
 function M.reject(arg)
+  if M.state.current_review then
+    local rev_id = M.state.current_review.id
+    M.revert_review(rev_id)
+    return
+  end
   M.clear_diff()
   arg = vim.trim(arg or "")
   if arg == "listen" then
@@ -2140,6 +2150,317 @@ function M.search(subcmd, query)
   }, false, {})
 end
 
+--- Get reviews directory in root and ensure .agent/ is ignored
+local function get_reviews_dir(root)
+  root = root or get_root_dir()
+  local rdir = root .. "/.agent/reviews"
+  vim.fn.mkdir(rdir, "p")
+  local gi = root .. "/.gitignore"
+  if vim.fn.filereadable(gi) == 1 then
+    local lines = vim.fn.readfile(gi)
+    local has_agent = false
+    for _, l in ipairs(lines) do
+      if l:find("%.agent") then has_agent = true; break end
+    end
+    if not has_agent then
+      table.insert(lines, ".agent/")
+      vim.fn.writefile(lines, gi)
+    end
+  end
+  return rdir
+end
+
+--- Load reviews from .agent/reviews/*.json
+function M.get_reviews(status_filter)
+  status_filter = status_filter or "unreviewed"
+  local root = get_root_dir()
+  local rdir = root .. "/.agent/reviews"
+  if vim.fn.isdirectory(rdir) ~= 1 then return {} end
+
+  local files = vim.fn.globpath(rdir, "*.json", false, true)
+  local reviews = {}
+  for _, f in ipairs(files) do
+    local ok, content = pcall(vim.fn.readfile, f)
+    if ok and content then
+      local j_ok, obj = pcall(vim.fn.json_decode, table.concat(content, "\n"))
+      if j_ok and type(obj) == "table" and obj.id then
+        if status_filter == "all" or obj.status == status_filter then
+          table.insert(reviews, obj)
+        end
+      end
+    end
+  end
+
+  table.sort(reviews, function(a, b)
+    return (a.created_at or "") > (b.created_at or "")
+  end)
+  return reviews
+end
+
+--- Create a review record and patch on disk
+function M.create_review(file_path, start_line, old_count, old_lines, new_lines, task_id, desc, status)
+  status = status or "unreviewed"
+  local root = get_root_dir()
+  local rdir = get_reviews_dir(root)
+  local ts = os.time()
+  local rev_id = string.format("rev-%d-%04d", ts, math.random(1000, 9999))
+  local rel_file = vim.fn.fnamemodify(file_path, ":.")
+
+  -- Read current lines to build complete patch
+  local all_lines = vim.fn.filereadable(file_path) == 1 and vim.fn.readfile(file_path) or {}
+  local s_idx = math.max(0, start_line - 1)
+  local e_idx = math.min(#all_lines, s_idx + old_count)
+
+  -- Build unified patch
+  local patch_lines = {
+    "--- a/" .. rel_file,
+    "+++ b/" .. rel_file,
+    string.format("@@ -%d,%d +%d,%d @@", start_line, math.max(1, old_count), start_line, math.max(1, #new_lines)),
+  }
+  for _, l in ipairs(old_lines) do
+    table.insert(patch_lines, "-" .. l)
+  end
+  for _, l in ipairs(new_lines) do
+    table.insert(patch_lines, "+" .. l)
+  end
+
+  local patch_file = rdir .. "/" .. rev_id .. ".patch"
+  vim.fn.writefile(patch_lines, patch_file)
+
+  local meta = {
+    id = rev_id,
+    task_id = task_id or "task",
+    target_file = rel_file,
+    abs_file = vim.fn.fnamemodify(file_path, ":p"),
+    start_line = start_line,
+    old_lines_count = old_count,
+    new_lines_count = #new_lines,
+    old_lines = old_lines,
+    new_lines = new_lines,
+    description = desc or "",
+    created_at = os.date("%Y-%m-%d %H:%M:%S"),
+    status = status,
+    patch_file = ".agent/reviews/" .. rev_id .. ".patch",
+  }
+
+  local meta_file = rdir .. "/" .. rev_id .. ".json"
+  vim.fn.writefile({ vim.fn.json_encode(meta) }, meta_file)
+  return meta
+end
+
+--- Revert review cleanly using git apply -R or line replacement
+function M.revert_review(rev_id)
+  local root = get_root_dir()
+  local reviews = M.get_reviews("all")
+  local rev = nil
+  for _, r in ipairs(reviews) do
+    if r.id == rev_id or r.id:sub(-6) == rev_id:sub(-6) then
+      rev = r
+      break
+    end
+  end
+
+  if not rev then
+    vim.notify("Review: Review ID not found: " .. tostring(rev_id), vim.log.levels.WARN)
+    return false
+  end
+
+  M.clear_diff(true)
+  local target_full = rev.target_file:match("^/") and rev.target_file or (root .. "/" .. rev.target_file)
+  local reverted = false
+
+  -- 1. Try git apply -R
+  local patch_path = root .. "/" .. (rev.patch_file or "")
+  if vim.fn.filereadable(patch_path) == 1 then
+    local res = vim.system({ "git", "-C", root, "apply", "-R", patch_path }, { text = true }):wait()
+    if res.code == 0 then
+      reverted = true
+    end
+  end
+
+  -- 2. Line-replacement fallback or reload active buffer
+  local bufnr = vim.fn.bufnr(target_full)
+  if bufnr and bufnr ~= -1 and vim.api.nvim_buf_is_valid(bufnr) then
+    if reverted then
+      vim.api.nvim_buf_call(bufnr, function() vim.cmd("checktime") end)
+    elseif rev.old_lines then
+      local s_line = math.max(0, (rev.start_line or 1) - 1)
+      local new_cnt = rev.new_lines_count or (rev.new_lines and #rev.new_lines) or 1
+      local total = vim.api.nvim_buf_line_count(bufnr)
+      local e_line = math.min(total, s_line + new_cnt)
+      vim.bo[bufnr].modifiable = true
+      vim.api.nvim_buf_set_lines(bufnr, s_line, e_line, false, rev.old_lines)
+      vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write") end)
+      reverted = true
+    end
+  elseif not reverted and vim.fn.filereadable(target_full) == 1 and rev.old_lines then
+    local cur = vim.fn.readfile(target_full)
+    local s_line = math.max(0, (rev.start_line or 1) - 1)
+    local new_cnt = rev.new_lines_count or (rev.new_lines and #rev.new_lines) or 1
+    local e_line = math.min(#cur, s_line + new_cnt)
+    local restored = {}
+    for i = 1, s_line do table.insert(restored, cur[i]) end
+    for _, l in ipairs(rev.old_lines) do table.insert(restored, l) end
+    for i = e_line + 1, #cur do table.insert(restored, cur[i]) end
+    vim.fn.writefile(restored, target_full)
+    reverted = true
+  end
+
+  -- Update review JSON
+  rev.status = "rejected"
+  rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
+  local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
+  if vim.fn.filereadable(meta_path) == 1 then
+    vim.fn.writefile({ vim.fn.json_encode(rev) }, meta_path)
+  end
+
+  M.state.current_review = nil
+  vim.notify(string.format("✗ Review: Reverted %s on %s!", rev.id, vim.fn.fnamemodify(target_full, ":.")), vim.log.levels.INFO)
+
+  -- Refresh review list
+  local rem = M.get_reviews("unreviewed")
+  if #rem > 0 then
+    M.review("list")
+  else
+    vim.cmd("cclose")
+    vim.notify("✓ Review: All implementations have been reviewed by a human!", vim.log.levels.INFO)
+  end
+  return true
+end
+
+--- Accept review: mark as human-approved
+function M.accept_review(rev_id)
+  local root = get_root_dir()
+  local reviews = M.get_reviews("all")
+  local rev = nil
+  for _, r in ipairs(reviews) do
+    if r.id == rev_id or r.id:sub(-6) == rev_id:sub(-6) then
+      rev = r
+      break
+    end
+  end
+
+  if not rev then
+    vim.notify("Review: Review ID not found: " .. tostring(rev_id), vim.log.levels.WARN)
+    return false
+  end
+
+  M.clear_diff(true)
+  rev.status = "accepted"
+  rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
+  local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
+  if vim.fn.filereadable(meta_path) == 1 then
+    vim.fn.writefile({ vim.fn.json_encode(rev) }, meta_path)
+  end
+
+  M.state.current_review = nil
+  vim.notify(string.format("✓ Review: %s accepted and approved by human!", rev.id), vim.log.levels.INFO)
+
+  -- Refresh review list
+  local rem = M.get_reviews("unreviewed")
+  if #rem > 0 then
+    M.review("list")
+  else
+    vim.cmd("cclose")
+    vim.notify("✓ Review: All implementations have been reviewed by a human!", vim.log.levels.INFO)
+  end
+  return true
+end
+
+--- Display a specific review in-line
+function M.show_review(rev)
+  if not rev then return end
+  local root = get_root_dir()
+  local target_full = rev.target_file:match("^/") and rev.target_file or (root .. "/" .. rev.target_file)
+  if vim.fn.filereadable(target_full) ~= 1 then
+    vim.notify("Review: Target file not found: " .. target_full, vim.log.levels.WARN)
+    return
+  end
+
+  local bufnr = vim.fn.bufadd(target_full)
+  vim.fn.bufload(bufnr)
+  local origin_win = get_primary_editor_win()
+  vim.api.nvim_win_set_buf(origin_win, bufnr)
+
+  local lnum = rev.start_line or 1
+  pcall(vim.api.nvim_win_set_cursor, origin_win, { lnum, 0 })
+  pcall(function() vim.cmd("normal! zz") end)
+
+  M.state.current_review = rev
+  local new_content = table.concat(rev.new_lines or {}, "\n")
+  local old_cnt = rev.old_lines_count or 1
+
+  M.show_inline_diff(bufnr, lnum, new_content, old_cnt, false)
+
+  vim.api.nvim_echo({
+    { "● [Human Review: ", "ModeMsg" },
+    { rev.id, "Directory" },
+    { "] " .. (rev.description or "") .. " — :Accept (<Leader>a) to approve, :Reject (<Leader>r) to revert", "Normal" },
+  }, false, {})
+end
+
+--- Human Review Command Dispatcher (:Review [list|accept|reject|next|prev])
+function M.review(subcmd, arg)
+  subcmd = (subcmd or ""):lower()
+  local root = get_root_dir()
+
+  if subcmd == "accept" or subcmd == "a" then
+    local target_id = arg or (M.state.current_review and M.state.current_review.id)
+    if target_id then
+      M.accept_review(target_id)
+    else
+      vim.notify("Review: No active review to accept. Run :Review to select one.", vim.log.levels.WARN)
+    end
+    return
+  elseif subcmd == "reject" or subcmd == "r" then
+    local target_id = arg or (M.state.current_review and M.state.current_review.id)
+    if target_id then
+      M.revert_review(target_id)
+    else
+      vim.notify("Review: No active review to reject. Run :Review to select one.", vim.log.levels.WARN)
+    end
+    return
+  elseif subcmd == "clear" or subcmd == "close" then
+    M.clear_diff()
+    M.state.current_review = nil
+    vim.cmd("cclose")
+    vim.notify("Review: Closed review queue", vim.log.levels.INFO)
+    return
+  end
+
+  -- Default or "list": show all unreviewed implementations
+  local unreviewed = M.get_reviews("unreviewed")
+  if #unreviewed == 0 then
+    vim.notify("✓ Review: All implementations have been reviewed by a human! (0 pending)", vim.log.levels.INFO)
+    vim.cmd("cclose")
+    return
+  end
+
+  local qf_list = {}
+  for _, r in ipairs(unreviewed) do
+    local full = r.target_file:match("^/") and r.target_file or (root .. "/" .. r.target_file)
+    table.insert(qf_list, {
+      filename = full,
+      lnum = r.start_line or 1,
+      col = 1,
+      text = string.format("[UNREVIEWED: %s] %s (%s)", r.id, r.description or "", r.task_id or ""),
+      type = "W",
+    })
+  end
+
+  vim.fn.setqflist(qf_list, "r")
+  vim.fn.setqflist({}, "a", { title = string.format("[Human Review Queue: %d unreviewed implementation%s]", #unreviewed, #unreviewed == 1 and "" or "s") })
+  vim.cmd("botright copen 6")
+
+  local origin_win = get_primary_editor_win()
+  if origin_win and vim.api.nvim_win_is_valid(origin_win) then
+    setup_agent_qf_keymaps(origin_win, vim.api.nvim_win_get_buf(vim.api.nvim_get_current_win()))
+  end
+
+  -- Show first unreviewed item
+  M.show_review(unreviewed[1])
+end
+
 --- Find and execute in-line TODO/FIXME task in the current buffer or repository
 function M.run_todo(bufnr, target_line)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
@@ -2383,12 +2704,28 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
     local start_lnum = tonumber(solution.start_line) or chosen_line
     local old_cnt = tonumber(solution.old_lines_count) or old_lines_count
     local new_content = solution.content
+    local new_lines = vim.split(new_content, "\n")
+
+    -- Extract original lines before modification
+    local total = vim.api.nvim_buf_line_count(bufnr)
+    local s_idx = math.max(0, start_lnum - 1)
+    local e_idx = math.min(total, s_idx + old_cnt)
+    local orig_slice = vim.api.nvim_buf_get_lines(bufnr, s_idx, e_idx, false)
+
+    -- Apply changes to buffer and save to file so code runs/inspects immediately
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, s_idx, e_idx, false, new_lines)
+    vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write") end)
+
+    -- Create review record and patch on disk marked UNREVIEWED
+    local rev = M.create_review(filepath, start_lnum, old_cnt, orig_slice, new_lines, raw_header, solution.description or chosen_desc, "unreviewed")
+    M.state.current_review = rev
 
     M.show_inline_diff(bufnr, start_lnum, new_content, old_cnt, false)
     vim.api.nvim_echo({
-      { "✓ [Agent] ", "ModeMsg" },
-      { string.format("Generated implementation for %s:%d", file_basename, start_lnum), "Directory" },
-      { " — Press <Leader>a to Accept, <Leader>r to Reject", "Comment" },
+      { "● [Review Pending: ", "ModeMsg" },
+      { rev.id, "Directory" },
+      { "] Applied to " .. file_basename .. " — :Accept (<Leader>a) to approve, :Reject (<Leader>r) to revert, or review anytime via :Review", "Comment" },
     }, false, {})
   end))
 end
@@ -2461,6 +2798,8 @@ function M.setup()
 
     if sub == "stop" or sub == "cancel" or sub == "kill" then
       M.stop()
+    elseif sub == "review" then
+      M.review(parts[2], parts[3])
     elseif sub == "todo" then
       local lnum = tonumber(parts[2])
       M.run_todo(nil, lnum)
@@ -2523,7 +2862,7 @@ function M.setup()
     complete = function(arglead, cmdline)
       local parts = vim.split(vim.trim(cmdline), "%s+")
       if #parts <= 2 and not cmdline:match("%s+$") then
-        local subcmds = { "todo", "file", "find", "compile", "search", "listen", "lgcc", "reject", "accept", "revise", "write", "next", "prev", "queue", "tasks", "diff", "clear", "stop", "cancel" }
+        local subcmds = { "review", "todo", "file", "find", "compile", "search", "listen", "lgcc", "reject", "accept", "revise", "write", "next", "prev", "queue", "tasks", "diff", "clear", "stop", "cancel" }
         return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
       elseif parts[2] == "compile" then
         local comp_sub = { "syntax", "logic", "build", "spec" }
@@ -2578,6 +2917,18 @@ function M.setup()
       return {}
     end,
     desc = "Search repository tasks and contracts (:Search TODO [query] | :Search DONE [query])",
+  })
+
+  vim.api.nvim_create_user_command("Review", function(ctx)
+    local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
+    M.review(parts[1], parts[2])
+  end, {
+    nargs = "*",
+    complete = function(arglead, cmdline)
+      local subcmds = { "list", "accept", "reject", "next", "prev", "clear" }
+      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
+    end,
+    desc = "Human Review Queue: Inspect, accept, or revert unreviewed implementations (:Review [list|accept|reject])",
   })
 
   vim.api.nvim_create_user_command("Accept", function()
