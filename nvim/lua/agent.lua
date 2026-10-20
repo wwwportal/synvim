@@ -37,18 +37,24 @@ local setup_agent_qf_keymaps = nil
 local function setup_highlights()
   local is_dark = (vim.o.background == "dark")
   if is_dark then
-    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#85e89d", bg = "#144620", bold = true, ctermfg = "Green", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAdd", { bg = "#163b22", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#85e89d", bold = true, default = false })
     vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#ff7b72", bg = "#490202", strikethrough = true, ctermfg = "Red", default = false })
     vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#c9d1d9", bg = "#21262d", bold = true, ctermfg = "White", ctermbg = "DarkGray", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffFooter", { fg = "#8b949e", bg = "#161b22", bold = true, ctermfg = "Gray", default = false })
     vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#238636", bold = true, ctermfg = "White", ctermbg = "DarkGreen", default = false })
     vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#8b949e", bg = "#161b22", ctermfg = "LightGray", ctermbg = "Black", default = false })
   else
-    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#0e6b0e", bg = "#d4edda", bold = true, ctermfg = "DarkGreen", ctermbg = "LightGreen", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAdd", { bg = "#d4edda", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#0e6b0e", bold = true, default = false })
     vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#b31d28", bg = "#f8d7da", strikethrough = true, ctermfg = "DarkRed", ctermbg = "LightRed", default = false })
     vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#ffffff", bg = "#2d3748", bold = true, ctermfg = "White", ctermbg = "DarkGray", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffFooter", { fg = "#57606a", bg = "#f6f8fa", bold = true, default = false })
     vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#0969da", bold = true, ctermfg = "White", ctermbg = "Blue", default = false })
     vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#24292f", bg = "#eaeef2", ctermfg = "Black", ctermbg = "LightGray", default = false })
   end
+  pcall(vim.api.nvim_set_hl, 0, "GitReviewAdd", { link = "AgentDiffAdd", default = true })
+  pcall(vim.api.nvim_set_hl, 0, "GitReviewDelete", { link = "AgentDiffDelete", default = true })
 end
 
 --- Resolve suggested target path cleanly without doubling base_dir
@@ -392,9 +398,17 @@ function M.clear_diff(keep_buffer)
           pcall(vim.keymap.del, "n", k, { buffer = p.bufnr })
         end
       end
-      if p.mark_id then
-        pcall(vim.api.nvim_buf_del_extmark, p.bufnr, ns_diff, p.mark_id)
+      -- Clear all diff extmarks in ns_diff namespace (red virtual lines, green line highlights, signs, and footer)
+      pcall(vim.api.nvim_buf_clear_namespace, p.bufnr, ns_diff, 0, -1)
+
+      -- If diff was ephemeral and not accepted, revert buffer lines back to original
+      if not keep_buffer and p.revert_lines then
+        local s_idx = math.max(0, p.target_line - 1)
+        local new_cnt = (p.new_lines and #p.new_lines) or 0
+        vim.bo[p.bufnr].modifiable = true
+        vim.api.nvim_buf_set_lines(p.bufnr, s_idx, s_idx + new_cnt, false, p.revert_lines)
       end
+
       -- If it was an unsaved new file, wipe the buffer so no empty file is left on disk
       if not keep_buffer and p.is_new_file and not vim.bo[p.bufnr].modified then
         local name = vim.api.nvim_buf_get_name(p.bufnr)
@@ -418,7 +432,7 @@ function M.accept_diff()
     return
   end
   if not M.state.pending_diff then
-    vim.notify("Agent: No pending diff to accept", vim.log.levels.INFO)
+    vim.notify("GitReview: No pending diff to accept", vim.log.levels.INFO)
     return
   end
   local p = M.state.pending_diff
@@ -429,6 +443,8 @@ function M.accept_diff()
   local old_count = p.old_count or 0
   local is_new_file = p.is_new_file
 
+  -- Mark diff as accepted so clear_diff will not revert buffer lines
+  p.revert_lines = nil
   M.clear_diff(true)
 
   if vim.api.nvim_buf_is_valid(bufnr) then
@@ -439,17 +455,13 @@ function M.accept_diff()
       vim.api.nvim_buf_call(bufnr, function()
         vim.cmd("silent! write")
       end)
-      vim.notify("✓ Agent: Created and saved " .. vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":."), vim.log.levels.INFO)
+      vim.notify("✓ GitReview: Created and saved " .. vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":."), vim.log.levels.INFO)
     else
-      local total = vim.api.nvim_buf_line_count(bufnr)
-      local s_line = math.max(0, target_line - 1)
-      local e_line = math.min(total, s_line + old_count)
-      vim.api.nvim_buf_set_lines(bufnr, s_line, e_line, false, new_lines)
       local name = vim.api.nvim_buf_get_name(bufnr)
       if name ~= "" and vim.bo[bufnr].buftype == "" then
         vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write") end)
       end
-      vim.notify("✓ Agent: Implementation accepted and saved to " .. (name ~= "" and vim.fn.fnamemodify(name, ":.") or "buffer"), vim.log.levels.INFO)
+      vim.notify("✓ GitReview: Implementation accepted and saved to " .. (name ~= "" and vim.fn.fnamemodify(name, ":.") or "buffer"), vim.log.levels.INFO)
     end
     vim.bo[bufnr].modifiable = was_mod
     if origin_win and vim.api.nvim_win_is_valid(origin_win) then
@@ -529,8 +541,10 @@ local function wrap_diff_line(prefix, text, hl_group, max_w)
 end
 
 --- Show suggested code in-line with green-red diff colors.
---- Cursor stays in the editor split so the user can scroll normally through the document!
-function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is_new_file)
+--- Deleted lines are shown in RED as virtual lines above.
+--- Added lines are highlighted IN-LINE directly on the buffer lines in GREEN.
+--- No duplicate floating lines!
+function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is_new_file, old_lines, review_meta)
   M.clear_diff()
   setup_highlights()
 
@@ -549,56 +563,82 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
   local new_lines = vim.split(new_content, "\n")
   old_lines_count = (type(old_lines_count) == "number") and old_lines_count or 0
 
-  -- Extract existing lines if replacing
+  local s_idx = math.max(0, target_line - 1)
+  local cur_slice = vim.api.nvim_buf_get_lines(bufnr, s_idx, s_idx + #new_lines, false)
+  local already_applied = (table.concat(cur_slice, "\n") == new_content)
+  local revert_lines = nil
+
+  -- Extract original deleted lines
   local deleted_lines = {}
-  if old_lines_count > 0 then
-    local s_idx = target_line - 1
+  if type(old_lines) == "table" and #old_lines > 0 then
+    deleted_lines = old_lines
+  elseif already_applied and review_meta and review_meta.old_lines then
+    deleted_lines = review_meta.old_lines
+  elseif not already_applied and old_lines_count > 0 then
     local e_idx = math.min(total_lines, s_idx + old_lines_count)
     deleted_lines = vim.api.nvim_buf_get_lines(bufnr, s_idx, e_idx, false)
+  end
+
+  -- If not already applied to buffer, apply new_lines in-place so additions are truly in-line
+  if not already_applied then
+    local e_idx = math.min(total_lines, s_idx + old_lines_count)
+    revert_lines = vim.api.nvim_buf_get_lines(bufnr, s_idx, e_idx, false)
+    local was_mod = vim.bo[bufnr].modifiable
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, s_idx, e_idx, false, new_lines)
+    vim.bo[bufnr].modifiable = was_mod
   end
 
   local win_w = (origin_win and vim.api.nvim_win_is_valid(origin_win)) and vim.api.nvim_win_get_width(origin_win) or 80
   local max_w = math.max(35, win_w - 6)
 
-  local header_label = is_new_file
-    and " Suggested New File (In-Line Diff) "
-    or  " Suggested Implementation (In-Line Diff) "
+  local task_name = (review_meta and (review_meta.task_id or review_meta.id))
+    or (is_new_file and "New File" or "Task")
+  local header_label = string.format(" Git Review: %s ", task_name)
   local bar_len = math.max(4, max_w - #header_label - 4)
   local header_text = "┌──" .. header_label .. string.rep("─", bar_len) .. "┐"
   if #header_text > max_w then
     header_text = header_text:sub(1, max_w - 1) .. "┐"
   end
 
-  local footer_text = "└── :Accept | :Reject | :Revise ([a]/[r]/[w]) " .. string.rep("─", math.max(2, max_w - 48)) .. "┘"
+  local footer_text = "└── :GitReview accept (<Leader>a) | reject (<Leader>r) " .. string.rep("─", math.max(2, max_w - 55)) .. "┘"
   if #footer_text > max_w then
     footer_text = footer_text:sub(1, max_w - 1) .. "┘"
   end
 
-  local virt_lines = {}
-  table.insert(virt_lines, { { header_text, "AgentDiffHeader" } })
+  -- 1. Top virtual lines: Header + Red deleted lines (with word-wrapping)
+  local virt_lines_top = {}
+  table.insert(virt_lines_top, { { header_text, "AgentDiffHeader" } })
 
-  -- Red deleted lines with line-wrapping
   for _, line in ipairs(deleted_lines) do
     local chunks = wrap_diff_line("- ", line, "AgentDiffDelete", max_w)
     for _, chunk in ipairs(chunks) do
-      table.insert(virt_lines, chunk)
+      table.insert(virt_lines_top, chunk)
     end
   end
 
-  -- Green added lines with line-wrapping
-  for _, line in ipairs(new_lines) do
-    local chunks = wrap_diff_line("+ ", line, "AgentDiffAdd", max_w)
-    for _, chunk in ipairs(chunks) do
-      table.insert(virt_lines, chunk)
-    end
-  end
-
-  table.insert(virt_lines, { { footer_text, "AgentDiffHeader" } })
-
-  -- Attach virtual diff lines above target_line so it is immediately visible
-  local mark_id = vim.api.nvim_buf_set_extmark(bufnr, ns_diff, math.max(0, target_line - 1), 0, {
-    virt_lines = virt_lines,
+  local top_mark = vim.api.nvim_buf_set_extmark(bufnr, ns_diff, s_idx, 0, {
+    virt_lines = virt_lines_top,
     virt_lines_above = true,
+  })
+
+  -- 2. Highlight additions IN-LINE directly on buffer lines in green, with '+' in sign column!
+  -- NO DUPLICATE VIRTUAL LINES ABOVE!
+  local num_added = math.max(1, #new_lines)
+  for i = 0, num_added - 1 do
+    local l_idx = s_idx + i
+    pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, l_idx, 0, {
+      line_hl_group = "AgentDiffAdd",
+      sign_text = "+",
+      sign_hl_group = "AgentDiffAddSign",
+    })
+  end
+
+  -- 3. Bottom virtual line: Footer attached below the last added line
+  local last_idx = s_idx + num_added - 1
+  local bot_mark = vim.api.nvim_buf_set_extmark(bufnr, ns_diff, last_idx, 0, {
+    virt_lines = { { { footer_text, "AgentDiffFooter" } } },
+    virt_lines_above = false,
   })
 
   -- Direct cursor to the exact start line of the diff and center on screen
@@ -611,8 +651,10 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     target_line = target_line,
     new_lines = new_lines,
     old_count = old_lines_count,
+    revert_lines = revert_lines,
     is_new_file = is_new_file or false,
-    mark_id = mark_id,
+    top_mark = top_mark,
+    bot_mark = bot_mark,
     bound_keys = {},
   }
 
@@ -630,7 +672,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
   bind_buf_key("<M-w>", function() M.write_revision() end, "Revise diff")
   bind_buf_key("<Esc>", function()
     M.clear_diff()
-    vim.notify("Agent: Dismissed in-line diff preview", vim.log.levels.INFO)
+    vim.notify("GitReview: Dismissed in-line diff preview", vim.log.levels.INFO)
   end, "Dismiss diff")
   bind_buf_key("<Tab>", function()
     for _, w in ipairs(vim.api.nvim_list_wins()) do
@@ -640,7 +682,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
         return
       end
     end
-  end, "Focus task pane")
+  end, "Focus review/task pane")
 
   vim.cmd("redraw")
 end
@@ -2257,16 +2299,33 @@ end
 function M.revert_review(rev_id)
   local root = get_root_dir()
   local reviews = M.get_reviews("all")
+
+  if not rev_id or rev_id == "" then
+    if M.state.current_review and M.state.current_review.id then
+      rev_id = M.state.current_review.id
+    else
+      local unrev = M.get_reviews("unreviewed")
+      if #unrev > 0 then
+        rev_id = unrev[1].id
+      end
+    end
+  end
+
+  if not rev_id then
+    vim.notify("GitReview: No review to reject", vim.log.levels.WARN)
+    return false
+  end
+
   local rev = nil
   for _, r in ipairs(reviews) do
-    if r.id == rev_id or r.id:sub(-6) == rev_id:sub(-6) then
+    if r.id == rev_id or (r.id and rev_id and tostring(r.id):sub(-6) == tostring(rev_id):sub(-6)) then
       rev = r
       break
     end
   end
 
   if not rev then
-    vim.notify("Review: Review ID not found: " .. tostring(rev_id), vim.log.levels.WARN)
+    vim.notify("GitReview: Review ID not found: " .. tostring(rev_id), vim.log.levels.WARN)
     return false
   end
 
@@ -2287,7 +2346,7 @@ function M.revert_review(rev_id)
   local bufnr = vim.fn.bufnr(target_full)
   if bufnr and bufnr ~= -1 and vim.api.nvim_buf_is_valid(bufnr) then
     if reverted then
-      vim.api.nvim_buf_call(bufnr, function() vim.cmd("checktime") end)
+      vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! edit!") end)
     elseif rev.old_lines then
       local s_line = math.max(0, (rev.start_line or 1) - 1)
       local new_cnt = rev.new_lines_count or (rev.new_lines and #rev.new_lines) or 1
@@ -2320,7 +2379,7 @@ function M.revert_review(rev_id)
   end
 
   M.state.current_review = nil
-  vim.notify(string.format("✗ Review: Reverted %s on %s!", rev.id, vim.fn.fnamemodify(target_full, ":.")), vim.log.levels.INFO)
+  vim.notify(string.format("✗ GitReview: Reverted %s on %s!", rev.id, vim.fn.fnamemodify(target_full, ":.")), vim.log.levels.INFO)
 
   -- Refresh review list
   local rem = M.get_reviews("unreviewed")
@@ -2334,7 +2393,7 @@ function M.revert_review(rev_id)
       pcall(vim.cmd, "DiffviewClose")
     end
     vim.cmd("cclose")
-    vim.notify("✓ Review: All implementations have been reviewed by a human!", vim.log.levels.INFO)
+    vim.notify("✓ GitReview: All implementations have been reviewed by a human!", vim.log.levels.INFO)
   end
   return true
 end
@@ -2343,16 +2402,33 @@ end
 function M.accept_review(rev_id)
   local root = get_root_dir()
   local reviews = M.get_reviews("all")
+
+  if not rev_id or rev_id == "" then
+    if M.state.current_review and M.state.current_review.id then
+      rev_id = M.state.current_review.id
+    else
+      local unrev = M.get_reviews("unreviewed")
+      if #unrev > 0 then
+        rev_id = unrev[1].id
+      end
+    end
+  end
+
+  if not rev_id then
+    vim.notify("GitReview: No review to accept", vim.log.levels.WARN)
+    return false
+  end
+
   local rev = nil
   for _, r in ipairs(reviews) do
-    if r.id == rev_id or r.id:sub(-6) == rev_id:sub(-6) then
+    if r.id == rev_id or (r.id and rev_id and tostring(r.id):sub(-6) == tostring(rev_id):sub(-6)) then
       rev = r
       break
     end
   end
 
   if not rev then
-    vim.notify("Review: Review ID not found: " .. tostring(rev_id), vim.log.levels.WARN)
+    vim.notify("GitReview: Review ID not found: " .. tostring(rev_id), vim.log.levels.WARN)
     return false
   end
 
@@ -2365,7 +2441,7 @@ function M.accept_review(rev_id)
   end
 
   M.state.current_review = nil
-  vim.notify(string.format("✓ Review: %s accepted and approved by human!", rev.id), vim.log.levels.INFO)
+  vim.notify(string.format("✓ GitReview: %s accepted and approved by human!", rev.id), vim.log.levels.INFO)
 
   -- Refresh review list
   local rem = M.get_reviews("unreviewed")
@@ -2379,7 +2455,7 @@ function M.accept_review(rev_id)
       pcall(vim.cmd, "DiffviewClose")
     end
     vim.cmd("cclose")
-    vim.notify("✓ Review: All implementations have been reviewed by a human!", vim.log.levels.INFO)
+    vim.notify("✓ GitReview: All implementations have been reviewed by a human!", vim.log.levels.INFO)
   end
   return true
 end
@@ -2390,7 +2466,7 @@ function M.show_review(rev)
   local root = get_root_dir()
   local target_full = rev.target_file:match("^/") and rev.target_file or (root .. "/" .. rev.target_file)
   if vim.fn.filereadable(target_full) ~= 1 then
-    vim.notify("Review: Target file not found: " .. target_full, vim.log.levels.WARN)
+    vim.notify("GitReview: Target file not found: " .. target_full, vim.log.levels.WARN)
     return
   end
 
@@ -2405,14 +2481,14 @@ function M.show_review(rev)
 
   M.state.current_review = rev
   local new_content = table.concat(rev.new_lines or {}, "\n")
-  local old_cnt = rev.old_lines_count or 1
+  local old_cnt = rev.old_lines_count or (rev.old_lines and #rev.old_lines) or 1
 
-  M.show_inline_diff(bufnr, lnum, new_content, old_cnt, false)
+  M.show_inline_diff(bufnr, lnum, new_content, old_cnt, false, rev.old_lines, rev)
 
   vim.api.nvim_echo({
-    { "● [Human Review: ", "ModeMsg" },
+    { "● [Git Review: ", "ModeMsg" },
     { rev.id, "Directory" },
-    { "] " .. (rev.description or "") .. " — :Accept (<Leader>a) to approve, :Reject (<Leader>r) to revert", "Normal" },
+    { "] " .. (rev.description or "") .. " — :GitReview accept (<Leader>a) to approve, :GitReview reject (<Leader>r) to revert", "Normal" },
   }, false, {})
 end
 
@@ -2743,11 +2819,11 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
     local rev = M.create_review(filepath, start_lnum, old_cnt, orig_slice, new_lines, raw_header, solution.description or chosen_desc, "unreviewed")
     M.state.current_review = rev
 
-    M.show_inline_diff(bufnr, start_lnum, new_content, old_cnt, false)
+    M.show_inline_diff(bufnr, start_lnum, new_content, old_cnt, false, orig_slice, rev)
     vim.api.nvim_echo({
-      { "● [Review Pending: ", "ModeMsg" },
+      { "● [Git Review Pending: ", "ModeMsg" },
       { rev.id, "Directory" },
-      { "] Applied to " .. file_basename .. " — :Accept (<Leader>a) to approve, :Reject (<Leader>r) to revert, or review anytime via :Review", "Comment" },
+      { "] Applied to " .. file_basename .. " — :GitReview accept (<Leader>a) to approve, :GitReview reject (<Leader>r) to revert", "Comment" },
     }, false, {})
   end))
 end
@@ -2941,25 +3017,66 @@ function M.setup()
     desc = "Search repository tasks and contracts (:Search TODO [query] | :Search DONE [query])",
   })
 
-  vim.api.nvim_create_user_command("Review", function(ctx)
+  local function review_dispatcher(ctx)
     local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
     M.review(parts[1], parts[2])
-  end, {
+  end
+
+  local review_cmd_opts = {
     nargs = "*",
     complete = function(arglead, cmdline)
-      local subcmds = { "list", "accept", "reject", "next", "prev", "clear" }
+      local subcmds = { "list", "accept", "reject", "next", "prev", "clear", "open" }
       return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
     end,
-    desc = "Human Review Queue: Inspect, accept, or revert unreviewed implementations (:Review [list|accept|reject])",
-  })
+    desc = "Git Review Queue: Inspect, accept, or revert unreviewed implementations (:GitReview [list|accept|reject])",
+  }
+
+  vim.api.nvim_create_user_command("GitReview", review_dispatcher, review_cmd_opts)
+  vim.api.nvim_create_user_command("GReview", review_dispatcher, review_cmd_opts)
+  vim.api.nvim_create_user_command("Review", review_dispatcher, review_cmd_opts)
+
+  vim.api.nvim_create_user_command("GitReviewAccept", function()
+    M.accept()
+  end, { desc = "Accept current git review implementation" })
+
+  vim.api.nvim_create_user_command("GitReviewReject", function(ctx)
+    M.reject(ctx.args)
+  end, { nargs = "*", desc = "Reject and revert current git review implementation" })
+
+  -- If :Git command does not exist, provide :Git with review support
+  if vim.fn.exists(":Git") ~= 2 then
+    vim.api.nvim_create_user_command("Git", function(ctx)
+      local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
+      if parts[1] == "review" then
+        M.review(parts[2], parts[3])
+      else
+        local cmd = "git " .. ctx.args
+        vim.cmd("!" .. cmd)
+      end
+    end, {
+      nargs = "*",
+      complete = function(arglead, cmdline)
+        local parts = vim.split(vim.trim(cmdline), "%s+")
+        if #parts <= 2 and not cmdline:match("%s+$") then
+          local git_subs = { "review", "status", "diff", "log", "commit", "push", "pull", "checkout", "branch" }
+          return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, git_subs)
+        elseif parts[2] == "review" then
+          local rsubs = { "list", "accept", "reject", "next", "prev", "clear" }
+          return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, rsubs)
+        end
+        return {}
+      end,
+      desc = "Git command runner with review support (:Git review [list|accept|reject])",
+    })
+  end
 
   vim.api.nvim_create_user_command("Accept", function()
     M.accept()
-  end, { desc = "Accept and apply current agent in-line diff or task" })
+  end, { desc = "Accept and apply current agent in-line diff or task (:GitReview accept)" })
 
   vim.api.nvim_create_user_command("Reject", function(ctx)
     M.reject(ctx.args)
-  end, { nargs = "*", desc = "Reject current agent diff or task" })
+  end, { nargs = "*", desc = "Reject current agent diff or task (:GitReview reject)" })
 
   vim.api.nvim_create_user_command("Revise", function(ctx)
     local arg = vim.trim(ctx.args or "")
@@ -2988,6 +3105,9 @@ function M.setup()
   M.find = M.find
   M.compile = M.compile
   M.search = M.search
+  M.review = M.review
+  M.git_review = M.review
+  M.review_command = M.review
 end
 
 M.get_root_dir = get_root_dir
@@ -2995,5 +3115,8 @@ M.collect_context = collect_context
 M.find = M.find
 M.compile = M.compile
 M.search = M.search
+M.review = M.review
+M.git_review = M.review
+M.review_command = M.review
 
 return M

@@ -459,8 +459,8 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
     if args.apply:
         meta = apply_changes(file_path, file_lines, start_line, old_count, new_lines, root, task_id, desc)
         print(f"{BOLD}{GREEN}✓ Applied implementation to {file_path}:{start_line}{RESET}")
-        print(f"{BOLD}{YELLOW}● [Review] Recorded as UNREVIEWED (ID: {meta['id']}){RESET}")
-        print(f"{DIM}  Review anytime with ':Review' in Neovim or 'agent review' in CLI.{RESET}")
+        print(f"{BOLD}{YELLOW}● [Git Review] Recorded as UNREVIEWED (ID: {meta['id']}){RESET}")
+        print(f"{DIM}  Review anytime with ':GitReview' in Neovim or 'agent review' in CLI.{RESET}")
         return 0
 
     # Prompt user
@@ -473,8 +473,8 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
     if choice == "y" or choice == "yes":
         meta = apply_changes(file_path, file_lines, start_line, old_count, new_lines, root, task_id, desc)
         print(f"{BOLD}{GREEN}✓ Successfully applied changes to {file_path}:{start_line}{RESET}")
-        print(f"{BOLD}{YELLOW}● [Review] Recorded as UNREVIEWED (ID: {meta['id']}){RESET}")
-        print(f"{DIM}  Review anytime with ':Review' in Neovim or 'agent review' in CLI.{RESET}")
+        print(f"{BOLD}{YELLOW}● [Git Review] Recorded as UNREVIEWED (ID: {meta['id']}){RESET}")
+        print(f"{DIM}  Review anytime with ':GitReview' in Neovim or 'agent review' in CLI.{RESET}")
         return 0
     elif choice == "i" or choice == "interactive":
         return launch_nvim_interactive(file_path, start_line, new_content, old_count)
@@ -695,11 +695,11 @@ def handle_review_command(args: argparse.Namespace, root: Path) -> int:
     elif action == "i" or action == "interactive":
         sock = get_active_nvim_socket()
         if sock and os.path.exists(sock):
-            cmd = ["nvim", "--server", sock, "--remote-send", "<Cmd>Review<CR>"]
+            cmd = ["nvim", "--server", sock, "--remote-send", "<Cmd>GitReview<CR>"]
             subprocess.run(cmd)
             print(f"{BOLD}{BLUE}Opened review in active Neovim session.{RESET}")
         else:
-            subprocess.call(["nvim", f"+{rev['start_line']}", "+Review", str(root / rev['target_file'])])
+            subprocess.call(["nvim", f"+{rev['start_line']}", "+GitReview", str(root / rev['target_file'])])
     return 0
 
 
@@ -768,7 +768,7 @@ def main():
     args = parser.parse_args()
 
     root = find_git_root()
-    if args.accept_id or args.reject_id or args.target in ("review", "reviews"):
+    if args.accept_id or args.reject_id or args.target in ("review", "reviews", "git-review", "gitreview"):
         return handle_review_command(args, root)
 
     raw_target = args.target
