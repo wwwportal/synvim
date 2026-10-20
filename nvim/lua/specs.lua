@@ -1356,15 +1356,7 @@ vim.api.nvim_create_user_command("Specs", function(ctx)
 end, {
   nargs = "*",
   complete = task_complete,
-  desc = "Navigate in-tree project specification DAG or scaffold contracts",
-})
-
-vim.api.nvim_create_user_command("Spec", function(ctx)
-  M.tasks(ctx.args)
-end, {
-  nargs = "*",
-  complete = task_complete,
-  desc = "Navigate in-tree project specification DAG or scaffold contracts",
+  desc = "Navigate in-tree project specification DAG or scaffold contracts (:Specs [name|graph])",
 })
 
 vim.api.nvim_create_user_command("Tasks", function(ctx)
@@ -1372,19 +1364,7 @@ vim.api.nvim_create_user_command("Tasks", function(ctx)
 end, {
   nargs = "*",
   complete = task_complete,
-  desc = "Navigate in-tree project specification DAG (alias to :Specs)",
+  desc = "Navigate in-tree task agenda, graph, or scaffold contracts (:Tasks [graph|add])",
 })
-
-vim.api.nvim_create_user_command("Task", function(ctx)
-  M.tasks(ctx.args)
-end, {
-  nargs = "*",
-  complete = task_complete,
-  desc = "Navigate in-tree project specification DAG (alias to :Specs)",
-})
-
-vim.api.nvim_create_user_command("Taskwarrior", function()
-  vim.notify("specs: Taskwarrior has been phased out in favor of in-tree source specifications (:Specs).", vim.log.levels.WARN)
-end, { desc = "Deprecated: Taskwarrior phased out in favor of :Specs" })
 
 return M

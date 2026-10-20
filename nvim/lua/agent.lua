@@ -2703,21 +2703,24 @@ end
 
 local function extract_task_info(line)
   if not line then return nil end
-  local kind, id, tier, desc = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%(([^|]+)%|%s*tier:([ABC])%)%s*:%s*(.*)$")
-  if kind and id then
-    return { kind = kind, id = id, tier = tier, desc = desc }
+  local kind, id_raw, tier, desc = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%(([^|)]+)%|%s*tier:([ABC])%)%s*:%s*(.*)$")
+  if kind and id_raw then
+    local clean_id = vim.trim(vim.split(id_raw, "%s*|%s*")[1])
+    return { kind = kind, id = clean_id, tier = tier, desc = desc }
   end
-  kind, id, desc = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%(([^)]+)%)%s*:%s*(.*)$")
-  if kind and id then
-    return { kind = kind, id = id, tier = "U", desc = desc }
+  local kind2, id_raw2, desc2 = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%(([^)]+)%)%s*:%s*(.*)$")
+  if kind2 and id_raw2 then
+    local clean_id = vim.trim(vim.split(id_raw2, "%s*|%s*")[1])
+    local tier2 = id_raw2:match("tier:([ABC])") or "U"
+    return { kind = kind2, id = clean_id, tier = tier2, desc = desc2 }
   end
-  kind, desc = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%s*:%s*(.*)$")
-  if kind and (kind == "TODO" or kind == "FIXME" or kind == "SPEC") then
-    return { kind = kind, id = "task", tier = "U", desc = desc }
+  local kind3, desc3 = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%s*:%s*(.*)$")
+  if kind3 and (kind3 == "TODO" or kind3 == "FIXME" or kind3 == "SPEC") then
+    return { kind = kind3, id = "task", tier = "U", desc = desc3 }
   end
-  kind, desc = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%s+(.*)$")
-  if kind and (kind == "TODO" or kind == "FIXME" or kind == "SPEC") then
-    return { kind = kind, id = "task", tier = "U", desc = desc }
+  local kind4, desc4 = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%s+(.*)$")
+  if kind4 and (kind4 == "TODO" or kind4 == "FIXME" or kind4 == "SPEC") then
+    return { kind = kind4, id = "task", tier = "U", desc = desc4 }
   end
   return nil
 end
@@ -2841,6 +2844,32 @@ function M.run_todo(bufnr, target_arg)
       end
       vim.notify(string.format("Listed %d in-line tasks across repository.", #all_tasks), vim.log.levels.INFO)
       return
+    end
+
+    -- Exact task_id match takes absolute priority
+    for _, t in ipairs(all_tasks) do
+      if t.task_id and t.task_id ~= "task" and t.task_id:lower() == query:lower() then
+        local root = get_root_dir()
+        local full_path = root .. "/" .. t.file
+        local target_buf = vim.fn.bufadd(full_path)
+        vim.fn.bufload(target_buf)
+        local origin_win = get_primary_editor_win()
+        if origin_win and vim.api.nvim_win_is_valid(origin_win) then
+          vim.api.nvim_set_current_win(origin_win)
+          vim.api.nvim_win_set_buf(origin_win, target_buf)
+          pcall(vim.api.nvim_win_set_cursor, origin_win, { t.line, 0 })
+          pcall(function() vim.cmd("normal! zz") end)
+        end
+
+        vim.api.nvim_echo({
+          { "● [Executing Task Contract: ", "ModeMsg" },
+          { string.format("%s (Tier %s)", t.task_id, t.tier), "Directory" },
+          { string.format("] %s in %s:%d", t.description, t.file, t.line), "Normal" },
+        }, false, {})
+
+        M.run_todo(target_buf, t.line)
+        return
+      end
     end
 
     local matches = rank_tasks_by_query(all_tasks, query)
@@ -3263,8 +3292,21 @@ function M.setup()
     desc = "Route quickfix jumps directly into calling split without splitting",
   })
 
-  -- :Todo [query | line | list]
-  vim.api.nvim_create_user_command("Todo", function(ctx)
+  local function task_id_complete(arglead, cmdline)
+    local all_tasks = scan_repository_tasks()
+    local ids = {}
+    local seen = {}
+    for _, t in ipairs(all_tasks) do
+      if t.task_id and t.task_id ~= "task" and not seen[t.task_id] then
+        seen[t.task_id] = true
+        table.insert(ids, t.task_id)
+      end
+    end
+    table.sort(ids)
+    return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, ids)
+  end
+
+  local function do_dispatcher(ctx)
     M.state.origin_win = get_primary_editor_win()
     local raw = vim.trim(ctx.args or "")
     local lnum = tonumber(raw)
@@ -3275,17 +3317,20 @@ function M.setup()
     else
       M.run_todo(nil, nil)
     end
-  end, {
+  end
+
+  -- :Do <task_id>
+  vim.api.nvim_create_user_command("Do", do_dispatcher, {
     nargs = "*",
-    complete = function(arglead, cmdline)
-      local parts = vim.split(vim.trim(cmdline), "%s+")
-      if #parts <= 2 and not cmdline:match("%s+$") then
-        local subs = { "list", "all" }
-        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subs)
-      end
-      return {}
-    end,
-    desc = "Execute or search in-line TODO task contract (:Todo [query|line|list])",
+    complete = task_id_complete,
+    desc = "Have the agent implement a structured task contract (:Do <task_id>)",
+  })
+
+  -- :Todo [task_id]
+  vim.api.nvim_create_user_command("Todo", do_dispatcher, {
+    nargs = "*",
+    complete = task_id_complete,
+    desc = "Execute task contract (:Todo <task_id>)",
   })
 
   -- :Lgcc [clear|flags]
@@ -3313,22 +3358,6 @@ function M.setup()
     M.state.origin_win = vim.api.nvim_get_current_win()
     M.find(ctx.args)
   end, { nargs = "*", desc = "Find implementation or definition across repository (:Find <query>)" })
-
-  vim.api.nvim_create_user_command("Compile", function(ctx)
-    M.state.origin_win = vim.api.nvim_get_current_win()
-    local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
-    M.compile(parts[1], table.concat(vim.list_slice(parts, 2), " "))
-  end, {
-    nargs = "*",
-    complete = function(arglead, cmdline)
-      local parts = vim.split(vim.trim(cmdline), "%s+")
-      if #parts <= 2 and not cmdline:match("%s+$") then
-        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "syntax", "build" })
-      end
-      return {}
-    end,
-    desc = "Navigate build / compilation entrypoints (:Compile [syntax|build] [target])",
-  })
 
 
   local function review_dispatcher(ctx)
@@ -3408,11 +3437,12 @@ function M.setup()
     desc = "Reject and revert current file or all files (:Reject [all|file|reason])",
   })
 
-  -- Enable native lowercase commands (:accept, :reject, :revise, :todo, :lgcc, :queue, :stop, :gitreview)
+  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :lgcc, :queue, :stop, :gitreview)
   pcall(vim.cmd, [[
     cnoreabbrev <expr> accept (getcmdtype() ==# ':' && getcmdline() ==# 'accept') ? 'Accept' : 'accept'
     cnoreabbrev <expr> reject (getcmdtype() ==# ':' && getcmdline() ==# 'reject') ? 'Reject' : 'reject'
     cnoreabbrev <expr> revise (getcmdtype() ==# ':' && getcmdline() ==# 'revise') ? 'Revise' : 'revise'
+    cnoreabbrev <expr> do (getcmdtype() ==# ':' && getcmdline() ==# 'do') ? 'Do' : 'do'
     cnoreabbrev <expr> todo (getcmdtype() ==# ':' && getcmdline() ==# 'todo') ? 'Todo' : 'todo'
     cnoreabbrev <expr> lgcc (getcmdtype() ==# ':' && getcmdline() ==# 'lgcc') ? 'Lgcc' : 'lgcc'
     cnoreabbrev <expr> queue (getcmdtype() ==# ':' && getcmdline() ==# 'queue') ? 'Queue' : 'queue'
