@@ -1064,8 +1064,132 @@ function M.toggle_queue()
   end
 end
 
---- Accept currently pending target from dir preview or in-line diff
-function M.accept()
+local function is_diffview_open()
+  local ok, lib = pcall(require, "diffview.lib")
+  if not ok or not lib or not lib.get_current_view then return false end
+  return lib.get_current_view() ~= nil
+end
+
+local function get_diffview_current_file()
+  local ok, lib = pcall(require, "diffview.lib")
+  if not ok or not lib or not lib.get_current_view then return nil end
+  local view = lib.get_current_view()
+  if not view then return nil end
+
+  -- 1. Try file panel item at cursor
+  if view.panel and view.panel.get_item_at_cursor then
+    local ok_item, item = pcall(function() return view.panel:get_item_at_cursor() end)
+    if ok_item and item and item.path then
+      return item.path
+    end
+  end
+
+  -- 2. Try current layout files
+  if view.cur_layout then
+    if view.cur_layout.b and view.cur_layout.b.file and view.cur_layout.b.file.path then
+      return view.cur_layout.b.file.path
+    elseif view.cur_layout.a and view.cur_layout.a.file and view.cur_layout.a.file.path then
+      return view.cur_layout.a.file.path
+    end
+  end
+
+  -- 3. Fallback to active buffer name
+  local bname = vim.api.nvim_buf_get_name(0)
+  if bname ~= "" and not bname:match("^diffview://") then
+    return vim.fn.fnamemodify(bname, ":.")
+  end
+
+  return nil
+end
+
+--- Accept currently pending target from dir preview, in-line diff, or visual Diffview
+function M.accept(arg)
+  local mode = vim.trim(arg or ""):lower()
+
+  -- 1. In Diffview:
+  if is_diffview_open() then
+    local root = get_root_dir()
+    local cur_file = get_diffview_current_file()
+
+    -- Accept ALL files across review
+    if mode == "all" or not cur_file then
+      vim.fn.system({ "git", "-C", root, "add", "-A" })
+
+      local author_name = vim.trim(vim.fn.system("git config user.name"))
+      local author_email = vim.trim(vim.fn.system("git config user.email"))
+      if author_name == "" then author_name = "User" end
+      if author_email == "" then author_email = "user@syntra" end
+
+      local unrev = M.get_reviews("unreviewed")
+      local task_label = (unrev[1] and unrev[1].task_id) or "contract-review"
+      local desc_label = (unrev[1] and unrev[1].description) or "Human reviewed changes"
+      local commit_msg = string.format("feat: %s\n\nTask: %s\nApproved-by: %s <%s>\nApproved-at: %s",
+        desc_label, task_label, author_name, author_email, os.date("%Y-%m-%d %H:%M:%S"))
+
+      vim.fn.system({ "git", "-C", root, "commit", "-m", commit_msg })
+
+      for _, r in ipairs(unrev) do
+        r.status = "accepted"
+        r.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
+        local meta_path = root .. "/" .. (r.patch_file:gsub("%.patch$", ".json"))
+        if vim.fn.filereadable(meta_path) == 1 then
+          vim.fn.writefile({ vim.fn.json_encode(r) }, meta_path)
+        end
+      end
+
+      pcall(vim.cmd, "DiffviewClose")
+      vim.cmd("cclose")
+      vim.notify(string.format("✓ Accepted ALL files in review! Committed with Approved-by: %s", author_name), vim.log.levels.INFO)
+      return
+    end
+
+    -- Accept CURRENT file
+    vim.fn.system({ "git", "-C", root, "add", cur_file })
+    pcall(vim.cmd, "DiffviewRefresh")
+
+    -- Check if any unstaged files remain
+    local status_out = vim.fn.system({ "git", "-C", root, "status", "--porcelain" })
+    local has_unstaged = false
+    for line in status_out:gmatch("[^\r\n]+") do
+      if line:sub(2, 2) ~= " " and not line:match("^%s*$") then
+        has_unstaged = true
+        break
+      end
+    end
+
+    if not has_unstaged then
+      local author_name = vim.trim(vim.fn.system("git config user.name"))
+      local author_email = vim.trim(vim.fn.system("git config user.email"))
+      if author_name == "" then author_name = "User" end
+      if author_email == "" then author_email = "user@syntra" end
+
+      local unrev = M.get_reviews("unreviewed")
+      local task_label = (unrev[1] and unrev[1].task_id) or "contract-review"
+      local desc_label = (unrev[1] and unrev[1].description) or "Human reviewed changes"
+      local commit_msg = string.format("feat: %s\n\nTask: %s\nApproved-by: %s <%s>\nApproved-at: %s",
+        desc_label, task_label, author_name, author_email, os.date("%Y-%m-%d %H:%M:%S"))
+
+      vim.fn.system({ "git", "-C", root, "commit", "-m", commit_msg })
+
+      for _, r in ipairs(unrev) do
+        r.status = "accepted"
+        r.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
+        local meta_path = root .. "/" .. (r.patch_file:gsub("%.patch$", ".json"))
+        if vim.fn.filereadable(meta_path) == 1 then
+          vim.fn.writefile({ vim.fn.json_encode(r) }, meta_path)
+        end
+      end
+
+      pcall(vim.cmd, "DiffviewClose")
+      vim.cmd("cclose")
+      vim.notify(string.format("✓ Accepted %s — All files now approved! Committed with Approved-by trailer.", vim.fn.fnamemodify(cur_file, ":t")), vim.log.levels.INFO)
+    else
+      vim.notify(string.format("✓ Accepted %s. (Unstaged files remaining. Use :Accept for next file, or :Accept all for all.)", vim.fn.fnamemodify(cur_file, ":t")), vim.log.levels.INFO)
+    end
+    return
+  end
+
+  -- 2. Dir preview:
   if M.state.dir_preview_win then
     local fn = M.state.on_path_accept
     M.state.on_path_accept = nil
@@ -1083,6 +1207,7 @@ function M.accept()
     return
   end
 
+  -- 3. In-line diff:
   if M.state.pending_diff then
     M.accept_diff()
     return
@@ -1503,13 +1628,59 @@ M.process_response = process_agent_response
 
 --- Reject current location and re-route
 function M.reject(arg)
+  arg = vim.trim(arg or "")
+  local parts = vim.split(arg, "%s+", { trimempty = true })
+  local first = (parts[1] or ""):lower()
+
+  -- 1. In Diffview:
+  if is_diffview_open() then
+    local root = get_root_dir()
+    local cur_file = get_diffview_current_file()
+
+    -- Reject ALL files across review
+    if first == "all" or not cur_file then
+      vim.fn.system({ "git", "-C", root, "restore", "--staged", "." })
+      vim.fn.system({ "git", "-C", root, "restore", "." })
+      vim.fn.system({ "git", "-C", root, "clean", "-fd" })
+
+      local unrev = M.get_reviews("unreviewed")
+      for _, r in ipairs(unrev) do
+        r.status = "rejected"
+        r.rejected_at = os.date("%Y-%m-%d %H:%M:%S")
+        local meta_path = root .. "/" .. (r.patch_file:gsub("%.patch$", ".json"))
+        if vim.fn.filereadable(meta_path) == 1 then
+          vim.fn.writefile({ vim.fn.json_encode(r) }, meta_path)
+        end
+      end
+
+      pcall(vim.cmd, "DiffviewClose")
+      vim.cmd("cclose")
+      vim.notify("✗ Rejected and reverted ALL files across review.", vim.log.levels.INFO)
+      return
+    end
+
+    -- Reject CURRENT file
+    vim.fn.system({ "git", "-C", root, "restore", "--staged", cur_file })
+    vim.fn.system({ "git", "-C", root, "restore", cur_file })
+    pcall(vim.cmd, "DiffviewRefresh")
+
+    local status_out = vim.trim(vim.fn.system({ "git", "-C", root, "status", "--porcelain" }))
+    if status_out == "" then
+      pcall(vim.cmd, "DiffviewClose")
+      vim.cmd("cclose")
+      vim.notify(string.format("✗ Reverted %s. No modified files remain; review closed.", vim.fn.fnamemodify(cur_file, ":t")), vim.log.levels.INFO)
+    else
+      vim.notify(string.format("✗ Reverted %s. (Files remaining in review. Use :Reject all to revert all.)", vim.fn.fnamemodify(cur_file, ":t")), vim.log.levels.INFO)
+    end
+    return
+  end
+
   if M.state.current_review then
     local rev_id = M.state.current_review.id
     M.revert_review(rev_id)
     return
   end
   M.clear_diff()
-  arg = vim.trim(arg or "")
   if arg == "listen" then
     M.record_voice(function(text)
       M.state.last_rejection = text
@@ -2029,79 +2200,13 @@ function M.compile(kind, target_arg)
     }, false, {})
 
   elseif kind == "logic" or kind == "spec" or kind == "specs" then
-    local candidates = {
-      "specs/SPEC.md", "SPEC.md",
-      "specs/specs.json",
-      "specs/src/ProverEngine.lean", "specs/ProverEngine.lean",
-      "specs/contracts.lean",
-      "specs/model.lean",
-    }
-    local found = {}
-    for _, c in ipairs(candidates) do
-      local p = root .. "/" .. c
-      if vim.fn.filereadable(p) == 1 then
-        table.insert(found, { path = c, fullpath = p })
-      end
-    end
-
-    if #found == 0 then
-      local glob_specs = vim.fn.globpath(root .. "/specs", "*.lean", false, true)
-      for _, gp in ipairs(glob_specs) do
-        local rel = vim.fn.fnamemodify(gp, ":.")
-        table.insert(found, { path = rel, fullpath = gp })
-      end
-    end
-
-    if #found == 0 then
-      local new_spec_path = "specs/SPEC.md"
-      jump_to_target({
-        path = new_spec_path,
-        line = 1,
-        col = 1,
-        action = "create",
-        is_new_file = true,
-        content = "# Specification & Logic Verification Contract\n\n## Target Files for LLM Logic Analysis\n- [ ] specify target files here\n",
-        description = "Create new logic specification contract",
-      })
-      vim.notify("Compile logic: Created logic specification stub at specs/SPEC.md. Run :Lgcc to verify.", vim.log.levels.INFO)
-      return
-    end
-
-    local primary = found[1]
-    local target_line = 1
+    vim.notify("Use :Lgcc for logical compilation, and :Specs for specifications.", vim.log.levels.INFO)
     if target_arg ~= "" then
-      local lines = vim.fn.readfile(primary.fullpath)
-      for lnum, line in ipairs(lines) do
-        if line:lower():find(vim.pesc(target_arg:lower())) then
-          target_line = lnum
-          break
-        end
-      end
+      M.lgcc({ target_arg })
     end
-
-    local queue = {}
-    for i, item in ipairs(found) do
-      table.insert(queue, {
-        path = item.path,
-        line = (i == 1 and target_line or 1),
-        col = 1,
-        action = "navigate",
-        description = "Logic specification contract: " .. item.path,
-      })
-    end
-
-    M.state.queue = queue
-    M.state.queue_index = 1
-    update_queue_display(#queue > 1)
-    jump_to_target(queue[1])
-
-    vim.api.nvim_echo({
-      { "● [Compile Logic] ", "ModeMsg" },
-      { string.format("%s:%d", primary.path, target_line), "Directory" },
-      { " (specify analysis targets here; run :Lgcc to verify)", "Comment" },
-    }, false, {})
+    return
   else
-    vim.notify("Usage: :Compile [syntax [target] | logic [spec_name]]", vim.log.levels.INFO)
+    vim.notify("Usage: :Compile [syntax|build] [target] (use :Lgcc for logic, :Specs for specs)", vim.log.levels.INFO)
   end
 end
 
@@ -2536,9 +2641,20 @@ function M.review(subcmd, arg)
 
   -- Default or "list": show all unreviewed implementations
   local unreviewed = M.get_reviews("unreviewed")
-  if #unreviewed == 0 then
+  local git_status = vim.trim(vim.fn.system({ "git", "-C", root, "status", "--porcelain" }))
+  if #unreviewed == 0 and git_status == "" then
     vim.notify("✓ Review: All implementations have been reviewed by a human! (0 pending)", vim.log.levels.INFO)
     vim.cmd("cclose")
+    return
+  end
+
+  if #unreviewed == 0 and git_status ~= "" then
+    if vim.fn.exists(":DiffviewOpen") == 2 then
+      pcall(vim.cmd, "DiffviewOpen")
+      vim.notify("GitReview: Opened visual Diffview for uncommitted changes. Use :Accept [all|file] or :Reject [all|file].", vim.log.levels.INFO)
+    else
+      vim.notify("GitReview: Uncommitted changes pending review.", vim.log.levels.INFO)
+    end
     return
   end
 
@@ -2569,6 +2685,7 @@ function M.review(subcmd, arg)
   -- If diffview is available, open Diffview review tab alongside review queue
   if vim.fn.exists(":DiffviewOpen") == 2 then
     pcall(vim.cmd, "DiffviewOpen")
+    vim.notify("GitReview: Opened visual Diffview. Review file-by-file with :Accept/:Reject, or :Accept all to approve all.", vim.log.levels.INFO)
   end
 end
 
@@ -3202,11 +3319,11 @@ function M.setup()
     complete = function(arglead, cmdline)
       local parts = vim.split(vim.trim(cmdline), "%s+")
       if #parts <= 2 and not cmdline:match("%s+$") then
-        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "syntax", "logic", "build", "spec" })
+        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "syntax", "build" })
       end
       return {}
     end,
-    desc = "Navigate compilation entrypoints (:Compile syntax [target] | :Compile logic [spec])",
+    desc = "Navigate build / compilation entrypoints (:Compile [syntax|build] [target])",
   })
 
 
@@ -3267,13 +3384,25 @@ function M.setup()
     M.toggle_queue()
   end, { desc = "Toggle the bottom query results and task queue (:Queue)" })
 
-  vim.api.nvim_create_user_command("Accept", function()
-    M.accept()
-  end, { desc = "Accept and permanently apply current in-line diff or review (:Accept)" })
+  vim.api.nvim_create_user_command("Accept", function(ctx)
+    M.accept(ctx.args)
+  end, {
+    nargs = "*",
+    complete = function(arglead, cmdline)
+      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "all", "file" })
+    end,
+    desc = "Accept and permanently apply current file or all files (:Accept [all|file])",
+  })
 
   vim.api.nvim_create_user_command("Reject", function(ctx)
     M.reject(ctx.args)
-  end, { nargs = "*", desc = "Reject and revert current in-line diff or review (:Reject [reason])" })
+  end, {
+    nargs = "*",
+    complete = function(arglead, cmdline)
+      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "all", "file" })
+    end,
+    desc = "Reject and revert current file or all files (:Reject [all|file|reason])",
+  })
 
   -- Enable native lowercase commands (:accept, :reject, :revise, :todo, :lgcc, :queue, :stop, :gitreview)
   pcall(vim.cmd, [[
