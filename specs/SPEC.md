@@ -161,3 +161,50 @@ Every commit to the repository must satisfy:
 6. `./vendor/prismpm/target/debug/prismpm --project specs check`: Holographic native library conformance and acceptance root validation.
 7. Pre-push gate: Rejection of direct pushes to `leanDojo` or `prover`, requiring audited pull requests.
 8. GitHub Actions CI: `.github/workflows/ci.yml` runs reviewability audits (task DAG and diff limits), LexLean kernel verification, PrismPM acceptance conformance, and pytest falsification tests on all PRs targeting `leanDojo`.
+
+---
+
+## 6. Multi-Language Documentation Gates & Pre-Commit Pipeline
+
+### Phase 1: Environment Setup
+First, install the framework globally or via your system package manager using the command pip install pre-commit or brew install pre-commit. Next, create a blank configuration file named .pre-commit-config.yaml at the root of your project directory. Finally, run pre-commit install in your terminal to register the pipeline hooks into your local .git/hooks/pre-commit binary structure.
+
+### Phase 2: Configure Language-Specific Gates
+For Rust configuration, add the directive #![deny(missing_docs)] to your root source files like src/lib.rs or src/main.rs. The local pipeline will execute cargo clippy -- -D missing_docs to find undocumented items.
+For Python configuration, install ruff or pydocstyle locally. The pipeline will configure ruff via your pyproject.toml file to actively monitor rule codes D101 for Classes, D102 for Public Methods, and D103 for Public Functions.
+For Lean 4 configuration, explicitly set your compilation parameters directly in your source files. Add the line set_option linter.missingDocs true to your source files to trigger native compiler errors during the execution of lake build.
+For C++ configuration, set up a lightweight Doxyfile or configure a custom clang-tidy ruleset. Ensure the key WARN_IF_UNDOCUMENTED = YES is enabled inside your configuration profile, and pipe the validation output to fail the commit if missing documentation warnings are flagged.
+
+### Phase 3: Centralized Configuration Pipeline
+Write the master setup inside your .pre-commit-config.yaml schema file. Populate this configuration file with target entry blocks that match your project structure:
+```yaml
+repos:
+  - repo: https://github.com
+    rev: v0.3.0
+    hooks:
+      - id: ruff
+        args: [ --select, "D101,D102,D103" ]
+
+  - repo: local
+    hooks:
+      - id: rust-docs
+        name: Rust Missing Docs Check
+        entry: cargo clippy -- -D missing_docs
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+  - repo: local
+    hooks:
+      - id: lean-docs
+        name: Lean 4 Docs Check
+        entry: lake build
+        language: system
+        types: [lean]
+        pass_filenames: false
+```
+
+### Phase 4: Validation and Edge Case Testing
+Perform a positive test passing case by writing fully documented functions across your active languages and executing pre-commit run --all-files to verify everything passes safely.
+Perform a negative test blocking case by intentionally adding a bare function without any documentation comments. Attempt to run git commit to ensure the local pipeline aborts the tracking process and outputs the exact file error line.
+Establish local escape hatches by documenting the usage of the command git commit --no-verify for emergencies when developers need to temporarily bypass checks locally, such as checking out a quick work-in-progress branch.
