@@ -2082,6 +2082,11 @@ function M.search(subcmd, query)
   local is_todo = (mode == "TODO")
   local is_done = (mode == "DONE")
 
+  if is_todo and query == "" and vim.fn.exists(":TodoQuickFix") == 2 then
+    pcall(vim.cmd, "TodoQuickFix keywords=TODO,FIXME,SPEC")
+    return
+  end
+
   local pattern = ""
   if is_todo then
     pattern = "TODO|FIXME|XXX|BUG|\\[ \\]|SPEC\\([^)]*\\)"
@@ -2320,8 +2325,14 @@ function M.revert_review(rev_id)
   -- Refresh review list
   local rem = M.get_reviews("unreviewed")
   if #rem > 0 then
+    if vim.fn.exists(":DiffviewRefresh") == 2 then
+      pcall(vim.cmd, "DiffviewRefresh")
+    end
     M.review("list")
   else
+    if vim.fn.exists(":DiffviewClose") == 2 then
+      pcall(vim.cmd, "DiffviewClose")
+    end
     vim.cmd("cclose")
     vim.notify("✓ Review: All implementations have been reviewed by a human!", vim.log.levels.INFO)
   end
@@ -2359,8 +2370,14 @@ function M.accept_review(rev_id)
   -- Refresh review list
   local rem = M.get_reviews("unreviewed")
   if #rem > 0 then
+    if vim.fn.exists(":DiffviewRefresh") == 2 then
+      pcall(vim.cmd, "DiffviewRefresh")
+    end
     M.review("list")
   else
+    if vim.fn.exists(":DiffviewClose") == 2 then
+      pcall(vim.cmd, "DiffviewClose")
+    end
     vim.cmd("cclose")
     vim.notify("✓ Review: All implementations have been reviewed by a human!", vim.log.levels.INFO)
   end
@@ -2459,6 +2476,11 @@ function M.review(subcmd, arg)
 
   -- Show first unreviewed item
   M.show_review(unreviewed[1])
+
+  -- If diffview is available, open Diffview review tab alongside review queue
+  if vim.fn.exists(":DiffviewOpen") == 2 then
+    pcall(vim.cmd, "DiffviewOpen")
+  end
 end
 
 --- Find and execute in-line TODO/FIXME task in the current buffer or repository

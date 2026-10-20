@@ -47,22 +47,24 @@ cp "$SCRIPT_DIR/bin/agent" "$LOCAL_BIN/agent"
 ln -sf tasks "$LOCAL_BIN/specs"
 chmod +x "$LOCAL_BIN/lgcc" "$LOCAL_BIN/tasks" "$LOCAL_BIN/agent_transcribe.py" "$LOCAL_BIN/agent"
 
-echo "==> [3/4] Checking lazy.nvim and statusline plugins..."
-LAZY_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/lazy/lazy.nvim"
-if [ ! -d "$LAZY_DIR" ]; then
-    echo "--> Bootstrapping lazy.nvim..."
-    git clone --filter=blob:none https://github.com/folke/lazy.nvim.git --branch=stable "$LAZY_DIR" 2>/dev/null || true
-fi
-LUALINE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/lazy/lualine.nvim"
-if [ ! -d "$LUALINE_DIR" ]; then
-    echo "--> Bootstrapping lualine.nvim..."
-    git clone --filter=blob:none https://github.com/nvim-lualine/lualine.nvim.git "$LUALINE_DIR" 2>/dev/null || true
-fi
-DEVICONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/lazy/nvim-web-devicons"
-if [ ! -d "$DEVICONS_DIR" ]; then
-    echo "--> Bootstrapping nvim-web-devicons..."
-    git clone --filter=blob:none https://github.com/nvim-tree/nvim-web-devicons.git "$DEVICONS_DIR" 2>/dev/null || true
-fi
+echo "==> [3/4] Checking lazy.nvim and composable ecosystem plugins..."
+LAZY_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/lazy"
+mkdir -p "$LAZY_DIR"
+clone_plugin() {
+    local name="$1"
+    local url="$2"
+    if [ ! -d "$LAZY_DIR/$name" ]; then
+        echo "--> Bootstrapping $name..."
+        git clone --filter=blob:none "$url" "$LAZY_DIR/$name" 2>/dev/null || true
+    fi
+}
+clone_plugin "lazy.nvim" "https://github.com/folke/lazy.nvim.git"
+clone_plugin "plenary.nvim" "https://github.com/nvim-lua/plenary.nvim.git"
+clone_plugin "lualine.nvim" "https://github.com/nvim-lualine/lualine.nvim.git"
+clone_plugin "nvim-web-devicons" "https://github.com/nvim-tree/nvim-web-devicons.git"
+clone_plugin "todo-comments.nvim" "https://github.com/folke/todo-comments.nvim.git"
+clone_plugin "diffview.nvim" "https://github.com/sindrets/diffview.nvim.git"
+clone_plugin "gitsigns.nvim" "https://github.com/lewis6991/gitsigns.nvim.git"
 
 echo "==> [4/4] Verifying lgcc contract and task pipeline..."
 "$LOCAL_BIN/lgcc" --lint-tasks "$SCRIPT_DIR" > /dev/null
