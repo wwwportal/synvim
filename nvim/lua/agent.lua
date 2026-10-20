@@ -601,7 +601,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     header_text = header_text:sub(1, max_w - 1) .. "┐"
   end
 
-  local footer_text = "└── :accept | :reject (revert) | :revise " .. string.rep("─", math.max(2, max_w - 44)) .. "┘"
+  local footer_text = "└── :Accept | :Reject (revert) | :Revise " .. string.rep("─", math.max(2, max_w - 44)) .. "┘"
   if #footer_text > max_w then
     footer_text = footer_text:sub(1, max_w - 1) .. "┘"
   end
@@ -1534,10 +1534,10 @@ function M.reject(arg)
   M.run(arg, true)
 end
 
---- Run Code Graph logic analysis (:Agent lgcc [args]) with path finding and in-line diff suggestions
+--- Run Code Graph logic analysis (:Lgcc [args]) with path finding and in-line diff suggestions
 function M.lgcc(parts, on_done)
   M.state.origin_win = get_primary_editor_win()
-  local fargs = vim.list_slice(parts, 2)
+  local fargs = (parts and parts[1] == "lgcc") and vim.list_slice(parts, 2) or (parts or {})
   local user_budget = nil
   local spec_path = nil
   local model_override = nil
@@ -1553,7 +1553,7 @@ function M.lgcc(parts, on_done)
       M.state.queue = {}
       M.state.queue_index = 0
       vim.cmd("cclose")
-      vim.notify("Agent lgcc: Cleared diagnostics, diffs, and queue", vim.log.levels.INFO)
+      vim.notify("Lgcc: Cleared diagnostics, diffs, and queue", vim.log.levels.INFO)
       if on_done then on_done(nil) end
       return
     elseif arg == "--flash" or arg == "flash" then
@@ -1588,7 +1588,7 @@ function M.lgcc(parts, on_done)
   end
 
   if target_file == "" or vim.uv.fs_stat(target_file) == nil then
-    vim.notify("Agent lgcc: Target file not found or buffer not saved: " .. (target_file ~= "" and target_file or "[unnamed]"), vim.log.levels.WARN)
+    vim.notify("Lgcc: Target file not found or buffer not saved: " .. (target_file ~= "" and target_file or "[unnamed]"), vim.log.levels.WARN)
     if on_done then on_done(nil) end
     return
   end
@@ -1924,11 +1924,11 @@ local function search_and_rank(query, root)
   return candidates
 end
 
---- Specialized Code Search & Implementation Finder (:Agent find <description|symbol>)
+--- Specialized Code Search & Implementation Finder (:Find <description|symbol>)
 function M.find(query)
   query = vim.trim(query or "")
   if query == "" then
-    vim.notify("Usage: :Agent find <description or symbol name>", vim.log.levels.INFO)
+    vim.notify("Usage: :Find <description or symbol name>", vim.log.levels.INFO)
     return
   end
 
@@ -1960,7 +1960,7 @@ function M.find(query)
   end)
 end
 
---- Specialized Build & Logic Specification Navigator (:Agent compile [syntax|logic] [arg])
+--- Specialized Build & Logic Specification Navigator (:Compile [syntax|logic] [arg])
 function M.compile(kind, target_arg)
   kind = (kind or ""):lower()
   target_arg = vim.trim(target_arg or "")
@@ -2063,7 +2063,7 @@ function M.compile(kind, target_arg)
         content = "# Specification & Logic Verification Contract\n\n## Target Files for LLM Logic Analysis\n- [ ] specify target files here\n",
         description = "Create new logic specification contract",
       })
-      vim.notify("Agent compile logic: Created logic specification stub at specs/SPEC.md. Run :Agent lgcc to verify.", vim.log.levels.INFO)
+      vim.notify("Compile logic: Created logic specification stub at specs/SPEC.md. Run :Lgcc to verify.", vim.log.levels.INFO)
       return
     end
 
@@ -2096,16 +2096,16 @@ function M.compile(kind, target_arg)
     jump_to_target(queue[1])
 
     vim.api.nvim_echo({
-      { "● [Agent Compile Logic] ", "ModeMsg" },
+      { "● [Compile Logic] ", "ModeMsg" },
       { string.format("%s:%d", primary.path, target_line), "Directory" },
-      { " (specify analysis targets here; run :Agent lgcc to verify)", "Comment" },
+      { " (specify analysis targets here; run :Lgcc to verify)", "Comment" },
     }, false, {})
   else
-    vim.notify("Usage: :Agent compile [syntax [target] | logic [spec_name]]", vim.log.levels.INFO)
+    vim.notify("Usage: :Compile [syntax [target] | logic [spec_name]]", vim.log.levels.INFO)
   end
 end
 
---- Specialized Task & Contract Search (:Agent search [TODO|DONE] [query])
+--- Specialized Task & Contract Search (deprecated: use :Todo or :Find)
 function M.search(subcmd, query)
   local mode = (subcmd or ""):upper()
   if mode == "TODO" or mode == "DONE" then
@@ -2691,18 +2691,40 @@ end
 
 --- Find and execute in-line TODO/FIXME task in the current buffer or repository
 function M.run_todo(bufnr, target_arg)
-  -- 1. If target_arg is a string query (e.g. :Agent todo normalize audio)
+  -- 1. If target_arg is a string query (e.g. :Todo normalize audio | :Todo list)
   if type(target_arg) == "string" and vim.trim(target_arg) ~= "" and not tonumber(target_arg) then
     local query = vim.trim(target_arg)
     local all_tasks = scan_repository_tasks()
     if #all_tasks == 0 then
-      vim.notify("Agent: No in-line TODO/FIXME tasks found in repository", vim.log.levels.WARN)
+      vim.notify("Todo: No in-line TODO/FIXME tasks found in repository", vim.log.levels.WARN)
+      return
+    end
+
+    if query:lower() == "list" or query:lower() == "all" then
+      local qf = {}
+      local root = get_root_dir()
+      for _, t in ipairs(all_tasks) do
+        table.insert(qf, {
+          filename = root .. "/" .. t.file,
+          lnum = t.line,
+          col = 1,
+          text = string.format("[%s: Tier %s] %s — %s", t.kind, t.tier, t.task_id, t.description),
+        })
+      end
+      vim.fn.setqflist(qf, "r")
+      vim.fn.setqflist({}, "a", { title = string.format("[All In-line Tasks: %d in repository]", #all_tasks) })
+      vim.cmd("botright copen 6")
+      local cur_w = get_primary_editor_win()
+      if cur_w and vim.api.nvim_win_is_valid(cur_w) then
+        pcall(vim.api.nvim_set_current_win, cur_w)
+      end
+      vim.notify(string.format("Listed %d in-line tasks across repository.", #all_tasks), vim.log.levels.INFO)
       return
     end
 
     local matches = rank_tasks_by_query(all_tasks, query)
     if #matches == 0 then
-      vim.notify(string.format("Agent: No in-line TODO found matching '%s' (%d total tasks in repo)", query, #all_tasks), vim.log.levels.WARN)
+      vim.notify(string.format("Todo: No in-line TODO found matching '%s' (%d total tasks in repo)", query, #all_tasks), vim.log.levels.WARN)
       local qf = {}
       local root = get_root_dir()
       for _, t in ipairs(all_tasks) do
@@ -2845,7 +2867,7 @@ function M.run_todo(bufnr, target_arg)
       if cur_win and vim.api.nvim_win_is_valid(cur_win) then
         pcall(vim.api.nvim_set_current_win, cur_win)
       end
-      vim.notify(string.format("Opened task list (%d tasks pending in repository). Select one or use ':Agent todo <query>'.", #all_tasks), vim.log.levels.INFO)
+      vim.notify(string.format("Opened task list (%d tasks pending in repository). Select one or use ':Todo <query>'.", #all_tasks), vim.log.levels.INFO)
     else
       vim.notify("No in-line TODO/FIXME contracts found in repository.", vim.log.levels.INFO)
     end
@@ -3064,7 +3086,7 @@ end
 function M.run_file(file_arg)
   file_arg = vim.trim(file_arg or "")
   if file_arg == "" then
-    vim.notify("Usage: :Agent file <path/to/file>", vim.log.levels.INFO)
+    vim.notify("Usage: :Todo <path/to/file>", vim.log.levels.INFO)
     return
   end
   local root = get_root_dir()
@@ -3120,77 +3142,15 @@ function M.setup()
     desc = "Route quickfix jumps directly into calling split without splitting",
   })
 
-  vim.api.nvim_create_user_command("Agent", function(ctx)
+  -- :Todo [query | line | list]
+  vim.api.nvim_create_user_command("Todo", function(ctx)
     M.state.origin_win = get_primary_editor_win()
-    local raw_args = vim.trim(ctx.args or "")
-    local parts = vim.split(raw_args, "%s+", { trimempty = true })
-    local sub = (parts[1] or ""):lower()
-
-    if sub == "stop" or sub == "cancel" or sub == "kill" then
-      M.stop()
-    elseif sub == "review" then
-      M.review(parts[2], parts[3])
-    elseif sub == "todo" then
-      local rest = vim.trim(table.concat(vim.list_slice(parts, 2), " "))
-      local lnum = tonumber(parts[2])
-      if lnum and #parts == 2 then
-        M.run_todo(nil, lnum)
-      elseif rest ~= "" then
-        M.run_todo(nil, rest)
-      else
-        M.run_todo(nil, nil)
-      end
-    elseif sub == "file" then
-      M.run_file(parts[2])
-    elseif sub == "find" or sub == "where" or sub == "where's" or sub == "locate" or (sub == "show" and (parts[2] == "me" or parts[2] == "where")) then
-      local query_str = (sub == "find") and table.concat(vim.list_slice(parts, 2), " ") or raw_args
-      M.find(query_str)
-    elseif sub == "compile" then
-      M.compile(parts[2], table.concat(vim.list_slice(parts, 3), " "))
-    elseif sub == "search" then
-      M.search(parts[2], table.concat(vim.list_slice(parts, 3), " "))
-    elseif sub == "listen" then
-      M.record_voice(function(prompt)
-        M.run(prompt, false)
-      end)
-    elseif sub == "lgcc" then
-      M.lgcc(parts)
-    elseif sub == "reject" or sub == "r" then
-      local rest = table.concat(vim.list_slice(parts, 2), " ")
-      M.reject(rest)
-    elseif sub == "accept" or sub == "a" then
-      M.accept()
-    elseif sub == "write" or sub == "revise" or sub == "w" then
-      local rest = table.concat(vim.list_slice(parts, 2), " ")
-      if rest ~= "" then
-        M.clear_diff()
-        M.run(rest, true)
-      else
-        M.write_revision()
-      end
-    elseif sub == "next" or sub == "n" then
-      M.next()
-    elseif sub == "prev" or sub == "p" then
-      M.prev()
-    elseif sub == "queue" or sub == "tasks" or sub == "list" or sub == "q" then
-      M.toggle_queue()
-    elseif sub == "diff" then
-      local action = (parts[2] or ""):lower()
-      if action == "accept" or action == "apply" or action == "a" then
-        M.accept_diff()
-      elseif action == "reject" or action == "cancel" or action == "clear" or action == "r" then
-        M.clear_diff()
-      else
-        vim.notify("Usage: :Agent diff [accept|reject|clear]", vim.log.levels.INFO)
-      end
-    elseif sub == "clear" then
-      M.stop()
-      M.state.queue = {}
-      M.state.queue_index = 0
-      vim.cmd("cclose")
-      vim.notify("Agent: Cleared queue, diffs, and previews", vim.log.levels.INFO)
-    elseif raw_args ~= "" then
-      M.run(raw_args, false)
+    local raw = vim.trim(ctx.args or "")
+    local lnum = tonumber(raw)
+    if lnum then
+      M.run_todo(nil, lnum)
+    elseif raw ~= "" then
+      M.run_todo(nil, raw)
     else
       M.run_todo(nil, nil)
     end
@@ -3199,25 +3159,34 @@ function M.setup()
     complete = function(arglead, cmdline)
       local parts = vim.split(vim.trim(cmdline), "%s+")
       if #parts <= 2 and not cmdline:match("%s+$") then
-        local subcmds = { "review", "todo", "file", "find", "compile", "search", "listen", "lgcc", "diff", "queue", "clear", "stop" }
-        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
-      elseif parts[2] == "compile" then
-        local comp_sub = { "syntax", "logic", "build", "spec" }
-        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, comp_sub)
-      elseif parts[2] == "search" then
-        local search_sub = { "TODO", "DONE" }
-        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, search_sub)
-      elseif parts[2] == "lgcc" then
-        local lgcc_flags = { "clear", "cancel", "stop", "--flash", "--sonnet", "--opencode", "--agy", "--argon", "-s", "--speak", "-b", "--bundle", "--no-bundle", "--budget", "--spec", "-l", "--local" }
-        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, lgcc_flags)
-      elseif parts[2] == "diff" then
-        local diff_sub = { "accept", "reject", "clear" }
-        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, diff_sub)
+        local subs = { "list", "all" }
+        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subs)
       end
       return {}
     end,
-    desc = "Autonomous Silent Code Agent (:Agent [todo|review|file|find|compile|search|lgcc|queue|diff])",
+    desc = "Execute or search in-line TODO task contract (:Todo [query|line|list])",
   })
+
+  -- :Lgcc [clear|flags]
+  vim.api.nvim_create_user_command("Lgcc", function(ctx)
+    M.state.origin_win = get_primary_editor_win()
+    local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
+    M.lgcc(parts)
+  end, {
+    nargs = "*",
+    complete = function(arglead, cmdline)
+      local lgcc_flags = { "clear", "cancel", "stop", "--flash", "--sonnet", "--opencode", "--agy", "--argon", "-s", "--speak", "-b", "--bundle", "--no-bundle", "--budget", "--spec", "-l", "--local" }
+      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, lgcc_flags)
+    end,
+    desc = "Run native logical compiler pipeline (:Lgcc [clear|flags])",
+  })
+
+  -- :Stop
+  vim.api.nvim_create_user_command("Stop", function()
+    M.stop()
+    M.clear_diff()
+    vim.notify("Agent / Lgcc execution stopped and diff previews cleared.", vim.log.levels.INFO)
+  end, { desc = "Stop active agent/lgcc background job and clear previews (:Stop)" })
 
   vim.api.nvim_create_user_command("Find", function(ctx)
     M.state.origin_win = vim.api.nvim_get_current_win()
@@ -3240,21 +3209,6 @@ function M.setup()
     desc = "Navigate compilation entrypoints (:Compile syntax [target] | :Compile logic [spec])",
   })
 
-  vim.api.nvim_create_user_command("Search", function(ctx)
-    M.state.origin_win = vim.api.nvim_get_current_win()
-    local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
-    M.search(parts[1], table.concat(vim.list_slice(parts, 2), " "))
-  end, {
-    nargs = "*",
-    complete = function(arglead, cmdline)
-      local parts = vim.split(vim.trim(cmdline), "%s+")
-      if #parts <= 2 and not cmdline:match("%s+$") then
-        return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "TODO", "DONE" })
-      end
-      return {}
-    end,
-    desc = "Search repository tasks and contracts (:Search TODO [query] | :Search DONE [query])",
-  })
 
   local function review_dispatcher(ctx)
     local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
@@ -3315,17 +3269,22 @@ function M.setup()
 
   vim.api.nvim_create_user_command("Accept", function()
     M.accept()
-  end, { desc = "Accept and permanently apply current in-line diff or review (:accept)" })
+  end, { desc = "Accept and permanently apply current in-line diff or review (:Accept)" })
 
   vim.api.nvim_create_user_command("Reject", function(ctx)
     M.reject(ctx.args)
-  end, { nargs = "*", desc = "Reject and revert current in-line diff or review (:reject)" })
+  end, { nargs = "*", desc = "Reject and revert current in-line diff or review (:Reject [reason])" })
 
-  -- Enable native lowercase commands (:accept, :reject, :revise)
+  -- Enable native lowercase commands (:accept, :reject, :revise, :todo, :lgcc, :queue, :stop, :gitreview)
   pcall(vim.cmd, [[
     cnoreabbrev <expr> accept (getcmdtype() ==# ':' && getcmdline() ==# 'accept') ? 'Accept' : 'accept'
     cnoreabbrev <expr> reject (getcmdtype() ==# ':' && getcmdline() ==# 'reject') ? 'Reject' : 'reject'
     cnoreabbrev <expr> revise (getcmdtype() ==# ':' && getcmdline() ==# 'revise') ? 'Revise' : 'revise'
+    cnoreabbrev <expr> todo (getcmdtype() ==# ':' && getcmdline() ==# 'todo') ? 'Todo' : 'todo'
+    cnoreabbrev <expr> lgcc (getcmdtype() ==# ':' && getcmdline() ==# 'lgcc') ? 'Lgcc' : 'lgcc'
+    cnoreabbrev <expr> queue (getcmdtype() ==# ':' && getcmdline() ==# 'queue') ? 'Queue' : 'queue'
+    cnoreabbrev <expr> stop (getcmdtype() ==# ':' && getcmdline() ==# 'stop') ? 'Stop' : 'stop'
+    cnoreabbrev <expr> gitreview (getcmdtype() ==# ':' && getcmdline() ==# 'gitreview') ? 'GitReview' : 'gitreview'
   ]])
 
   M.get_root_dir = get_root_dir

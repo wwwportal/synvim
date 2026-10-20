@@ -653,15 +653,15 @@ vim.opt.rtp:append("/home/yassine/code/syn-nvim/nvim")
 -- ── Voice Transcription (:Listen) ──
 require("voice").setup()
 
--- ── Autonomous Silent Code Agent (:Agent) ──
+-- ── Autonomous Silent Code Agent ──
 require("agent").setup()
 
--- ── Logical Compiler (:Agent lgcc) ──
+-- ── Logical Compiler (:Lgcc) ──
 require("lgcc")
 
 -- Ergonomic shortcuts to stay in source code
-vim.keymap.set("n", "<leader>l", "<Cmd>Agent lgcc<CR>", { silent = true, desc = "Run Agent lgcc on active buffer" })
-vim.keymap.set("n", "<leader>lx", "<Cmd>Agent lgcc clear<CR>", { silent = true, desc = "Clear Agent lgcc diagnostics" })
+vim.keymap.set("n", "<leader>l", "<Cmd>Lgcc<CR>", { silent = true, desc = "Run Lgcc on active buffer" })
+vim.keymap.set("n", "<leader>lx", "<Cmd>Lgcc clear<CR>", { silent = true, desc = "Clear Lgcc diagnostics" })
 vim.keymap.set("n", "<leader>ls", "<Cmd>Specs<CR>", { silent = true, desc = "Open in-tree specs list" })
 vim.keymap.set("n", "<leader>lg", "<Cmd>Specs graph<CR>", { silent = true, desc = "Open visual specs DAG" })
 vim.keymap.set("n", "<leader>q", "<Cmd>Queue<CR>", { silent = true, desc = "Toggle task/query queue" })
