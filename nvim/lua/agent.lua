@@ -601,7 +601,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     header_text = header_text:sub(1, max_w - 1) .. "┐"
   end
 
-  local footer_text = "└── :GitReview accept (<Leader>a) | reject (<Leader>r) " .. string.rep("─", math.max(2, max_w - 55)) .. "┘"
+  local footer_text = "└── :accept | :reject (revert) | :revise " .. string.rep("─", math.max(2, max_w - 44)) .. "┘"
   if #footer_text > max_w then
     footer_text = footer_text:sub(1, max_w - 1) .. "┘"
   end
@@ -664,9 +664,6 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     table.insert(M.state.pending_diff.bound_keys, lhs)
   end
 
-  bind_buf_key("<Leader>a", function() M.accept_diff() end, "Accept diff")
-  bind_buf_key("<Leader>r", function() M.reject("") end, "Reject diff")
-  bind_buf_key("<Leader>w", function() M.write_revision() end, "Revise diff")
   bind_buf_key("<M-a>", function() M.accept_diff() end, "Accept diff")
   bind_buf_key("<M-r>", function() M.reject("") end, "Reject diff")
   bind_buf_key("<M-w>", function() M.write_revision() end, "Revise diff")
@@ -2504,7 +2501,7 @@ function M.show_review(rev)
   vim.api.nvim_echo({
     { "● [Git Review: ", "ModeMsg" },
     { rev.id, "Directory" },
-    { "] " .. (rev.description or "") .. " — :GitReview accept (<Leader>a) to approve, :GitReview reject (<Leader>r) to revert", "Normal" },
+    { "] " .. (rev.description or "") .. " — :accept to approve, :reject to revert", "Normal" },
   }, false, {})
 end
 
@@ -3058,7 +3055,7 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
     vim.api.nvim_echo({
       { "● [Git Review Pending: ", "ModeMsg" },
       { rev.id, "Directory" },
-      { "] Applied to " .. file_basename .. " — :GitReview accept (<Leader>a) to approve, :GitReview reject (<Leader>r) to revert", "Comment" },
+      { "] Applied to " .. file_basename .. " — :accept to approve, :reject to revert", "Comment" },
     }, false, {})
   end))
 end
@@ -3315,6 +3312,21 @@ function M.setup()
   vim.api.nvim_create_user_command("Queue", function()
     M.toggle_queue()
   end, { desc = "Toggle the bottom query results and task queue (:Queue)" })
+
+  vim.api.nvim_create_user_command("Accept", function()
+    M.accept()
+  end, { desc = "Accept and permanently apply current in-line diff or review (:accept)" })
+
+  vim.api.nvim_create_user_command("Reject", function(ctx)
+    M.reject(ctx.args)
+  end, { nargs = "*", desc = "Reject and revert current in-line diff or review (:reject)" })
+
+  -- Enable native lowercase commands (:accept, :reject, :revise)
+  pcall(vim.cmd, [[
+    cnoreabbrev <expr> accept (getcmdtype() ==# ':' && getcmdline() ==# 'accept') ? 'Accept' : 'accept'
+    cnoreabbrev <expr> reject (getcmdtype() ==# ':' && getcmdline() ==# 'reject') ? 'Reject' : 'reject'
+    cnoreabbrev <expr> revise (getcmdtype() ==# ':' && getcmdline() ==# 'revise') ? 'Revise' : 'revise'
+  ]])
 
   M.get_root_dir = get_root_dir
   M.collect_context = collect_context
