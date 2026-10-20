@@ -2131,20 +2131,20 @@ function M.search(subcmd, query)
 
   local pattern = ""
   if is_todo then
-    pattern = "TODO|FIXME|XXX|BUG|\\[ \\]|SPEC\\([^)]*\\)"
+    pattern = "(#|//|--|/\\*).*\\b(TODO|FIXME|SPEC)\\b"
   elseif is_done then
     pattern = "verified|done|\\[x\\]|\\[X\\]|theorem.*verified"
   else
-    pattern = query ~= "" and vim.pesc(query) or "TODO|SPEC"
+    pattern = query ~= "" and vim.pesc(query) or "(#|//|--|/\\*).*\\b(TODO|SPEC)\\b"
   end
 
-  local grep_cmd = { "git", "-C", root, "grep", "-n", "-I", "-E", "-i", pattern, "--", ":!*.json*", ":!*.log", ":!*.ipynb", ":!*.olean", ":!specs/.lexlean/*", ":!logs/*" }
+  local grep_cmd = { "git", "-C", root, "grep", "-n", "-I", "-E", pattern, "--", ":!*.json*", ":!*.log", ":!*.ipynb", ":!*.olean", ":!specs/.lexlean/*", ":!logs/*" }
   local grep_out = vim.fn.system(grep_cmd)
 
   if vim.v.shell_error ~= 0 or grep_out == "" then
     local rg_bin = vim.fn.exepath("rg")
     if rg_bin ~= "" then
-      grep_cmd = { rg_bin, "-n", "--no-heading", "-i", "-e", pattern, "-g", "!*.json*", "-g", "!*.log", "-g", "!*.ipynb", "-g", "!*.olean", "-g", "!specs/.lexlean/*", "-g", "!logs/*", root }
+      grep_cmd = { rg_bin, "-n", "--no-heading", "-e", pattern, "-g", "!*.json*", "-g", "!*.log", "-g", "!*.ipynb", "-g", "!*.olean", "-g", "!specs/.lexlean/*", "-g", "!logs/*", root }
       grep_out = vim.fn.system(grep_cmd)
     end
   end
@@ -2189,7 +2189,23 @@ function M.search(subcmd, query)
   M.state.queue = results
   M.state.queue_index = 1
   update_queue_display(#results > 1)
-  jump_to_target(results[1])
+
+  if query ~= "" then
+    jump_to_target(results[1])
+  else
+    local qf = {}
+    for _, r in ipairs(results) do
+      table.insert(qf, {
+        filename = root .. "/" .. r.path,
+        lnum = r.line,
+        col = r.col or 1,
+        text = r.description,
+      })
+    end
+    vim.fn.setqflist(qf, "r")
+    vim.fn.setqflist({}, "a", { title = string.format("[Agent Search %s: %d matches]", mode, #results) })
+    vim.cmd("botright copen 6")
+  end
 
   vim.api.nvim_echo({
     { string.format("● [Agent Search %s] ", mode), "ModeMsg" },
@@ -2559,8 +2575,196 @@ function M.review(subcmd, arg)
   end
 end
 
+local function is_todo_comment(line)
+  if not line or type(line) ~= "string" then return false end
+  return line:match("^[ \t]*[#/%-%*%\"]+%s*TODO") ~= nil or
+         line:match("^[ \t]*[#/%-%*%\"]+%s*FIXME") ~= nil or
+         line:match("^[ \t]*[#/%-%*%\"]+%s*SPEC%(") ~= nil or
+         line:match("^[ \t]*[-*]%s*%[%s*%]") ~= nil
+end
+
+local function extract_task_info(line)
+  if not line then return nil end
+  local kind, id, tier, desc = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%(([^|]+)%|%s*tier:([ABC])%)%s*:%s*(.*)$")
+  if kind and id then
+    return { kind = kind, id = id, tier = tier, desc = desc }
+  end
+  kind, id, desc = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%(([^)]+)%)%s*:%s*(.*)$")
+  if kind and id then
+    return { kind = kind, id = id, tier = "U", desc = desc }
+  end
+  kind, desc = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%s*:%s*(.*)$")
+  if kind and (kind == "TODO" or kind == "FIXME" or kind == "SPEC") then
+    return { kind = kind, id = "task", tier = "U", desc = desc }
+  end
+  kind, desc = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%s+(.*)$")
+  if kind and (kind == "TODO" or kind == "FIXME" or kind == "SPEC") then
+    return { kind = kind, id = "task", tier = "U", desc = desc }
+  end
+  return nil
+end
+
+local function scan_repository_tasks()
+  local root = get_root_dir()
+  local pattern = "(#|//|--|/\\*).*\\b(TODO|FIXME|SPEC)\\b"
+  local grep_cmd = { "git", "-C", root, "grep", "-n", "-I", "-E", pattern, "--", ":!*.json*", ":!*.log", ":!*.ipynb", ":!*.olean", ":!specs/.lexlean/*", ":!logs/*" }
+  local out = vim.fn.system(grep_cmd)
+  if vim.v.shell_error ~= 0 or out == "" then
+    local rg_bin = vim.fn.exepath("rg")
+    if rg_bin ~= "" then
+      local rg_cmd = { rg_bin, "-n", "--no-heading", "-e", pattern, "-g", "!*.json*", "-g", "!*.log", "-g", "!*.ipynb", "-g", "!*.olean", "-g", "!specs/.lexlean/*", "-g", "!logs/*", root }
+      out = vim.fn.system(rg_cmd)
+    end
+  end
+
+  local tasks = {}
+  if out and out ~= "" then
+    for line in out:gmatch("[^\r\n]+") do
+      local rel = line:gsub("^" .. vim.pesc(root) .. "/", "")
+      local fpath, lnum, txt = rel:match("^([^:]+):(%d+):(.*)$")
+      if fpath and lnum and txt then
+        local t_info = extract_task_info(txt)
+        if t_info then
+          table.insert(tasks, {
+            file = fpath,
+            line = tonumber(lnum) or 1,
+            task_id = t_info.id,
+            tier = t_info.tier or "U",
+            kind = t_info.kind or "TODO",
+            description = t_info.desc or vim.trim(txt),
+            raw = txt,
+          })
+        end
+      end
+    end
+  end
+  return tasks
+end
+
+local function rank_tasks_by_query(tasks, query)
+  local q_words = vim.split(query:lower(), "%s+", { trimempty = true })
+  local scored = {}
+  for _, t in ipairs(tasks) do
+    local score = 0
+    local tid_low = (t.task_id or ""):lower()
+    local desc_low = (t.description or ""):lower()
+    local file_low = (t.file or ""):lower()
+
+    if tid_low == query:lower() then
+      score = score + 100
+    elseif tid_low:find(vim.pesc(query:lower())) then
+      score = score + 50
+    end
+
+    if desc_low:find(vim.pesc(query:lower())) then
+      score = score + 60
+    end
+
+    for _, w in ipairs(q_words) do
+      if #w >= 2 then
+        if tid_low:find(vim.pesc(w)) then
+          score = score + 30
+        elseif desc_low:find(vim.pesc(w)) then
+          score = score + 20
+        elseif file_low:find(vim.pesc(w)) then
+          score = score + 10
+        end
+      end
+    end
+
+    if score > 0 then
+      if t.tier == "A" then score = score + 5
+      elseif t.tier == "B" then score = score + 3
+      end
+      table.insert(scored, { task = t, score = score })
+    end
+  end
+
+  table.sort(scored, function(a, b)
+    if a.score ~= b.score then return a.score > b.score end
+    return a.task.line < b.task.line
+  end)
+
+  local res = {}
+  for _, item in ipairs(scored) do
+    table.insert(res, item.task)
+  end
+  return res
+end
+
 --- Find and execute in-line TODO/FIXME task in the current buffer or repository
-function M.run_todo(bufnr, target_line)
+function M.run_todo(bufnr, target_arg)
+  -- 1. If target_arg is a string query (e.g. :Agent todo normalize audio)
+  if type(target_arg) == "string" and vim.trim(target_arg) ~= "" and not tonumber(target_arg) then
+    local query = vim.trim(target_arg)
+    local all_tasks = scan_repository_tasks()
+    if #all_tasks == 0 then
+      vim.notify("Agent: No in-line TODO/FIXME tasks found in repository", vim.log.levels.WARN)
+      return
+    end
+
+    local matches = rank_tasks_by_query(all_tasks, query)
+    if #matches == 0 then
+      vim.notify(string.format("Agent: No in-line TODO found matching '%s' (%d total tasks in repo)", query, #all_tasks), vim.log.levels.WARN)
+      local qf = {}
+      local root = get_root_dir()
+      for _, t in ipairs(all_tasks) do
+        table.insert(qf, {
+          filename = root .. "/" .. t.file,
+          lnum = t.line,
+          col = 1,
+          text = string.format("[Tier %s] %s: %s", t.tier, t.task_id, t.description),
+        })
+      end
+      vim.fn.setqflist(qf, "r")
+      vim.fn.setqflist({}, "a", { title = string.format("[All Tasks: %d in repository (none matched '%s')]", #all_tasks, query) })
+      vim.cmd("botright copen 6")
+      local cur_w = get_primary_editor_win()
+      if cur_w and vim.api.nvim_win_is_valid(cur_w) then
+        pcall(vim.api.nvim_set_current_win, cur_w)
+      end
+      return
+    end
+
+    local best = matches[1]
+    local root = get_root_dir()
+    local full_path = root .. "/" .. best.file
+    local qf = {}
+    for _, t in ipairs(matches) do
+      table.insert(qf, {
+        filename = root .. "/" .. t.file,
+        lnum = t.line,
+        col = 1,
+        text = string.format("[%s: Tier %s] %s — %s", t.kind, t.tier, t.task_id, t.description),
+      })
+    end
+    vim.fn.setqflist(qf, "r")
+    vim.fn.setqflist({}, "a", { title = string.format("[Task Matches for '%s' (%d found)]", query, #matches) })
+    vim.cmd("botright copen 6")
+
+    local target_buf = vim.fn.bufadd(full_path)
+    vim.fn.bufload(target_buf)
+    local origin_win = get_primary_editor_win()
+    if origin_win and vim.api.nvim_win_is_valid(origin_win) then
+      vim.api.nvim_set_current_win(origin_win)
+      vim.api.nvim_win_set_buf(origin_win, target_buf)
+      pcall(vim.api.nvim_win_set_cursor, origin_win, { best.line, 0 })
+      pcall(function() vim.cmd("normal! zz") end)
+    end
+
+    vim.api.nvim_echo({
+      { "● [Agent Task Contract: ", "ModeMsg" },
+      { string.format("%s (Tier %s)", best.task_id, best.tier), "Directory" },
+      { string.format("] %s in %s:%d", best.description, best.file, best.line), "Normal" },
+    }, false, {})
+
+    -- Execute the task at that line
+    M.run_todo(target_buf, best.line)
+    return
+  end
+
+  local target_line = (type(target_arg) == "number" and target_arg) or tonumber(target_arg)
+
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     vim.notify("Agent: Invalid buffer", vim.log.levels.WARN)
@@ -2569,7 +2773,7 @@ function M.run_todo(bufnr, target_line)
 
   local filepath = vim.api.nvim_buf_get_name(bufnr)
   if filepath == "" or vim.fn.filereadable(filepath) ~= 1 then
-    M.search("TODO", "")
+    vim.notify("Agent: Current buffer is not a saved file on disk.", vim.log.levels.WARN)
     return
   end
 
@@ -2591,14 +2795,20 @@ function M.run_todo(bufnr, target_line)
 
   -- 1. Check if user specified target_line
   if target_line and target_line > 0 and target_line <= #lines then
-    chosen_line = target_line
-  -- 2. Check if cursor line has TODO or FIXME
-  elseif lines[cursor_line] and (lines[cursor_line]:find("TODO") or lines[cursor_line]:find("FIXME") or lines[cursor_line]:find("SPEC%(")) then
+    if is_todo_comment(lines[target_line]) then
+      chosen_line = target_line
+    else
+      local preview = vim.trim(lines[target_line] or "")
+      vim.notify(string.format("Agent: Line %d in %s is not a TODO comment: '%s'", target_line, vim.fn.fnamemodify(filepath, ":t"), preview:sub(1, 40)), vim.log.levels.WARN)
+      return
+    end
+  -- 2. Check if cursor line is a TODO comment
+  elseif lines[cursor_line] and is_todo_comment(lines[cursor_line]) then
     chosen_line = cursor_line
   else
     -- 3. Search forward from cursor
     for i = cursor_line, #lines do
-      if lines[i]:find("TODO") or lines[i]:find("FIXME") or lines[i]:find("SPEC%(") then
+      if is_todo_comment(lines[i]) then
         chosen_line = i
         break
       end
@@ -2606,7 +2816,7 @@ function M.run_todo(bufnr, target_line)
     -- 4. Search from top of file
     if not chosen_line then
       for i = 1, cursor_line - 1 do
-        if lines[i]:find("TODO") or lines[i]:find("FIXME") or lines[i]:find("SPEC%(") then
+        if is_todo_comment(lines[i]) then
           chosen_line = i
           break
         end
@@ -2614,9 +2824,34 @@ function M.run_todo(bufnr, target_line)
     end
   end
 
+  -- If NO TODO comment was found in current file:
+  -- DO NOT randomly jump to another file!
   if not chosen_line then
-    vim.notify("Agent: No in-line TODO/FIXME found in current file. Searching repository...", vim.log.levels.INFO)
-    M.search("TODO", "")
+    local file_basename = vim.fn.fnamemodify(filepath, ":t")
+    vim.notify(string.format("Agent: No in-line TODO/FIXME comments found in '%s'.", file_basename), vim.log.levels.INFO)
+
+    local all_tasks = scan_repository_tasks()
+    if #all_tasks > 0 then
+      local root = get_root_dir()
+      local qf = {}
+      for _, t in ipairs(all_tasks) do
+        table.insert(qf, {
+          filename = root .. "/" .. t.file,
+          lnum = t.line,
+          col = 1,
+          text = string.format("[%s: Tier %s] %s — %s", t.kind, t.tier, t.task_id, t.description),
+        })
+      end
+      vim.fn.setqflist(qf, "r")
+      vim.fn.setqflist({}, "a", { title = string.format("[Pending Repository Tasks: %d in-line contracts]", #all_tasks) })
+      vim.cmd("botright copen 6")
+      if cur_win and vim.api.nvim_win_is_valid(cur_win) then
+        pcall(vim.api.nvim_set_current_win, cur_win)
+      end
+      vim.notify(string.format("Opened task list (%d tasks pending in repository). Select one or use ':Agent todo <query>'.", #all_tasks), vim.log.levels.INFO)
+    else
+      vim.notify("No in-line TODO/FIXME contracts found in repository.", vim.log.levels.INFO)
+    end
     return
   end
 
@@ -2899,8 +3134,15 @@ function M.setup()
     elseif sub == "review" then
       M.review(parts[2], parts[3])
     elseif sub == "todo" then
+      local rest = vim.trim(table.concat(vim.list_slice(parts, 2), " "))
       local lnum = tonumber(parts[2])
-      M.run_todo(nil, lnum)
+      if lnum and #parts == 2 then
+        M.run_todo(nil, lnum)
+      elseif rest ~= "" then
+        M.run_todo(nil, rest)
+      else
+        M.run_todo(nil, nil)
+      end
     elseif sub == "file" then
       M.run_file(parts[2])
     elseif sub == "find" or sub == "where" or sub == "where's" or sub == "locate" or (sub == "show" and (parts[2] == "me" or parts[2] == "where")) then

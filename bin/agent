@@ -841,6 +841,10 @@ def main():
         else:
             best_task = tasks[0]
         return execute_task(best_task, target_path, args)
+    elif is_code_file:
+        print(f"\n{YELLOW}No in-line TODO or FIXME comments found in {target_path.name}.{RESET}")
+        print(f"{DIM}Add a '# TODO: description' to the code or run 'agent --list' to see tasks across the repository.{RESET}\n")
+        return 0
     else:
         # File is a standalone task description file (e.g. prompt.txt, task.md)
         # Directly execute the task written in the file!
