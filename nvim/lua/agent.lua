@@ -2762,6 +2762,199 @@ local function scan_repository_tasks()
   return tasks
 end
 
+local function get_task_index_path()
+  local root = get_root_dir()
+  local adir = root .. "/.agent"
+  pcall(vim.fn.mkdir, adir, "p")
+  return adir .. "/task_index.json"
+end
+
+local function load_task_index()
+  local path = get_task_index_path()
+  if vim.fn.filereadable(path) == 1 then
+    local ok, content = pcall(vim.fn.readfile, path)
+    if ok and content then
+      local j_ok, data = pcall(vim.fn.json_decode, table.concat(content, "\n"))
+      if j_ok and type(data) == "table" then
+        return data
+      end
+    end
+  end
+  return { index_to_id = {}, id_to_index = {} }
+end
+
+local function save_task_index(index_to_id, id_to_index)
+  local path = get_task_index_path()
+  local data = {
+    updated_at = os.date("%Y-%m-%d %H:%M:%S"),
+    index_to_id = index_to_id,
+    id_to_index = id_to_index,
+  }
+  pcall(vim.fn.writefile, { vim.fn.json_encode(data) }, path)
+end
+
+function M.reindex_tasks()
+  local root = get_root_dir()
+  local lgcc = find_lgcc_bin()
+  local all_tasks = {}
+
+  if lgcc and vim.fn.executable(lgcc) == 1 then
+    local out = vim.fn.system({ lgcc, "--lint-tasks", "--json", root })
+    if vim.v.shell_error == 0 and out and out ~= "" then
+      local ok, data = pcall(vim.fn.json_decode, out)
+      if ok and data and data.tasks then
+        for _, t in ipairs(data.tasks) do
+          table.insert(all_tasks, {
+            task_id = t.id,
+            tier = t.tier or "U",
+            file = t.file or "",
+            line = t.line or 1,
+            description = t.desc or t.description or "",
+            kind = t.kind or "TODO",
+          })
+        end
+      end
+    end
+  end
+
+  if #all_tasks == 0 then
+    all_tasks = scan_repository_tasks()
+  end
+
+  table.sort(all_tasks, function(a, b)
+    if (a.tier or "U") ~= (b.tier or "U") then
+      return (a.tier or "U") < (b.tier or "U")
+    end
+    if (a.file or "") ~= (b.file or "") then
+      return (a.file or "") < (b.file or "")
+    end
+    return (a.line or 0) < (b.line or 0)
+  end)
+
+  local index_to_id = {}
+  local id_to_index = {}
+  for idx, t in ipairs(all_tasks) do
+    if t.task_id and t.task_id ~= "task" then
+      index_to_id[tostring(idx)] = t.task_id
+      id_to_index[t.task_id] = idx
+    end
+  end
+
+  save_task_index(index_to_id, id_to_index)
+  vim.notify(string.format("Reindexed %d tasks across repository (indices 1 to %d).", #all_tasks, #all_tasks), vim.log.levels.INFO)
+  return index_to_id, id_to_index
+end
+
+local function resolve_task_identifier(arg)
+  arg = vim.trim(arg or "")
+  if arg == "" then return nil end
+
+  local num = arg:match("^#?(%d+)$")
+  local index_data = load_task_index()
+
+  if num then
+    local mapped_id = index_data.index_to_id and index_data.index_to_id[num]
+    if mapped_id then
+      return mapped_id
+    end
+    local idx_map = M.reindex_tasks()
+    if idx_map and idx_map[num] then
+      return idx_map[num]
+    end
+  end
+
+  return arg
+end
+
+function M.scaffold_and_run_task(instruction)
+  local cur_buf = vim.api.nvim_get_current_buf()
+  local filepath = vim.api.nvim_buf_get_name(cur_buf)
+  local root = get_root_dir()
+
+  if filepath == "" or vim.bo[cur_buf].buftype ~= "" then
+    local spec_path = root .. "/specs/SPEC.md"
+    if vim.fn.filereadable(spec_path) == 1 then
+      filepath = spec_path
+      cur_buf = vim.fn.bufadd(filepath)
+      vim.fn.bufload(cur_buf)
+      local origin_win = get_primary_editor_win()
+      if origin_win and vim.api.nvim_win_is_valid(origin_win) then
+        vim.api.nvim_set_current_win(origin_win)
+        vim.api.nvim_win_set_buf(origin_win, cur_buf)
+      end
+    else
+      vim.notify("Agent: Cannot scaffold task in an unnamed buffer. Please open a file first.", vim.log.levels.WARN)
+      return
+    end
+  end
+
+  -- Generate clean slug
+  local clean = instruction:gsub("[^%w%s%-_]", "")
+  local words = vim.split(vim.trim(clean), "%s+", { trimempty = true })
+  local slug_parts = {}
+  for i = 1, math.min(#words, 5) do
+    table.insert(slug_parts, words[i]:lower())
+  end
+  local slug = table.concat(slug_parts, "-")
+  if slug == "" then slug = "task-" .. tostring(os.time() % 10000) end
+
+  -- Ensure unique slug
+  local all_tasks = scan_repository_tasks()
+  local existing = {}
+  for _, t in ipairs(all_tasks) do
+    if t.task_id then existing[t.task_id] = true end
+  end
+  local candidate = slug
+  local counter = 2
+  while existing[candidate] do
+    candidate = slug .. "-" .. counter
+    counter = counter + 1
+  end
+  slug = candidate
+
+  -- Format comment line
+  local cs = vim.bo[cur_buf].commentstring
+  local stub_comment
+  if cs and cs:find("%%s") then
+    stub_comment = string.format(cs, string.format("TODO(%s | tier:A): %s", slug, instruction))
+  else
+    local ext = vim.fn.fnamemodify(filepath, ":e")
+    if ext == "lua" then
+      stub_comment = string.format("-- TODO(%s | tier:A): %s", slug, instruction)
+    elseif ext == "sh" or ext == "bash" or ext == "py" or ext == "yaml" or ext == "yml" or ext == "toml" then
+      stub_comment = string.format("# TODO(%s | tier:A): %s", slug, instruction)
+    else
+      stub_comment = string.format("// TODO(%s | tier:A): %s", slug, instruction)
+    end
+  end
+
+  local cur_win = get_primary_editor_win()
+  local cursor_line = 1
+  if cur_win and vim.api.nvim_win_is_valid(cur_win) then
+    cursor_line = vim.api.nvim_win_get_cursor(cur_win)[1]
+  end
+
+  local total_lines = vim.api.nvim_buf_line_count(cur_buf)
+  local insert_idx = math.min(cursor_line, total_lines)
+  vim.api.nvim_buf_set_lines(cur_buf, insert_idx, insert_idx, false, { stub_comment })
+  local target_line = insert_idx + 1
+
+  pcall(function()
+    vim.api.nvim_buf_call(cur_buf, function()
+      vim.cmd("silent! write")
+    end)
+  end)
+
+  if cur_win and vim.api.nvim_win_is_valid(cur_win) then
+    pcall(vim.api.nvim_win_set_cursor, cur_win, { target_line, 0 })
+  end
+
+  M.reindex_tasks()
+
+  vim.notify(string.format("Scaffolded Task [%s] at %s:%d. Executing...", slug, vim.fn.fnamemodify(filepath, ":t"), target_line), vim.log.levels.INFO)
+  M.run_todo(cur_buf, target_line)
+end
+
 local function rank_tasks_by_query(tasks, query)
   local q_words = vim.split(query:lower(), "%s+", { trimempty = true })
   local scored = {}
@@ -3294,37 +3487,84 @@ function M.setup()
 
   local function task_id_complete(arglead, cmdline)
     local all_tasks = scan_repository_tasks()
-    local ids = {}
+    local completions = {}
     local seen = {}
+    local idx_data = load_task_index()
+    if idx_data and idx_data.index_to_id then
+      for i = 1, #all_tasks do
+        local istr = tostring(i)
+        if idx_data.index_to_id[istr] then
+          table.insert(completions, istr)
+        end
+      end
+    end
     for _, t in ipairs(all_tasks) do
       if t.task_id and t.task_id ~= "task" and not seen[t.task_id] then
         seen[t.task_id] = true
-        table.insert(ids, t.task_id)
+        table.insert(completions, t.task_id)
       end
     end
-    table.sort(ids)
-    return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, ids)
+    return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, completions)
   end
 
   local function do_dispatcher(ctx)
     M.state.origin_win = get_primary_editor_win()
     local raw = vim.trim(ctx.args or "")
-    local lnum = tonumber(raw)
-    if lnum then
-      M.run_todo(nil, lnum)
-    elseif raw ~= "" then
-      M.run_todo(nil, raw)
-    else
+    if raw == "" then
       M.run_todo(nil, nil)
+      return
     end
+
+    local resolved_id = resolve_task_identifier(raw)
+    local all_tasks = scan_repository_tasks()
+    local matched_task = nil
+    for _, t in ipairs(all_tasks) do
+      if t.task_id and t.task_id ~= "task" and t.task_id:lower() == resolved_id:lower() then
+        matched_task = t
+        break
+      end
+    end
+
+    if matched_task then
+      local root = get_root_dir()
+      local full_path = (matched_task.file:sub(1, 1) == "/") and matched_task.file or (root .. "/" .. matched_task.file)
+      local target_buf = vim.fn.bufadd(full_path)
+      vim.fn.bufload(target_buf)
+      local origin_win = get_primary_editor_win()
+      if origin_win and vim.api.nvim_win_is_valid(origin_win) then
+        vim.api.nvim_set_current_win(origin_win)
+        vim.api.nvim_win_set_buf(origin_win, target_buf)
+        pcall(vim.api.nvim_win_set_cursor, origin_win, { matched_task.line, 0 })
+        pcall(function() vim.cmd("normal! zz") end)
+      end
+      vim.api.nvim_echo({
+        { "● [Executing Task Contract: ", "ModeMsg" },
+        { string.format("%s (Tier %s)", matched_task.task_id, matched_task.tier), "Directory" },
+        { string.format("] %s in %s:%d", matched_task.description, matched_task.file, matched_task.line), "Normal" },
+      }, false, {})
+      M.run_todo(target_buf, matched_task.line)
+      return
+    end
+
+    if raw:match("^#?%d+$") then
+      vim.notify(string.format("Agent: Task index '%s' not found. Run :Reindex or :Tasks to view available tasks.", raw), vim.log.levels.WARN)
+      return
+    end
+
+    M.scaffold_and_run_task(raw)
   end
 
-  -- :Do <task_id>
+  -- :Do <task_id|index|instruction>
   vim.api.nvim_create_user_command("Do", do_dispatcher, {
     nargs = "*",
     complete = task_id_complete,
-    desc = "Have the agent implement a structured task contract (:Do <task_id>)",
+    desc = "Have the agent implement a task contract or auto-scaffold a new contract (:Do <task_id|idx|instruction>)",
   })
+
+  -- :Reindex
+  vim.api.nvim_create_user_command("Reindex", function()
+    M.reindex_tasks()
+  end, { desc = "Reindex all repository task contracts sequentially 1..N (:Reindex)" })
 
   -- :Todo [task_id]
   vim.api.nvim_create_user_command("Todo", do_dispatcher, {
@@ -3437,13 +3677,14 @@ function M.setup()
     desc = "Reject and revert current file or all files (:Reject [all|file|reason])",
   })
 
-  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :lgcc, :queue, :stop, :gitreview)
+  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :reindex, :lgcc, :queue, :stop, :gitreview)
   pcall(vim.cmd, [[
     cnoreabbrev <expr> accept (getcmdtype() ==# ':' && getcmdline() ==# 'accept') ? 'Accept' : 'accept'
     cnoreabbrev <expr> reject (getcmdtype() ==# ':' && getcmdline() ==# 'reject') ? 'Reject' : 'reject'
     cnoreabbrev <expr> revise (getcmdtype() ==# ':' && getcmdline() ==# 'revise') ? 'Revise' : 'revise'
     cnoreabbrev <expr> do (getcmdtype() ==# ':' && getcmdline() ==# 'do') ? 'Do' : 'do'
     cnoreabbrev <expr> todo (getcmdtype() ==# ':' && getcmdline() ==# 'todo') ? 'Todo' : 'todo'
+    cnoreabbrev <expr> reindex (getcmdtype() ==# ':' && getcmdline() ==# 'reindex') ? 'Reindex' : 'reindex'
     cnoreabbrev <expr> lgcc (getcmdtype() ==# ':' && getcmdline() ==# 'lgcc') ? 'Lgcc' : 'lgcc'
     cnoreabbrev <expr> queue (getcmdtype() ==# ':' && getcmdline() ==# 'queue') ? 'Queue' : 'queue'
     cnoreabbrev <expr> stop (getcmdtype() ==# ':' && getcmdline() ==# 'stop') ? 'Stop' : 'stop'
@@ -3458,6 +3699,7 @@ function M.setup()
   M.review = M.review
   M.git_review = M.review
   M.review_command = M.review
+  M.reindex = M.reindex_tasks
 end
 
 M.get_root_dir = get_root_dir
@@ -3468,5 +3710,7 @@ M.search = M.search
 M.review = M.review
 M.git_review = M.review
 M.review_command = M.review
+M.reindex = M.reindex_tasks
+M.scaffold_and_run_task = M.scaffold_and_run_task
 
 return M

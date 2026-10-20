@@ -328,13 +328,35 @@ local function show_repo_tasks(repo_path, origin_win, target_task_id)
   local repo_name = vim.fn.fnamemodify(root, ":t"):gsub("^%l", string.upper)
   if repo_name == "" or repo_name == "." then repo_name = "Repository" end
 
-  -- Sort: Tier A first, then Tier B, then Tier C
+  -- Sort: Tier A first, then Tier B, then Tier C, then by file and line
   table.sort(tasks, function(a, b)
-    if a.tier ~= b.tier then
-      return a.tier < b.tier
+    if (a.tier or "U") ~= (b.tier or "U") then
+      return (a.tier or "U") < (b.tier or "U")
     end
-    return a.id < b.id
+    if (a.file or "") ~= (b.file or "") then
+      return (a.file or "") < (b.file or "")
+    end
+    return (a.line or 0) < (b.line or 0)
   end)
+
+  local index_to_id = {}
+  local id_to_index = {}
+  for idx, t in ipairs(tasks) do
+    if t.id and t.id ~= "task" then
+      index_to_id[tostring(idx)] = t.id
+      id_to_index[t.id] = idx
+    end
+  end
+
+  local adir = root .. "/.agent"
+  pcall(vim.fn.mkdir, adir, "p")
+  local index_file = adir .. "/task_index.json"
+  local idx_data = {
+    updated_at = os.date("%Y-%m-%d %H:%M:%S"),
+    index_to_id = index_to_id,
+    id_to_index = id_to_index,
+  }
+  pcall(vim.fn.writefile, { vim.fn.json_encode(idx_data) }, index_file)
 
   local target_idx = nil
   local qf = {}
@@ -364,7 +386,7 @@ local function show_repo_tasks(repo_path, origin_win, target_task_id)
     table.insert(qf, {
       filename = fullpath,
       lnum = t.line,
-      text = string.format("%s[Tier %s] %s%s%s: %s%s", maturity_badge, t.tier, t.id, deps_str, blocks_str, t.desc or t.description or "", proof_note),
+      text = string.format("#%d %s[Tier %s] %s%s%s: %s%s", idx, maturity_badge, t.tier, t.id, deps_str, blocks_str, t.desc or t.description or "", proof_note),
       type = (t.maturity == "INFORMAL" and "W") or (t.maturity == "DRAFT" and "I") or "E",
     })
   end
@@ -1320,7 +1342,16 @@ function M.tasks(args)
     return
   end
 
-  local target = args:lower()
+  local target = vim.trim(args or ""):lower()
+  if target == "reindex" then
+    local ok, agent = pcall(require, "agent")
+    if ok and agent.reindex_tasks then
+      agent.reindex_tasks()
+    end
+    show_repo_tasks(vim.fn.getcwd(), origin_win)
+    return
+  end
+
   if target == "tw" or target == "taskwarrior" then
     vim.notify("specs: Taskwarrior has been phased out in favor of in-tree source specifications (:Specs).", vim.log.levels.WARN)
     return
@@ -1337,14 +1368,14 @@ end
 
 local function task_complete(arglead, cmdline)
   local parts = vim.split(vim.trim(cmdline), "%s+")
-  local subcmds = { "graph", "dag", "tree", "add", "fix", "prover", "syn", "syn-nvim" }
+  local subcmds = { "graph", "dag", "tree", "add", "fix", "reindex", "prover", "syn", "synvim", "syn-nvim" }
   if #parts == 2 and not cmdline:match("%s$") then
     return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
   elseif (#parts == 2 and cmdline:match("%s$") and parts[2] == "add") or (#parts == 3 and parts[2] == "add") then
     local add_prefixes = { "TODO:", "FIXME:", "SPEC:", "spec" }
     return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, add_prefixes)
   elseif (#parts >= 2 and (parts[2] == "graph" or parts[2] == "dag" or parts[2] == "tree")) then
-    local graph_opts = { "--reverse", "--all", "prover", "syn", "syn-nvim" }
+    local graph_opts = { "--reverse", "--all", "prover", "syn", "synvim", "syn-nvim" }
     return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, graph_opts)
   end
   return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
