@@ -1010,7 +1010,11 @@ setup_agent_qf_keymaps = function(origin_win, qf_buf)
   for _, w in ipairs(vim.api.nvim_list_wins()) do
     if vim.api.nvim_win_get_buf(w) == qf_buf then
       pcall(function()
-        vim.wo[w].statusline = "%#AgentDiffHeader# ● RESULTS %#AgentDiffMenuSel# [<CR>] Jump (Stays Open) %#AgentDiffHeader#  %#AgentDiffMenuBtn# [<Tab>] Focus File %#AgentDiffHeader#  %#AgentDiffMenuBtn# [o] Jump & Close %#AgentDiffHeader#  %#Normal# [q] Close %="
+        if M.state.is_tasks_list then
+          vim.wo[w].statusline = "%#AgentDiffHeader# ● TASKS %#AgentDiffMenuSel# [<CR>] Jump %#AgentDiffHeader#  %#AgentDiffMenuBtn# [o] Jump & Close %#AgentDiffHeader#  %#AgentDiffMenuBtn# [<Tab>] Switch %#AgentDiffHeader#  %#Normal# [q] Close %="
+        else
+          vim.wo[w].statusline = "%#AgentDiffHeader# ● RESULTS %#AgentDiffMenuSel# [<CR>] Jump (Stays Open) %#AgentDiffHeader#  %#AgentDiffMenuBtn# [<Tab>] Focus File %#AgentDiffHeader#  %#AgentDiffMenuBtn# [o] Jump & Close %#AgentDiffHeader#  %#Normal# [q] Close %="
+        end
       end)
     end
   end
@@ -1070,7 +1074,9 @@ setup_agent_qf_keymaps = function(origin_win, qf_buf)
     end
 
     jump_to_target(cur_item, editor_win)
-    update_queue_display(false)
+    if not M.state.is_tasks_list then
+      update_queue_display(false)
+    end
 
     -- If NOT closing quickfix, LEAVE RESULTS OPEN and keep cursor in quickfix for continuous browsing!
     if not close_qf then
@@ -1098,14 +1104,34 @@ setup_agent_qf_keymaps = function(origin_win, qf_buf)
   end, { buffer = qf_buf, silent = true, noremap = true, desc = "Jump to task and close bottom pane" })
 
   vim.keymap.set("n", "a", function()
+    if M.state.is_tasks_list then
+      vim.notify("Tasks: To accept a review, run :Tasks accept <id>", vim.log.levels.INFO)
+      return
+    end
     M.accept_diff()
   end, { buffer = qf_buf, silent = true, noremap = true, desc = "Accept current diff" })
 
   vim.keymap.set("n", "r", function()
+    if M.state.is_tasks_list then
+      vim.notify("Tasks: To reject a review, run :Tasks reject <id>", vim.log.levels.INFO)
+      return
+    end
     M.reject("")
   end, { buffer = qf_buf, silent = true, noremap = true, desc = "Reject current diff" })
 
   vim.keymap.set("n", "w", function()
+    if M.state.is_tasks_list then
+      local idx = vim.fn.line(".")
+      local qf_list = vim.fn.getqflist()
+      local item = qf_list[idx]
+      local t_id = item and item.text and item.text:match("%[[%w_%-]+%]%s*([%w_%-]+)")
+      if t_id then
+        M.revise_task(t_id)
+      else
+        M.revise_task(tostring(idx))
+      end
+      return
+    end
     M.write_revision()
   end, { buffer = qf_buf, silent = true, noremap = true, desc = "Revise instruction in natural language" })
 
@@ -1133,6 +1159,7 @@ end
 
 --- Populate the Neovim Quickfix queue unified with :Tasks
 update_queue_display = function(show_window)
+  M.state.is_tasks_list = false
   local qf = {}
   local root = get_root_dir()
   for idx, item in ipairs(M.state.queue) do
@@ -1224,6 +1251,23 @@ function M.prev()
   }, false, {})
 end
 
+--- Format in-line task as a concise, minimal summary line for quickfix split
+local function format_task_summary(t, idx)
+  local label = (t.task_id and t.task_id ~= "task") and t.task_id or ""
+  local status_str = string.format("[%s]", t.status or "TODO")
+  if label ~= "" then
+    return string.format("#%d %s %s", idx, status_str, label)
+  end
+  local raw = t.description or t.raw or ""
+  local short_desc = raw:gsub("^[ \t]*[#/%-%*%\"]+%s*", ""):gsub("^[A-Z]+%(?[^%)]*%)?:?%s*", "")
+  short_desc = vim.trim(short_desc:gsub("[\r\n]+.*$", ""))
+  if #short_desc > 35 then
+    short_desc = short_desc:sub(1, 32) .. "..."
+  end
+  if short_desc == "" then short_desc = "task" end
+  return string.format("#%d %s %s", idx, status_str, short_desc)
+end
+
 --- Display repository in-tree tasks agenda in a bottom split
 function M.show_tasks()
   local root = get_root_dir()
@@ -1246,27 +1290,27 @@ function M.show_tasks()
   local qf_list = {}
   local task_queue = {}
   for idx, t in ipairs(tasks) do
-    local label = (t.task_id and t.task_id ~= "task") and t.task_id or ""
-    local tier_str = (t.tier and t.tier ~= "U") and string.format("[Tier %s] ", t.tier) or ""
-    local status_str = string.format("[%s] ", t.status or "TODO")
-    local text = label ~= "" and string.format("%s%s%s: %s", tier_str, status_str, label, t.description) or string.format("%s%s%s", tier_str, status_str, t.description)
+    local text = format_task_summary(t, idx)
     local abs_path = (t.file:match("^/") and t.file) or (root .. "/" .. t.file)
+    local rel_path = t.file:gsub("^" .. vim.pesc(root) .. "/", ""):gsub("^/+", "")
+    local bufnr = vim.fn.bufadd(abs_path)
     table.insert(qf_list, {
-      filename = abs_path,
+      bufnr = bufnr,
+      filename = rel_path,
       lnum = t.line,
-      col = 1,
       text = text,
     })
     table.insert(task_queue, {
-      path = t.file,
+      path = abs_path,
       line = t.line,
-      action = text,
+      action = "navigate",
       task_id = t.task_id,
       tier = t.tier,
       description = t.description,
     })
   end
 
+  M.state.is_tasks_list = true
   M.state.queue = task_queue
   M.state.queue_index = 1
   M.state.origin_win = get_primary_editor_win()
@@ -2422,13 +2466,20 @@ function M.list_reviews_qf()
   for idx, r in ipairs(all_reviews) do
     local f = r.target_file or r.file or r.filepath or ""
     local full = (f:match("^/") and f) or (root .. "/" .. f)
+    local rel_f = f:gsub("^" .. vim.pesc(root) .. "/", ""):gsub("^/+", "")
     local status_label = (r.status == "accepted") and "[APPROVED]" or ((r.status == "rejected") and "[REJECTED]" or "[PENDING]")
     local item_type = (r.status == "accepted") and "I" or ((r.status == "rejected") and "E" or "W")
-    local text = string.format("#%d %s ID: %s | Task: %s | %s", idx, status_label, r.id or "unknown", r.task_id or "task", r.description or "")
+    local d = vim.trim(r.description or "")
+    if #d > 35 then d = d:sub(1, 32) .. "..." end
+    local text = string.format("#%d %s ID: %s (%s)", idx, status_label, r.id or "unknown", r.task_id or "task")
+    if d ~= "" and d ~= r.task_id then
+      text = text .. " — " .. d
+    end
+    local bufnr = vim.fn.bufadd(full)
     table.insert(qf_list, {
-      filename = full,
+      bufnr = bufnr,
+      filename = rel_f,
       lnum = r.start_line or 1,
-      col = 1,
       text = text,
       type = item_type,
     })
@@ -2958,19 +3009,25 @@ function M.run_todo(bufnr, target_arg)
     if query:lower() == "list" or query:lower() == "all" then
       local qf = {}
       local root = get_root_dir()
-      for _, t in ipairs(all_tasks) do
+      for idx, t in ipairs(all_tasks) do
+        local abs_path = (t.file:match("^/") and t.file) or (root .. "/" .. t.file)
+        local rel_path = t.file:gsub("^" .. vim.pesc(root) .. "/", ""):gsub("^/+", "")
+        local bufnr = vim.fn.bufadd(abs_path)
         table.insert(qf, {
-          filename = root .. "/" .. t.file,
+          bufnr = bufnr,
+          filename = rel_path,
           lnum = t.line,
-          col = 1,
-          text = string.format("[%s: Tier %s] %s — %s", t.kind, t.tier, t.task_id, t.description),
+          text = format_task_summary(t, idx),
         })
       end
+      M.state.is_tasks_list = true
       vim.fn.setqflist(qf, "r")
-      vim.fn.setqflist({}, "a", { title = string.format("[All In-line Tasks: %d in repository]", #all_tasks) })
-      vim.cmd("botright copen 6")
+      vim.fn.setqflist({}, "a", { title = string.format("Tasks: %d items (%s)", #all_tasks, vim.fn.fnamemodify(root, ":t")) })
+      vim.cmd("botright copen 10")
       local cur_w = get_primary_editor_win()
+      local qf_win = vim.api.nvim_get_current_win()
       if cur_w and vim.api.nvim_win_is_valid(cur_w) then
+        setup_agent_qf_keymaps(cur_w, vim.api.nvim_win_get_buf(qf_win))
         pcall(vim.api.nvim_set_current_win, cur_w)
       end
       vim.notify(string.format("Listed %d in-line tasks across repository.", #all_tasks), vim.log.levels.INFO)
@@ -3008,19 +3065,25 @@ function M.run_todo(bufnr, target_arg)
       vim.notify(string.format("Todo: No in-line TODO found matching '%s' (%d total tasks in repo)", query, #all_tasks), vim.log.levels.WARN)
       local qf = {}
       local root = get_root_dir()
-      for _, t in ipairs(all_tasks) do
+      for idx, t in ipairs(all_tasks) do
+        local abs_path = (t.file:match("^/") and t.file) or (root .. "/" .. t.file)
+        local rel_path = t.file:gsub("^" .. vim.pesc(root) .. "/", ""):gsub("^/+", "")
+        local bufnr = vim.fn.bufadd(abs_path)
         table.insert(qf, {
-          filename = root .. "/" .. t.file,
+          bufnr = bufnr,
+          filename = rel_path,
           lnum = t.line,
-          col = 1,
-          text = string.format("[Tier %s] %s: %s", t.tier, t.task_id, t.description),
+          text = format_task_summary(t, idx),
         })
       end
+      M.state.is_tasks_list = true
       vim.fn.setqflist(qf, "r")
-      vim.fn.setqflist({}, "a", { title = string.format("[All Tasks: %d in repository (none matched '%s')]", #all_tasks, query) })
-      vim.cmd("botright copen 6")
+      vim.fn.setqflist({}, "a", { title = string.format("Tasks: %d items (none matched '%s')", #all_tasks, query) })
+      vim.cmd("botright copen 10")
       local cur_w = get_primary_editor_win()
+      local qf_win = vim.api.nvim_get_current_win()
       if cur_w and vim.api.nvim_win_is_valid(cur_w) then
+        setup_agent_qf_keymaps(cur_w, vim.api.nvim_win_get_buf(qf_win))
         pcall(vim.api.nvim_set_current_win, cur_w)
       end
       return
@@ -3030,17 +3093,21 @@ function M.run_todo(bufnr, target_arg)
     local root = get_root_dir()
     local full_path = root .. "/" .. best.file
     local qf = {}
-    for _, t in ipairs(matches) do
+    for idx, t in ipairs(matches) do
+      local abs_path = (t.file:match("^/") and t.file) or (root .. "/" .. t.file)
+      local rel_path = t.file:gsub("^" .. vim.pesc(root) .. "/", ""):gsub("^/+", "")
+      local bufnr = vim.fn.bufadd(abs_path)
       table.insert(qf, {
-        filename = root .. "/" .. t.file,
+        bufnr = bufnr,
+        filename = rel_path,
         lnum = t.line,
-        col = 1,
-        text = string.format("[%s: Tier %s] %s — %s", t.kind, t.tier, t.task_id, t.description),
+        text = format_task_summary(t, idx),
       })
     end
+    M.state.is_tasks_list = true
     vim.fn.setqflist(qf, "r")
-    vim.fn.setqflist({}, "a", { title = string.format("[Task Matches for '%s' (%d found)]", query, #matches) })
-    vim.cmd("botright copen 6")
+    vim.fn.setqflist({}, "a", { title = string.format("Tasks: %d matches for '%s'", #matches, query) })
+    vim.cmd("botright copen 10")
 
     local target_buf = vim.fn.bufadd(full_path)
     vim.fn.bufload(target_buf)
@@ -3134,18 +3201,24 @@ function M.run_todo(bufnr, target_arg)
     if #all_tasks > 0 then
       local root = get_root_dir()
       local qf = {}
-      for _, t in ipairs(all_tasks) do
+      for idx, t in ipairs(all_tasks) do
+        local abs_path = (t.file:match("^/") and t.file) or (root .. "/" .. t.file)
+        local rel_path = t.file:gsub("^" .. vim.pesc(root) .. "/", ""):gsub("^/+", "")
+        local bufnr = vim.fn.bufadd(abs_path)
         table.insert(qf, {
-          filename = root .. "/" .. t.file,
+          bufnr = bufnr,
+          filename = rel_path,
           lnum = t.line,
-          col = 1,
-          text = string.format("[%s: Tier %s] %s — %s", t.kind, t.tier, t.task_id, t.description),
+          text = format_task_summary(t, idx),
         })
       end
+      M.state.is_tasks_list = true
       vim.fn.setqflist(qf, "r")
-      vim.fn.setqflist({}, "a", { title = string.format("[Pending Repository Tasks: %d in-line contracts]", #all_tasks) })
-      vim.cmd("botright copen 6")
+      vim.fn.setqflist({}, "a", { title = string.format("Tasks: %d items (%s)", #all_tasks, vim.fn.fnamemodify(root, ":t")) })
+      vim.cmd("botright copen 10")
+      local qf_win = vim.api.nvim_get_current_win()
       if cur_win and vim.api.nvim_win_is_valid(cur_win) then
+        setup_agent_qf_keymaps(cur_win, vim.api.nvim_win_get_buf(qf_win))
         pcall(vim.api.nvim_set_current_win, cur_win)
       end
       vim.notify(string.format("Opened task list (%d tasks pending in repository). Select one or use ':Tasks start <id>'.", #all_tasks), vim.log.levels.INFO)
