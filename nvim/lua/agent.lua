@@ -3330,10 +3330,17 @@ function M.setup()
     end
 
     local rel_path = vim.fn.fnamemodify(filepath, ":.")
+    local root = get_root_dir()
+    local dup_notice = ""
+    local dup_candidates = search_and_rank(arg_str, root)
+    if #dup_candidates > 0 and dup_candidates[1].score >= 260 then
+      dup_notice = string.format(" [Note: '%s' exists in %s:%d]", dup_candidates[1].description, dup_candidates[1].path, dup_candidates[1].line)
+    end
+
     vim.api.nvim_echo({
       { "● [Task Added] ", "ModeMsg" },
       { string.format("%s:%d", rel_path, new_line_num), "Directory" },
-      { string.format(" — %s (Run :Do to implement)", task_line_str:gsub("^%s*", "")), "Normal" },
+      { string.format(" — %s%s (Run :Do to implement)", task_line_str:gsub("^%s*", ""), dup_notice), "Normal" },
     }, false, {})
   end
 
@@ -3520,6 +3527,7 @@ function M.setup()
   }
 
   vim.api.nvim_create_user_command("GitReview", review_dispatcher, review_cmd_opts)
+  vim.api.nvim_create_user_command("Review", review_dispatcher, review_cmd_opts)
 
   -- If :Git command does not exist, provide :Git with review support
   if vim.fn.exists(":Git") ~= 2 then
@@ -3598,6 +3606,7 @@ function M.setup()
     cnoreabbrev <expr> lgcc (getcmdtype() ==# ':' && getcmdline() ==# 'lgcc') ? 'Lgcc' : 'lgcc'
     cnoreabbrev <expr> queue (getcmdtype() ==# ':' && getcmdline() ==# 'queue') ? 'Queue' : 'queue'
     cnoreabbrev <expr> stop (getcmdtype() ==# ':' && getcmdline() ==# 'stop') ? 'Stop' : 'stop'
+    cnoreabbrev <expr> review (getcmdtype() ==# ':' && getcmdline() ==# 'review') ? 'Review' : 'review'
     cnoreabbrev <expr> gitreview (getcmdtype() ==# ':' && getcmdline() ==# 'gitreview') ? 'GitReview' : 'gitreview'
   ]])
 
