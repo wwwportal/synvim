@@ -1,6 +1,0 @@
-name = "SyntraEngine"
-version = "0.1.0"
-defaultTargets = ["SyntraEngine"]
-
-[[lean_lib]]
-name = "SyntraEngine"

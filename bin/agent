@@ -77,24 +77,6 @@ def find_git_root(start_dir: Optional[Path] = None) -> Path:
     return (start_dir or Path.cwd()).resolve()
 
 
-def find_lgcc_bin() -> Optional[str]:
-    script_dir = Path(__file__).resolve().parent
-    root = find_git_root()
-    candidates = [
-        script_dir / "lgcc",
-        root / "bin" / "lgcc",
-        Path.home() / ".local" / "bin" / "lgcc",
-        Path.home() / ".config" / "nvim" / "bin" / "lgcc",
-    ]
-    for c in candidates:
-        if c.is_file() and os.access(c, os.X_OK):
-            return str(c)
-    which = shutil.which("lgcc")
-    if which:
-        return which
-    return None
-
-
 def get_active_nvim_socket() -> Optional[str]:
     runtime_dir = f"/run/user/{os.getuid()}"
     if not os.path.exists(runtime_dir):
@@ -355,18 +337,6 @@ def execute_task(task: Dict[str, Any], file_path: Path, args: argparse.Namespace
     task_desc = task["description"]
     task_id = task.get("id", "task")
     tier = task.get("tier", "U")
-
-    # Gather Code Graph IR via lgcc if available
-    ir_context = ""
-    lgcc_bin = find_lgcc_bin()
-    if lgcc_bin and not args.dry_run:
-        try:
-            res = subprocess.run([lgcc_bin, "--route", str(file_path), "--budget", str(args.budget), "--format", "ir"],
-                                 capture_output=True, text=True, timeout=10)
-            if res.returncode == 0 and res.stdout.strip():
-                ir_context = f"\nROUTED CODE GRAPH CONTEXT & SYMBOL CONTRACTS:\n{res.stdout}\n"
-        except Exception:
-            pass
 
     # Numbered source context
     numbered_source = []

@@ -1,4 +1,4 @@
-name: Syntra CI & Formal Verification
+name: synvim CI
 
 on:
   push:
@@ -7,85 +7,31 @@ on:
     branches: [main]
 
 concurrency:
-  group: syntra-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: synvim-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  task-and-spec-verification:
-    name: Task Graph & PrismPM Verification
+  config-verification:
+    name: Verify Neovim Configuration & Setup
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Checkout PrismPM SDK
-        uses: actions/checkout@v4
-        with:
-          repository: UOR-Foundation/PrismPM
-          ref: 09f8b916023cbb7db945b8e8267eebba25965f26
-          path: vendor/prismpm
-
-      - name: Apply Local Execution Patch to PrismPM Action
+      - name: Install Neovim
         run: |
-          git -C vendor/prismpm apply $GITHUB_WORKSPACE/.github/patches/prismpm-action.patch
+          sudo add-apt-repository ppa:neovim-ppa/unstable -y
+          sudo apt-get update
+          sudo apt-get install -y neovim
 
-      - name: Set up Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo Dependencies & Build Targets
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            vendor/prismpm/target/
-            vendor/prismpm/vendor/lexlean/target/
-          key: ${{ runner.os }}-cargo-prismpm-${{ hashFiles('vendor/prismpm/Cargo.lock', 'vendor/prismpm/vendor/lexlean/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-prismpm-
-
-      - name: Install Elan and Lean 4
+      - name: Run Installer Script
         run: |
-          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> $GITHUB_PATH
-          source "$HOME/.elan/env"
-          elan toolchain install leanprover/lean4:v4.32.1
-          elan default leanprover/lean4:v4.32.1
-          lean --version
+          ./setup.sh
 
-      - name: Build LexLean & PrismPM Binaries
+      - name: Verify Neovim Startup & Core Commands
         run: |
-          cargo build --manifest-path vendor/prismpm/vendor/lexlean/Cargo.toml --bin lexlean --ignore-rust-version
-          cargo build --manifest-path vendor/prismpm/Cargo.toml --bin prismpm --ignore-rust-version
-          mkdir -p ~/.cargo/bin
-          cp vendor/prismpm/vendor/lexlean/target/debug/lexlean ~/.cargo/bin/
-          cp vendor/prismpm/target/debug/prismpm ~/.cargo/bin/
-
-      - name: Run PrismPM Official Action Spec Check
-        uses: ./vendor/prismpm/action
-        with:
-          sdk-image: local
-          command: check
-          context: specs
-
-      - name: Build lgcc Compiler
-        run: |
-          make all
-
-      - name: Run Task Graph Linter
-        run: |
-          ./bin/lgcc --lint-tasks
-
-      - name: Run LexLean / PrismPM Proof Replay
-        run: |
-          ./bin/lgcc --verify-specs
-
-      - name: Verify Code Graph Context Router
-        run: |
-          ./bin/lgcc --route crates/lgcc/src/ --budget 8000 --format ir > /dev/null
-          echo "Code Graph context routing verified successfully"
+          nvim --headless -c "Synvim help" -c "Tasks" -c "Reindex" -c "qall"
+          echo "synvim configuration verified successfully"

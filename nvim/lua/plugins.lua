@@ -146,11 +146,6 @@ return {
           local cur = agent.state.queue[agent.state.queue_index]
           return string.format("● [%d/%d] %s", agent.state.queue_index, #agent.state.queue, cur and cur.path or "")
         end
-        local lok, lgcc = pcall(require, "lgcc")
-        if lok and lgcc.status then
-          local s = lgcc.status()
-          if s ~= "" then return s end
-        end
         return "● Agent"
       end
 

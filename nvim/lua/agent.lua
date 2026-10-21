@@ -191,24 +191,6 @@ local function get_primary_editor_win()
   return cur
 end
 
---- Locate native lgcc Rust binary
-local function find_lgcc_bin()
-  local exepath = vim.fn.exepath("lgcc")
-  if exepath ~= "" and vim.fn.executable(exepath) == 1 then
-    return exepath
-  end
-  local root = get_root_dir()
-  local candidates = {
-    root .. "/bin/lgcc",
-    vim.fn.expand("~/.local/bin/lgcc"),
-    vim.fn.expand("~/.config/nvim/bin/lgcc"),
-    "/usr/local/bin/lgcc",
-  }
-  for _, p in ipairs(candidates) do
-    if vim.fn.executable(p) == 1 then return p end
-  end
-  return nil
-end
 
 --- Collect repository context summary (git files, active buffer context, and query keyword search)
 local function collect_context(prompt)
@@ -2505,32 +2487,7 @@ local function save_task_index(index_to_id, id_to_index)
 end
 
 function M.reindex_tasks()
-  local root = get_root_dir()
-  local lgcc = find_lgcc_bin()
-  local all_tasks = {}
-
-  if lgcc and vim.fn.executable(lgcc) == 1 then
-    local out = vim.fn.system({ lgcc, "--lint-tasks", "--json", root })
-    if vim.v.shell_error == 0 and out and out ~= "" then
-      local ok, data = pcall(vim.fn.json_decode, out)
-      if ok and data and data.tasks then
-        for _, t in ipairs(data.tasks) do
-          table.insert(all_tasks, {
-            task_id = t.id,
-            tier = t.tier or "U",
-            file = t.file or "",
-            line = t.line or 1,
-            description = t.desc or t.description or "",
-            kind = t.kind or "TODO",
-          })
-        end
-      end
-    end
-  end
-
-  if #all_tasks == 0 then
-    all_tasks = scan_repository_tasks()
-  end
+  local all_tasks = scan_repository_tasks()
 
   table.sort(all_tasks, function(a, b)
     if (a.tier or "U") ~= (b.tier or "U") then
@@ -2982,18 +2939,6 @@ function M.run_todo(bufnr, target_arg)
   end
   local code_section = table.concat(numbered_lines, "\n")
 
-  local ir_section = ""
-  local lgcc_bin = vim.fn.exepath("lgcc")
-  if lgcc_bin == "" and vim.fn.executable(vim.fn.expand("~/.local/bin/lgcc")) == 1 then
-    lgcc_bin = vim.fn.expand("~/.local/bin/lgcc")
-  end
-  if lgcc_bin ~= "" then
-    local res = vim.system({ lgcc_bin, "--route", filepath, "--budget", "16000", "--format", "ir" }, { text = true }):wait()
-    if res.code == 0 and res.stdout and res.stdout ~= "" then
-      ir_section = "\nROUTED CODE GRAPH CONTEXT & SYMBOL CONTRACTS:\n" .. res.stdout .. "\n"
-    end
-  end
-
   local prompt = string.format([[CRITICAL INSTRUCTION: You are the Autonomous Source-First Code Agent.
 Your task is to implement the following in-line task directly inside the target file.
 Source code is the single source of truth.
@@ -3005,7 +2950,7 @@ TARGET LINE: %d (replaces lines %d to %d)
 
 SURROUNDING SOURCE CODE (with 1-based line numbers):
 %s
-%s
+
 RULES:
 1. Provide the complete, working, production-quality implementation to replace the TODO comment.
 2. Maintain existing indentation, variable names, type signatures, and import patterns.
@@ -3019,7 +2964,7 @@ RULES:
 }
 Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
 ]], rel_path, raw_header, chosen_desc, chosen_line, chosen_line, chosen_line + old_lines_count - 1,
-    code_section, ir_section, chosen_line, old_lines_count)
+    code_section, chosen_line, old_lines_count)
 
   local opencode_bin = vim.fn.exepath("opencode")
   local agy_bin = vim.fn.exepath("agy")
@@ -3202,11 +3147,6 @@ local function show_help()
     "  :Accept [file|all]     Stage file or commit all changes (Approved-by)",
     "  :Reject [file|all]     Discard pending changes and revert files",
     "  :Revise <prompt>       Request revisions to current diff in natural language",
-    "",
-    "Specs & Code Graph",
-    "  :Specs (or :Tasks)     In-tree task and specification agenda",
-    "  :Specs graph           Interactive DAG dependency visualization",
-    "  :Lgcc                  Run logic compiler AST router on active buffer",
     "",
     "Window & Split Keybindings",
     "  Alt + Arrows           Navigate focus across splits",
@@ -3681,7 +3621,11 @@ function M.setup()
     desc = "Show synvim commands and usage (:Synvim help)",
   })
 
-  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :find, :grep, :ask, :add, :task, :reindex, :lgcc, :queue, :stop, :gitreview, :synvim)
+  vim.api.nvim_create_user_command("Tasks", function()
+    M.toggle_queue()
+  end, { desc = "Toggle task queue (:Tasks)" })
+
+  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :find, :grep, :ask, :add, :task, :tasks, :reindex, :queue, :stop, :gitreview, :synvim)
   pcall(vim.cmd, [[
     cnoreabbrev <expr> accept (getcmdtype() ==# ':' && getcmdline() ==# 'accept') ? 'Accept' : 'accept'
     cnoreabbrev <expr> reject (getcmdtype() ==# ':' && getcmdline() ==# 'reject') ? 'Reject' : 'reject'
@@ -3693,8 +3637,8 @@ function M.setup()
     cnoreabbrev <expr> ask (getcmdtype() ==# ':' && getcmdline() ==# 'ask') ? 'Ask' : 'ask'
     cnoreabbrev <expr> add (getcmdtype() ==# ':' && getcmdline() ==# 'add') ? 'Add' : 'add'
     cnoreabbrev <expr> task (getcmdtype() ==# ':' && getcmdline() ==# 'task') ? 'Task' : 'task'
+    cnoreabbrev <expr> tasks (getcmdtype() ==# ':' && getcmdline() ==# 'tasks') ? 'Tasks' : 'tasks'
     cnoreabbrev <expr> reindex (getcmdtype() ==# ':' && getcmdline() ==# 'reindex') ? 'Reindex' : 'reindex'
-    cnoreabbrev <expr> lgcc (getcmdtype() ==# ':' && getcmdline() ==# 'lgcc') ? 'Lgcc' : 'lgcc'
     cnoreabbrev <expr> queue (getcmdtype() ==# ':' && getcmdline() ==# 'queue') ? 'Queue' : 'queue'
     cnoreabbrev <expr> stop (getcmdtype() ==# ':' && getcmdline() ==# 'stop') ? 'Stop' : 'stop'
     cnoreabbrev <expr> review (getcmdtype() ==# ':' && getcmdline() ==# 'review') ? 'Review' : 'review'

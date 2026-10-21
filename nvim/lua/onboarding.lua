@@ -6,14 +6,6 @@ local sentinel_file = vim.fn.stdpath("state") .. "/syntra_onboarded"
 -- Default features
 local features = {
     {
-        id = "lgcc",
-        name = "lgcc Diagnostic Engine",
-        desc = "Logical compiler via OpenCode/OpenRouter (reports to Quickfix, no inline noise)",
-        enabled = true,
-        check_dep = function() return vim.fn.executable("lgcc") == 1 end,
-        dep_hint = "executable: lgcc (in ~/.local/bin/lgcc)",
-    },
-    {
         id = "whisper",
         name = "Faster-Whisper Voice Transcription (:v)",
         desc = "Voice-to-text dictation into active buffer via faster-whisper",
@@ -38,14 +30,6 @@ local features = {
             return vim.fn.filereadable(agent_script) == 1 and vim.fn.executable("opencode") == 1
         end,
         dep_hint = "requires: ~/code/agent + opencode + piper",
-    },
-    {
-        id = "specs",
-        name = "Source-First Specification DAG (:Specs)",
-        desc = "In-editor specification & task navigator (:Specs) backed by Lean 4 kernel replay",
-        enabled = true,
-        check_dep = function() return vim.fn.executable("lgcc") == 1 end,
-        dep_hint = "executable: lgcc (native specification compiler)",
     },
 }
 

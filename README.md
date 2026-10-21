@@ -29,9 +29,7 @@ Run `:Synvim help` inside Neovim at any time to view this list.
 | `:Accept [file\|all]` | Stage current file or commit all reviewed changes |
 | `:Reject [file\|all]` | Revert pending changes |
 | `:Revise <prompt>` | Request adjustments to current diff in natural language |
-| `:Specs` / `:Tasks` | Open in-tree task agenda |
-| `:Specs graph` | Show interactive task DAG dependencies |
-| `:Lgcc` | Run logic compiler AST router on active buffer |
+| `:Tasks` (or `:Queue`) | Open task queue / search results |
 
 ## Split & Terminal Keybindings
 

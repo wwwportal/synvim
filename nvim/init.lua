@@ -535,9 +535,6 @@ vim.keymap.set("n", "ZQ", function() smart_quit({ force = true }) end, { desc = 
 -- ── LSP ──
 require("lsp")
 
--- ── Specification Navigator (:Specs) ──
-require("specs")
-
 -- ── First-Time Feature Checklist & Onboarding ──
 require("onboarding").setup()
 
@@ -547,14 +544,6 @@ require("voice").setup()
 -- ── Autonomous Silent Code Agent ──
 require("agent").setup()
 
--- ── Logical Compiler (:Lgcc) ──
-require("lgcc")
-
--- Ergonomic shortcuts to stay in source code
-vim.keymap.set("n", "<leader>l", "<Cmd>Lgcc<CR>", { silent = true, desc = "Run Lgcc on active buffer" })
-vim.keymap.set("n", "<leader>lx", "<Cmd>Lgcc clear<CR>", { silent = true, desc = "Clear Lgcc diagnostics" })
-vim.keymap.set("n", "<leader>ls", "<Cmd>Specs<CR>", { silent = true, desc = "Open in-tree specs list" })
-vim.keymap.set("n", "<leader>lg", "<Cmd>Specs graph<CR>", { silent = true, desc = "Open visual specs DAG" })
 vim.keymap.set("n", "<leader>q", "<Cmd>Queue<CR>", { silent = true, desc = "Toggle task/query queue" })
 
 
@@ -566,7 +555,7 @@ vim.keymap.set({ "n", "t", "i" }, "<A-t>", "<Cmd>tabnew<CR>", { desc = "New tab"
 vim.keymap.set({ "n", "t", "i" }, "<A-]>", "<Cmd>tabnext<CR>", { desc = "Next tab" })
 vim.keymap.set({ "n", "t", "i" }, "<A-[>", "<Cmd>tabprev<CR>", { desc = "Previous tab" })
 
--- Global statusline with lgcc and lualine integration
+-- Global statusline
 vim.o.laststatus = 3
 vim.opt.shortmess:append("cFWsAI")
 
