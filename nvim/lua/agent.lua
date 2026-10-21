@@ -32,12 +32,24 @@ local scan_repository_tasks = nil
 local function setup_highlights()
   local is_dark = (vim.o.background == "dark")
   if is_dark then
+    vim.api.nvim_set_hl(0, "AgentDiffAdd", { bg = "#163b22", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#85e89d", bold = true, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#ff7b72", bg = "#490202", strikethrough = true, ctermfg = "Red", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#c9d1d9", bg = "#21262d", bold = true, ctermfg = "White", ctermbg = "DarkGray", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffFooter", { fg = "#8b949e", bg = "#161b22", bold = true, ctermfg = "Gray", default = false })
     vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#238636", bold = true, ctermfg = "White", ctermbg = "DarkGreen", default = false })
     vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#8b949e", bg = "#161b22", ctermfg = "LightGray", ctermbg = "Black", default = false })
   else
+    vim.api.nvim_set_hl(0, "AgentDiffAdd", { bg = "#dcfce7", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#16a34a", bold = true, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#991b1b", bg = "#fee2e2", strikethrough = true, ctermfg = "DarkRed", ctermbg = "LightRed", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#ffffff", bg = "#1e293b", bold = true, ctermfg = "White", ctermbg = "DarkGray", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffFooter", { fg = "#334155", bg = "#f1f5f9", bold = true, default = false })
     vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#0969da", bold = true, ctermfg = "White", ctermbg = "Blue", default = false })
     vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#24292f", bg = "#eaeef2", ctermfg = "Black", ctermbg = "LightGray", default = false })
   end
+  pcall(vim.api.nvim_set_hl, 0, "GitReviewAdd", { link = "AgentDiffAdd", default = false })
+  pcall(vim.api.nvim_set_hl, 0, "GitReviewDelete", { link = "AgentDiffDelete", default = false })
 end
 
 --- Resolve suggested target path cleanly without doubling base_dir
@@ -569,10 +581,55 @@ function M.write_revision()
   end
 end
 
---- Show suggested code in-line using standard gitsigns.nvim diff preview.
---- Replaces custom ASCII boxes with native Neovim / gitsigns diffing.
+--- Wrap virtual diff line into visual chunks not exceeding max_w
+local function wrap_diff_line(prefix, text, hl_group, max_w)
+  max_w = math.max(30, max_w or 80)
+  local full = prefix .. text
+  if #full <= max_w then
+    return { { { full, hl_group } } }
+  end
+
+  local lines = {}
+  local cont_prefix = string.rep(" ", #prefix)
+  local current = prefix
+
+  local words = vim.split(text, " ", { plain = true })
+  for _, word in ipairs(words) do
+    local sep = (current == prefix or current == cont_prefix) and "" or " "
+    if #(current .. sep .. word) <= max_w then
+      current = current .. sep .. word
+    else
+      if current ~= prefix and current ~= cont_prefix then
+        table.insert(lines, { { current, hl_group } })
+        current = cont_prefix
+      end
+
+      local avail = max_w - #current
+      local rem = word
+      while #rem > avail and avail > 4 do
+        local chunk = string.sub(rem, 1, avail)
+        table.insert(lines, { { current .. chunk, hl_group } })
+        current = cont_prefix
+        rem = string.sub(rem, avail + 1)
+        avail = max_w - #current
+      end
+      current = current .. rem
+    end
+  end
+
+  if current ~= "" and current ~= cont_prefix then
+    table.insert(lines, { { current, hl_group } })
+  end
+
+  return (#lines > 0) and lines or { { { full, hl_group } } }
+end
+
+--- Show suggested code in-line with green-red diff colors.
+--- Deleted lines are shown in RED as virtual lines above.
+--- Added lines are highlighted IN-LINE directly on the buffer lines in GREEN.
 function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is_new_file, old_lines, review_meta)
   M.clear_diff()
+  setup_highlights()
 
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then return end
   if type(new_content) ~= "string" or vim.trim(new_content) == "" then return end
@@ -594,7 +651,18 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
   local already_applied = (table.concat(cur_slice, "\n") == new_content)
   local revert_lines = nil
 
-  -- If not already applied to buffer, apply new_lines in-place so additions are visible to git
+  -- Extract original deleted lines
+  local deleted_lines = {}
+  if type(old_lines) == "table" and #old_lines > 0 then
+    deleted_lines = old_lines
+  elseif already_applied and review_meta and review_meta.old_lines then
+    deleted_lines = review_meta.old_lines
+  elseif not already_applied and old_lines_count > 0 then
+    local e_idx = math.min(total_lines, s_idx + old_lines_count)
+    deleted_lines = vim.api.nvim_buf_get_lines(bufnr, s_idx, e_idx, false)
+  end
+
+  -- If not already applied to buffer, apply new_lines in-place so additions are visible
   if not already_applied then
     local e_idx = math.min(total_lines, s_idx + old_lines_count)
     revert_lines = vim.api.nvim_buf_get_lines(bufnr, s_idx, e_idx, false)
@@ -605,19 +673,67 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write") end)
   end
 
+  local win_w = (origin_win and vim.api.nvim_win_is_valid(origin_win)) and vim.api.nvim_win_get_width(origin_win) or 80
+  local max_w = math.max(35, win_w - 6)
+
+  local task_name = (review_meta and (review_meta.task_id or review_meta.id))
+    or (is_new_file and "New File" or "Task")
+  local header_label = string.format(" Git Review: %s ", task_name)
+  local bar_len = math.max(4, max_w - #header_label - 4)
+  local header_text = "┌──" .. header_label .. string.rep("─", bar_len) .. "┐"
+  if #header_text > max_w then
+    header_text = header_text:sub(1, max_w - 1) .. "┐"
+  end
+
+  local footer_text = "└── :Accept (<M-a>) | :Reject (<M-r>) | :Revise (<M-w>) " .. string.rep("─", math.max(2, max_w - 56)) .. "┘"
+  if #footer_text > max_w then
+    footer_text = footer_text:sub(1, max_w - 1) .. "┘"
+  end
+
+  -- 1. Top virtual lines: Header + Red deleted lines (with word-wrapping)
+  local virt_lines_top = {}
+  table.insert(virt_lines_top, { { header_text, "AgentDiffHeader" } })
+
+  for _, line in ipairs(deleted_lines) do
+    local chunks = wrap_diff_line("- ", line, "AgentDiffDelete", max_w)
+    for _, chunk in ipairs(chunks) do
+      table.insert(virt_lines_top, chunk)
+    end
+  end
+
+  pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, s_idx, 0, {
+    virt_lines = virt_lines_top,
+    virt_lines_above = true,
+  })
+
+  -- 2. Highlight additions IN-LINE directly on buffer lines in green, with '+' in sign column!
+  local num_added = math.max(1, #new_lines)
+  for i = 0, num_added - 1 do
+    local l_idx = s_idx + i
+    pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, l_idx, 0, {
+      line_hl_group = "AgentDiffAdd",
+      sign_text = "+",
+      sign_hl_group = "AgentDiffAddSign",
+    })
+  end
+
+  -- 3. Bottom virtual line: Footer attached below the last added line
+  local last_idx = s_idx + num_added - 1
+  pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, last_idx, 0, {
+    virt_lines = { { { footer_text, "AgentDiffFooter" } } },
+    virt_lines_above = false,
+  })
+
   -- Direct cursor to the exact start line of the diff and center on screen
   if origin_win and vim.api.nvim_win_is_valid(origin_win) then
     pcall(vim.api.nvim_win_set_cursor, origin_win, { target_line, 0 })
     pcall(function() vim.cmd("normal! zz") end)
   end
 
-  -- Delegate in-file diff rendering to standard gitsigns.nvim
+  -- Refresh gitsigns in the background
   local ok_gs, gs = pcall(require, "gitsigns")
   if ok_gs and gs then
     pcall(gs.refresh)
-    vim.defer_fn(function()
-      pcall(gs.preview_hunk_inline)
-    end, 60)
   end
 
   M.state.pending_diff = {
