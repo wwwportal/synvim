@@ -1287,9 +1287,11 @@ User Instruction:
 ]] .. prompt .. [[
 
 Navigation rules:
-- For navigation questions ("where did we implement X", "where is X", "find X", "show X"):
+- For navigation and general code questions ("where did we implement X", "where is X", "find X", "show X", "how does X work", "why is Y done"):
   - Set "action": "navigate"
   - Pinpoint the exact implementation file and line as "active_target"
+  - In "active_target.content", if the code benefits from clarification, provide a crisp, professional in-line comment (using the language's native comment syntax: // or -- or #) to be inserted directly above the target line that indirectly answers the question by making the code self-documenting.
+  - NEVER output conversational text or answers in chat. The code and in-line comment ARE the answer.
   - Populate "queue" with ALL other relevant matching files and lines from the search matches or file list
   - active_target.path MUST point to an actual file (NEVER a directory, NEVER ".")
 - For new file requests: set "action": "create_and_jump" or "propose_dir"
@@ -1943,6 +1945,55 @@ function M.find(query)
       }, false, {})
     else
       vim.notify("No matches found for '" .. query .. "'", vim.log.levels.WARN)
+    end
+  end)
+end
+
+--- Ask a question about the code: navigates to the exact lines that answer it,
+-- proposing an in-line clarifying comment diff right above that code to make it self-documenting.
+-- Never answers in conversational chat or prose.
+function M.ask(question)
+  question = vim.trim(question or "")
+  if question == "" then
+    vim.notify("Usage: :Ask <question about the code>", vim.log.levels.INFO)
+    return
+  end
+
+  local root = get_root_dir()
+  local candidates = search_and_rank(question, root)
+
+  local prompt = string.format(
+    "Code question: '%s'. Locate the exact source file and line answering this. In active_target.content, produce a concise, professional in-line comment (e.g. // NOTE: ... or -- NOTE: ...) right above the target line that makes the code self-documenting and directly clarifies the answer in code. Do NOT output conversational text.",
+    question
+  )
+
+  vim.api.nvim_echo({ { "● [Navigating to Code] ", "ModeMsg" }, { "Locating line & preparing in-line clarification...", "Comment" } }, false, {})
+
+  M.run(prompt, false, function(res)
+    if res and res.active_target and res.active_target.path then
+      local target = res.active_target
+      M.state.queue = res.queue or candidates
+      M.state.queue_index = 1
+      jump_to_target(target)
+      update_queue_display(#(M.state.queue) > 1)
+      vim.api.nvim_echo({
+        { "● [Code Located] ", "ModeMsg" },
+        { string.format("%s:%d", target.path, target.line or 1), "Directory" },
+        { target.description and (" — " .. target.description) or " (clarification previewed in-line)", "Normal" },
+      }, false, {})
+    elseif #candidates > 0 then
+      local best = candidates[1]
+      M.state.queue = candidates
+      M.state.queue_index = 1
+      jump_to_target(best)
+      update_queue_display(#candidates > 1)
+      vim.api.nvim_echo({
+        { "● [Code Located (Local)] ", "ModeMsg" },
+        { string.format("%s:%d", best.path, best.line), "Directory" },
+        { string.format(" — %s", best.description), "Normal" },
+      }, false, {})
+    else
+      vim.notify("Could not locate code answering: '" .. question .. "'", vim.log.levels.WARN)
     end
   end)
 end
@@ -3235,6 +3286,11 @@ function M.setup()
     M.find(ctx.args)
   end, { nargs = "*", desc = "Find implementation or definition across repository (:Find <query>)" })
 
+  vim.api.nvim_create_user_command("Ask", function(ctx)
+    M.state.origin_win = vim.api.nvim_get_current_win()
+    M.ask(ctx.args)
+  end, { nargs = "+", desc = "Ask a question about the code: navigates to exact line with clarifying in-line comment (:Ask <question>)" })
+
 
   local function review_dispatcher(ctx)
     local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
@@ -3313,7 +3369,7 @@ function M.setup()
     desc = "Reject and revert current file or all files (:Reject [all|file|reason])",
   })
 
-  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :find, :reindex, :lgcc, :queue, :stop, :gitreview)
+  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :find, :ask, :reindex, :lgcc, :queue, :stop, :gitreview)
   pcall(vim.cmd, [[
     cnoreabbrev <expr> accept (getcmdtype() ==# ':' && getcmdline() ==# 'accept') ? 'Accept' : 'accept'
     cnoreabbrev <expr> reject (getcmdtype() ==# ':' && getcmdline() ==# 'reject') ? 'Reject' : 'reject'
@@ -3321,6 +3377,7 @@ function M.setup()
     cnoreabbrev <expr> do (getcmdtype() ==# ':' && getcmdline() ==# 'do') ? 'Do' : 'do'
     cnoreabbrev <expr> todo (getcmdtype() ==# ':' && getcmdline() ==# 'todo') ? 'Todo' : 'todo'
     cnoreabbrev <expr> find (getcmdtype() ==# ':' && getcmdline() ==# 'find') ? 'Find' : 'find'
+    cnoreabbrev <expr> ask (getcmdtype() ==# ':' && getcmdline() ==# 'ask') ? 'Ask' : 'ask'
     cnoreabbrev <expr> reindex (getcmdtype() ==# ':' && getcmdline() ==# 'reindex') ? 'Reindex' : 'reindex'
     cnoreabbrev <expr> lgcc (getcmdtype() ==# ':' && getcmdline() ==# 'lgcc') ? 'Lgcc' : 'lgcc'
     cnoreabbrev <expr> queue (getcmdtype() ==# ':' && getcmdline() ==# 'queue') ? 'Queue' : 'queue'
@@ -3332,6 +3389,7 @@ function M.setup()
   M.collect_context = collect_context
   M.search_and_rank = search_and_rank
   M.find = M.find
+  M.ask = M.ask
   M.review = M.review
   M.git_review = M.review
   M.review_command = M.review
@@ -3342,6 +3400,7 @@ M.get_root_dir = get_root_dir
 M.collect_context = collect_context
 M.search_and_rank = search_and_rank
 M.find = M.find
+M.ask = M.ask
 M.review = M.review
 M.git_review = M.review
 M.review_command = M.review
