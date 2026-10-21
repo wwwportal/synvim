@@ -297,6 +297,22 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
   old_lines_count = (type(old_lines_count) == "number") and old_lines_count or 0
 
   local s_idx = math.max(0, target_line - 1)
+
+  -- Guard against duplicate lines: if an insertion (old_lines_count == 0)
+  -- repeats the existing line at target_line, strip the redundant line from new_lines
+  if old_lines_count == 0 and not is_new_file and #new_lines > 1 then
+    local next_existing = vim.api.nvim_buf_get_lines(bufnr, s_idx, s_idx + 1, false)[1]
+    if next_existing and vim.trim(next_existing) ~= "" then
+      local last_idx = #new_lines
+      if vim.trim(new_lines[last_idx]) == "" and last_idx > 1 then
+        last_idx = last_idx - 1
+      end
+      if vim.trim(new_lines[last_idx]) == vim.trim(next_existing) then
+        table.remove(new_lines, last_idx)
+      end
+    end
+  end
+
   local cur_slice = vim.api.nvim_buf_get_lines(bufnr, s_idx, s_idx + #new_lines, false)
   local already_applied = (table.concat(cur_slice, "\n") == new_content)
   local revert_lines = nil
