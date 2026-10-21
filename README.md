@@ -29,7 +29,7 @@ Run `:Synvim help` inside Neovim at any time to view this list.
 | `:Accept [file\|all]` | Stage current file or commit all reviewed changes |
 | `:Reject [file\|all]` | Revert pending changes |
 | `:Revise <prompt>` | Request adjustments to current diff in natural language |
-| `:Tasks` (or `:Queue`) | Open task queue / search results |
+| `:Tasks` | Toggle repository in-tree tasks agenda (<leader>q) |
 
 ## Split & Terminal Keybindings
 

@@ -27,6 +27,7 @@ local process_agent_response = nil
 local update_queue_display = nil
 local jump_to_target = nil
 local setup_agent_qf_keymaps = nil
+local scan_repository_tasks = nil
 
 local function setup_highlights()
   local is_dark = (vim.o.background == "dark")
@@ -1019,9 +1020,61 @@ function M.prev()
   }, false, {})
 end
 
---- Toggle queue display
-function M.toggle_queue()
+--- Display repository in-tree tasks agenda in a bottom split
+function M.show_tasks()
+  local root = get_root_dir()
+  local tasks = scan_repository_tasks and scan_repository_tasks() or {}
+  if #tasks == 0 then
+    vim.notify("Tasks: No in-tree TODO/FIXME tasks found in " .. vim.fn.fnamemodify(root, ":t"), vim.log.levels.INFO)
+    return
+  end
+
+  table.sort(tasks, function(a, b)
+    if (a.tier or "U") ~= (b.tier or "U") then
+      return (a.tier or "U") < (b.tier or "U")
+    end
+    if (a.file or "") ~= (b.file or "") then
+      return (a.file or "") < (b.file or "")
+    end
+    return (a.line or 0) < (b.line or 0)
+  end)
+
+  local qf_list = {}
+  local task_queue = {}
+  for _, t in ipairs(tasks) do
+    local label = (t.task_id and t.task_id ~= "task") and t.task_id or ""
+    local tier_str = (t.tier and t.tier ~= "U") and string.format("[Tier %s] ", t.tier) or ""
+    local text = label ~= "" and string.format("%s%s: %s", tier_str, label, t.description) or string.format("%s%s", tier_str, t.description)
+    local abs_path = (t.file:match("^/") and t.file) or (root .. "/" .. t.file)
+    table.insert(qf_list, {
+      filename = abs_path,
+      lnum = t.line,
+      col = 1,
+      text = text,
+    })
+    table.insert(task_queue, {
+      path = t.file,
+      line = t.line,
+      action = text,
+      task_id = t.task_id,
+      tier = t.tier,
+      description = t.description,
+    })
+  end
+
+  M.state.queue = task_queue
+  M.state.queue_index = 1
   M.state.origin_win = get_primary_editor_win()
+  vim.fn.setqflist(qf_list, "r")
+  vim.fn.setqflist({}, "a", { title = string.format("Tasks: %d items (%s)", #tasks, vim.fn.fnamemodify(root, ":t")) })
+  vim.cmd("botright copen 10")
+  if M.state.origin_win and vim.api.nvim_win_is_valid(M.state.origin_win) then
+    setup_agent_qf_keymaps(M.state.origin_win, vim.api.nvim_win_get_buf(vim.api.nvim_get_current_win()))
+  end
+end
+
+--- Toggle repository in-tree tasks agenda in a bottom split
+function M.toggle_tasks()
   local qf_open = false
   for _, win in ipairs(vim.api.nvim_list_wins()) do
     local buf = vim.api.nvim_win_get_buf(win)
@@ -1034,19 +1087,10 @@ function M.toggle_queue()
   if qf_open then
     vim.cmd("cclose")
   else
-    if #M.state.queue > 0 then
-      update_queue_display(true)
-    else
-      -- Fall back to repository :Tasks if agent queue is empty
-      local ok, specs = pcall(require, "specs")
-      if ok and specs.tasks then
-        specs.tasks()
-      else
-        vim.cmd("botright copen 6")
-      end
-    end
+    M.show_tasks()
   end
 end
+M.toggle_queue = M.toggle_tasks
 
 local function is_diffview_open()
   local ok, lib = pcall(require, "diffview.lib")
@@ -2418,7 +2462,7 @@ local function extract_task_info(line)
   return nil
 end
 
-local function scan_repository_tasks()
+scan_repository_tasks = function()
   local root = get_root_dir()
   local pattern = "(#|//|--|/\\*).*\\b(TODO|FIXME|SPEC)\\b"
   local grep_cmd = { "git", "-C", root, "grep", "-n", "-I", "-E", pattern, "--", ":!*.json*", ":!*.log", ":!*.ipynb", ":!*.olean", ":!specs/.lexlean/*", ":!logs/*" }
@@ -2439,13 +2483,31 @@ local function scan_repository_tasks()
       if fpath and lnum and txt then
         local t_info = extract_task_info(txt)
         if t_info then
+          local desc = t_info.desc
+          if not desc or vim.trim(desc) == "" then
+            local abs_f = (fpath:match("^/") and fpath) or (root .. "/" .. fpath)
+            local l_idx = tonumber(lnum) or 1
+            local ok_f, next_lines = pcall(vim.fn.readfile, abs_f, "", l_idx + 1)
+            if ok_f and next_lines and #next_lines >= l_idx + 1 then
+              local nxt = next_lines[l_idx + 1]
+              local d = nxt:match("^[ \t]*[#/%-%*%\"]+%s*[Dd]escription:%s*(.*)$") or
+                        nxt:match("^[ \t]*[#/%-%*%\"]+%s*[Dd]esc:%s*(.*)$")
+              if d and vim.trim(d) ~= "" then
+                desc = vim.trim(d)
+              end
+            end
+          end
+          if not desc or vim.trim(desc) == "" then
+            desc = (t_info.id and t_info.id ~= "task") and t_info.id or vim.trim(txt)
+          end
+
           table.insert(tasks, {
             file = fpath,
             line = tonumber(lnum) or 1,
             task_id = t_info.id,
             tier = t_info.tier or "U",
             kind = t_info.kind or "TODO",
-            description = t_info.desc or vim.trim(txt),
+            description = desc,
             raw = txt,
           })
         end
@@ -3129,34 +3191,42 @@ local function show_help()
     "─────────────────────────────────────────────────────────────────────────────",
     "",
     "Search & Navigation",
-    "  :Grep <pattern>        Fast local regex search with quickfix results",
-    "  :Find <concept>        Semantic LLM search jumping directly to relevant code",
+    "  :Grep <pattern>        Fast local regex search across repo into Quickfix",
+    "  :Find <concept>        Semantic LLM search; jumps directly to relevant code",
     "  :Ask <question>        Navigate to code and insert an in-line explanation diff",
     "",
     "Task Management",
+    "  :Tasks                 Toggle repository in-tree tasks agenda (:Tasks or <leader>q)",
     "  :Add <desc>            Insert standard // TODO(slug): desc comment at cursor",
     "  :Task add <desc>       Alias for :Add",
     "  :Do                    Implement nearest task visible in the active window",
     "  :Do <id|prompt>        Implement specified task contract or instruction",
+    "  :Todo [id|prompt]      Alias for :Do",
+    "  :Reindex               Reindex all repository task contracts sequentially (1..N)",
     "  :Stop                  Abort running background LLM job and clear diffs",
-    "  :Queue                 Toggle bottom task and search result queue",
-    "  :Reindex               Reindex all repository task contracts sequentially",
     "",
     "Review & Git",
-    "  :Review                Open side-by-side Diffview for pending changes",
+    "  :Review                Open side-by-side Git Diffview for pending changes",
     "  :Accept [file|all]     Stage file or commit all changes (Approved-by)",
     "  :Reject [file|all]     Discard pending changes and revert files",
     "  :Revise <prompt>       Request revisions to current diff in natural language",
     "",
+    "Voice Dictation",
+    "  :Listen                Voice-to-text dictation into active buffer (<leader>v)",
+    "",
     "Window & Split Keybindings",
-    "  Alt + Arrows           Navigate focus across splits",
-    "  Alt + h/j/k/l          Swap active split with neighbor",
+    "  Alt + Arrows           Navigate focus across splits in any mode",
+    "  Alt + h/j/k/l          Swap active split with adjacent neighbor",
     "  Alt + z                Toggle maximize / zoom active split",
-    "  Alt + q / Alt + w      Close active split",
+    "  Alt + q / Alt + w      Close active split (:SmartQuit)",
     "  Alt + + / Alt + _      Split right / split down with a new terminal",
+    "  Alt + 1..9 / Alt + t   Jump to tab 1..9 / open new tab",
+    "  Alt + ] / Alt + [      Next / previous tab",
+    "  Ctrl + d / Ctrl + u    Scroll fixed 10 lines",
+    "  Esc                    Return to Normal mode when at a shell prompt",
     "",
     "─────────────────────────────────────────────────────────────────────────────",
-    "Press 'q' or <Esc> to close",
+    "Press 'q' or <Esc> to close this window",
   }
 
   local buf = vim.api.nvim_create_buf(false, true)
@@ -3166,7 +3236,7 @@ local function show_help()
   vim.bo[buf].modifiable = false
   vim.bo[buf].filetype = "synvim-help"
 
-  local width = 77
+  local width = 80
   local height = #lines
   local ui = vim.api.nvim_list_uis()[1]
   local total_w = ui and ui.width or vim.o.columns
@@ -3582,10 +3652,6 @@ function M.setup()
     end
   end, { nargs = "*", desc = "Revise current agent instruction in natural language" })
 
-  vim.api.nvim_create_user_command("Queue", function()
-    M.toggle_queue()
-  end, { desc = "Toggle the bottom query results and task queue (:Queue)" })
-
   vim.api.nvim_create_user_command("Accept", function(ctx)
     M.accept(ctx.args)
   end, {
@@ -3622,8 +3688,20 @@ function M.setup()
   })
 
   vim.api.nvim_create_user_command("Tasks", function()
-    M.toggle_queue()
-  end, { desc = "Toggle task queue (:Tasks)" })
+    local qf_open = false
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      local buf = vim.api.nvim_win_get_buf(win)
+      if vim.bo[buf].buftype == "quickfix" then
+        qf_open = true
+        break
+      end
+    end
+    if qf_open then
+      vim.cmd("cclose")
+    else
+      M.show_tasks()
+    end
+  end, { desc = "Toggle repository in-tree tasks agenda (:Tasks)" })
 
   -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :find, :grep, :ask, :add, :task, :tasks, :reindex, :queue, :stop, :gitreview, :synvim)
   pcall(vim.cmd, [[
@@ -3639,7 +3717,6 @@ function M.setup()
     cnoreabbrev <expr> task (getcmdtype() ==# ':' && getcmdline() ==# 'task') ? 'Task' : 'task'
     cnoreabbrev <expr> tasks (getcmdtype() ==# ':' && getcmdline() ==# 'tasks') ? 'Tasks' : 'tasks'
     cnoreabbrev <expr> reindex (getcmdtype() ==# ':' && getcmdline() ==# 'reindex') ? 'Reindex' : 'reindex'
-    cnoreabbrev <expr> queue (getcmdtype() ==# ':' && getcmdline() ==# 'queue') ? 'Queue' : 'queue'
     cnoreabbrev <expr> stop (getcmdtype() ==# ':' && getcmdline() ==# 'stop') ? 'Stop' : 'stop'
     cnoreabbrev <expr> review (getcmdtype() ==# ':' && getcmdline() ==# 'review') ? 'Review' : 'review'
     cnoreabbrev <expr> gitreview (getcmdtype() ==# ':' && getcmdline() ==# 'gitreview') ? 'GitReview' : 'gitreview'
@@ -3659,6 +3736,9 @@ function M.setup()
   M.reindex = M.reindex_tasks
   M.show_help = show_help
   M.help = show_help
+  M.tasks = M.show_tasks
+  M.show_tasks = M.show_tasks
+  M.scan_repository_tasks = scan_repository_tasks
 end
 
 M.get_root_dir = get_root_dir
@@ -3675,5 +3755,8 @@ M.reindex = M.reindex_tasks
 M.scaffold_and_run_task = M.scaffold_and_run_task
 M.show_help = show_help
 M.help = show_help
+M.tasks = M.show_tasks
+M.show_tasks = M.show_tasks
+M.scan_repository_tasks = scan_repository_tasks
 
 return M

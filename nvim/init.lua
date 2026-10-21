@@ -544,7 +544,7 @@ require("voice").setup()
 -- ── Autonomous Silent Code Agent ──
 require("agent").setup()
 
-vim.keymap.set("n", "<leader>q", "<Cmd>Queue<CR>", { silent = true, desc = "Toggle task/query queue" })
+vim.keymap.set("n", "<leader>q", "<Cmd>Tasks<CR>", { silent = true, desc = "Toggle tasks agenda (:Tasks)" })
 
 
 -- ── Tab Navigation (Focused Full-Screen Tabs) ──
