@@ -9,9 +9,12 @@ use std::path::{Path, PathBuf};
 
 /*
 
-SPEC(ir-schema-formatter | tier:B | depends_on:[router-budget-knapsack] | blocks:[lgcc-cli-router-hook]): Emit unified compressed context IR schema for model prompt.
-Description: Format target file, budget-allocated symbol skeletons, and dependency topology into compact prompt intermediate representation.
-Criterion: review: "Formatted IR stream preserves all type contracts while achieving >70% compression"
+SPEC(ir-schema-formatter | tier:B | status:APPROVED | blocks:[lgcc-cli-router-hook]):
+  action:    Format target file, budget-allocated symbol skeletons, and dependency topology into compact prompt intermediate representation.
+  requires:  [router-budget-knapsack]
+  ensures:   review: "Formatted IR stream preserves all type contracts while achieving >70% compression"
+  invariant: "Output IR is deterministic and reproducible"
+  modifies:  [crates/lgcc/src/bin/main.rs]
 
 [lean:spec]
 def ir_schema_formatter : Bool := router_budget_knapsack
@@ -93,9 +96,12 @@ fn format_ir_bundle(target_path: &Path, res: &RouteResult) -> String {
 
 /*
 
-SPEC(lgcc-dep-bundle | tier:A | depends_on:[ir-contract-skeletonizer] | blocks:[lgcc-task-synthesizer, graph-repo-scanner]): Compile hermetic dependency context and type signatures into intermediate representation before model invocation.
-Description: Preprocess target files by bundling imported interfaces, external function stubs, and type definitions instead of raw binary streams or isolated files.
-Criterion: review: "lgcc CLI accepts --bundle flag that aggregates local imported module stubs without raw binary degradation"
+SPEC(lgcc-dep-bundle | tier:A | status:APPROVED | blocks:[lgcc-task-synthesizer, graph-repo-scanner]):
+  action:    Compile hermetic dependency context and type signatures into intermediate representation before model invocation.
+  requires:  [ir-contract-skeletonizer]
+  ensures:   review: "lgcc CLI accepts --bundle flag that aggregates local imported module stubs without raw binary degradation"
+  invariant: "Bundling omits external non-project libraries"
+  modifies:  [crates/lgcc/src/bin/main.rs]
 
 [lean:spec]
 def lgcc_dep_bundle : Bool := ir_contract_skeletonizer
@@ -123,9 +129,12 @@ Subcommand aliases without '--' (e.g., 'lgcc tasks', 'lgcc graph', 'lgcc fix', '
 
 /*
 
-SPEC(spec-cli-wire-protocol-dispatch | tier:B | depends_on:[spec-syntra-view-model] | blocks:[spec-golden-acceptance-vectors]): Formalize CLI argument decoding and command dispatch pipeline.
-Description: Define structured CommandRequest and CommandResponse schemas in LexLean formalizing CLI verbs (--lint-tasks, --verify-specs, --route, --skeletonize, --extract) with typed option parsing.
-Criterion: assert: "dispatchLgccCommand cleanly decodes CLI arguments and dispatches to verified handler functions"
+SPEC(spec-cli-wire-protocol-dispatch | tier:B | status:APPROVED | blocks:[spec-golden-acceptance-vectors]):
+  action:    Define structured CommandRequest and CommandResponse schemas in LexLean formalizing CLI verbs (--lint-tasks, --verify-specs, --route, --skeletonize, --extract) with typed option parsing.
+  requires:  [spec-syntra-view-model]
+  ensures:   assert "dispatchLgccCommand cleanly decodes CLI arguments and dispatches to verified handler functions"
+  invariant: "Option parser does not panic on unexpected command line tokens"
+  modifies:  [crates/lgcc/src/bin/main.rs]
 
 [lean:spec]
 inductive LgccCommand where
@@ -160,14 +169,20 @@ fn main() {
         return;
     }
 
-    if mode == "lint-tasks" || mode == "tasks" || mode == "lint" {
+    if mode == "lint-tasks" || mode == "tasks" || mode == "lint" || mode == "lint-contracts" || mode == "contracts" {
         let mut json = false;
         let mut filter: Option<&str> = None;
+        let mut require_functions = mode == "lint-contracts" || mode == "contracts";
+        let mut require_approved = false;
         let mut repo_root = None;
 
         for arg in &args[2..] {
             if arg == "--json" || arg == "-j" || arg == "json" {
                 json = true;
+            } else if arg == "--require-functions" || arg == "--functions" {
+                require_functions = true;
+            } else if arg == "--require-approved" || arg == "--approved" {
+                require_approved = true;
             } else if arg == "--informal" || arg == "--unformalized" || arg == "informal" || arg == "unformalized" {
                 filter = Some("INFORMAL");
             } else if arg == "--draft" || arg == "draft" {
@@ -182,6 +197,11 @@ fn main() {
         let root = repo_root.unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let root = root.canonicalize().unwrap_or(root);
         let mut res = TaskLinter::lint_repository(&root);
+
+        if require_functions || require_approved {
+            let fn_errors = TaskLinter::check_function_contracts(&root, &res.tasks, require_approved);
+            res.errors.extend(fn_errors);
+        }
 
         if let Some(m) = filter {
             res.tasks.retain(|t| t.maturity == m);

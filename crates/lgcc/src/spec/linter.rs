@@ -18,9 +18,18 @@ pub struct TaskRecord {
     pub id: String,
     pub kind: String, // "TODO", "FIXME", "SPEC"
     pub tier: String, // "A", "B", "C"
+    pub status: String, // "TODO", "DONE", "APPROVED"
+    pub action: String,
+    pub requires: Vec<String>,
+    pub ensures: String,
+    pub invariant: String,
+    pub modifies: Vec<String>,
     pub blocks: Vec<String>,
+    #[serde(default)]
     pub depends_on: Vec<String>,
+    #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub criterion: String,
     pub file: PathBuf,
     pub line: usize,
@@ -30,9 +39,12 @@ pub struct TaskRecord {
 
 /*
 
-SPEC(spec-golden-acceptance-vectors | tier:B | depends_on:[spec-cli-wire-protocol-dispatch] | blocks:[spec-knapsack-budget-theorems]): Define acceptance vector suite verifying deterministic byte outputs.
-Description: Define serialized AcceptanceVector schema modeling hex-encoded CLI request and response byte expectations to guard against silent output format regressions.
-Criterion: assert: "All acceptance test vectors replay against lgcc with 100% byte integrity"
+SPEC(spec-golden-acceptance-vectors | tier:B | status:APPROVED | blocks:[spec-knapsack-budget-theorems]):
+  action:    Define serialized AcceptanceVector schema modeling hex-encoded CLI request and response byte expectations to guard against silent output format regressions.
+  requires:  [spec-cli-wire-protocol-dispatch]
+  ensures:   assert "All acceptance test vectors replay against lgcc with 100% byte integrity"
+  invariant: "CLI test suite is deterministic and reproduces exact byte vectors"
+  modifies:  [crates/lgcc/src/spec/linter.rs]
 
 [lean:spec]
 structure CliAcceptanceVector where
@@ -63,9 +75,12 @@ pub struct LintResult {
 
 /*
 
-SPEC(lgcc-native-linter | tier:A | depends_on:[spec-jit-patch-schema] | blocks:[tasks-add-spec-scaffold]): Rewrite scripts/lint_tasks.py into native Rust inside lgcc.
-Description: Rewrite scripts/lint_tasks.py into native Rust inside lgcc, implementing high-performance task DAG validation, anti-erasure git checks, lazy-TODO detection, and JSON export.
-Criterion: assert: "lgcc --lint-tasks validates repository DAG and anti-erasure constraints in <15ms with full feature parity to Python linter"
+SPEC(lgcc-native-linter | tier:A | status:APPROVED | blocks:[tasks-add-spec-scaffold]):
+  action:    Rewrite scripts/lint_tasks.py into native Rust inside lgcc, implementing high-performance task DAG validation, anti-erasure git checks, lazy-TODO detection, and JSON export.
+  requires:  [spec-jit-patch-schema]
+  ensures:   assert "lgcc --lint-tasks validates repository DAG and anti-erasure constraints in <15ms with full feature parity to Python linter"
+  invariant: "Validation time remains strictly under 15ms"
+  modifies:  [crates/lgcc/src/spec/linter.rs]
 
 [lean:spec]
 def lgcc_native_linter : Bool := spec_jit_patch_schema
@@ -360,13 +375,18 @@ impl TaskLinter {
             .to_string();
 
         let task_header_re = Regex::new(
-            r"^[ \t]*(?:#|//|--|/\*|\*|\*/)?\s*(TODO|FIXME|SPEC)\(([a-zA-Z0-9_\-]+)\s*\|\s*tier:([ABC])((?:\s*\|\s*(?:blocks|depends_on):\[[a-zA-Z0-9_\-,\s]*\])*)\):(?:\s*(.*))?$"
+            r"^[ \t]*(?:#|//|--|/\*|\*|\*/)?\s*(TODO|FIXME|SPEC)\(([a-zA-Z0-9_\-]+)\s*\|\s*tier:([ABC])((?:\s*\|\s*(?:blocks|depends_on|requires|ensures|invariant|modifies|status):[^|)]+)*)\):(?:\s*(.*))?$"
         ).unwrap();
         let any_todo_re = Regex::new(
             r"(?i)^[ \t]*(?:#|//|--|/\*|\*|\*)?\s*(TODO|FIXME|SPEC)\b"
         ).unwrap();
-        let desc_re = Regex::new(r"^[ \t]*(?:#|//|--|/\*|\*|\*)?\s*Description:\s*(.+)$").unwrap();
-        let crit_re = Regex::new(r"^[ \t]*(?:#|//|--|/\*|\*|\*)?\s*Criterion:\s*(assert:\s*.+|review:\s*.+|theorem:\s*.+|lean:\s*.+)$").unwrap();
+        let action_re = Regex::new(r"^[ \t]*(?:#|//|--|/\*|\*|\*)?\s*(?:action|Description):\s*(.+)$").unwrap();
+        let req_re = Regex::new(r"^[ \t]*(?:#|//|--|/\*|\*|\*)?\s*(?:requires|depends_on):\s*\[(.*?)\]$").unwrap();
+        let ens_re = Regex::new(r"^[ \t]*(?:#|//|--|/\*|\*|\*)?\s*(?:ensures|Criterion):\s*(.+)$").unwrap();
+        let inv_re = Regex::new(r"^[ \t]*(?:#|//|--|/\*|\*|\*)?\s*(?:invariant|inv):\s*(.+)$").unwrap();
+        let mod_re = Regex::new(r"^[ \t]*(?:#|//|--|/\*|\*|\*)?\s*(?:modifies|mod):\s*\[(.*?)\]$").unwrap();
+        let blk_re = Regex::new(r"^[ \t]*(?:#|//|--|/\*|\*|\*)?\s*blocks:\s*\[(.*?)\]$").unwrap();
+        let status_line_re = Regex::new(r"^[ \t]*(?:#|//|--|/\*|\*|\*)?\s*status:\s*(TODO|DONE|APPROVED)$").unwrap();
 
         let lines: Vec<&str> = content.lines().collect();
         let mut in_block = false;
@@ -404,9 +424,9 @@ impl TaskLinter {
                     .trim();
 
                 if p.to_lowercase().starts_with("todo") || p.to_lowercase().starts_with("fixme") || p.to_lowercase().starts_with("spec") {
-                    if !p.starts_with("Description:") && !p.starts_with("Criterion:") {
+                    if !p.starts_with("Description:") && !p.starts_with("Criterion:") && !p.starts_with("action:") && !p.starts_with("requires:") && !p.starts_with("ensures:") && !p.starts_with("invariant:") && !p.starts_with("modifies:") && !p.starts_with("status:") {
                         errors.push(format!(
-                            "{}:{}: Unstructured task comment.\n  Found: {}\n  Must match: TODO(<id> | tier:<A|B|C> [| blocks:[...]] [| depends_on:[...]]):",
+                            "{}:{}: Unstructured task contract.\n  Found: {}\n  Must match: SPEC(<id> | tier:<A|B|C> [| status:<TODO|DONE|APPROVED>]):",
                             rel_path,
                             line_num,
                             line.trim()
@@ -421,36 +441,64 @@ impl TaskLinter {
                 let id = caps.get(2).unwrap().as_str().to_string();
                 let tier = caps.get(3).unwrap().as_str().to_string();
                 let metadata = caps.get(4).map(|m| m.as_str()).unwrap_or("");
-                let inline_desc = caps.get(5).map(|m| m.as_str()).unwrap_or("");
+                let inline_desc = caps.get(5).map(|m| m.as_str()).unwrap_or("").trim().to_string();
 
+                let mut action = inline_desc.clone();
+                let mut requires = Vec::new();
+                let mut requires_specified = false;
+                let mut ensures = String::new();
+                let mut invariant = String::new();
+                let mut modifies = Vec::new();
                 let mut blocks = Vec::new();
-                let mut depends_on = Vec::new();
 
-                let blocks_re = Regex::new(r"blocks:\[(.*?)\]").unwrap();
-                let deps_re = Regex::new(r"depends_on:\[(.*?)\]").unwrap();
+                let status_hdr_re = Regex::new(r"status:(TODO|DONE|APPROVED)").unwrap();
+                let mut status = if let Some(scaps) = status_hdr_re.captures(metadata) {
+                    scaps.get(1).unwrap().as_str().to_string()
+                } else {
+                    "TODO".to_string()
+                };
 
-                if let Some(bcaps) = blocks_re.captures(metadata) {
+                let blocks_hdr_re = Regex::new(r"blocks:\[(.*?)\]").unwrap();
+                let deps_hdr_re = Regex::new(r"(?:depends_on|requires):\[(.*?)\]").unwrap();
+                let ens_hdr_re = Regex::new(r#"ensures:(?:assert:\s*|review:\s*|theorem:\s*)?"([^"]+)""#).unwrap();
+                let inv_hdr_re = Regex::new(r#"invariant:"([^"]+)""#).unwrap();
+                let mod_hdr_re = Regex::new(r"modifies:\[(.*?)\]").unwrap();
+
+                if let Some(bcaps) = blocks_hdr_re.captures(metadata) {
                     for item in bcaps.get(1).unwrap().as_str().split(',') {
                         let t = item.trim();
-                        if !t.is_empty() {
-                            blocks.push(t.to_string());
-                        }
+                        if !t.is_empty() { blocks.push(t.to_string()); }
                     }
                 }
-
-                if let Some(dcaps) = deps_re.captures(metadata) {
+                if let Some(dcaps) = deps_hdr_re.captures(metadata) {
+                    requires_specified = true;
                     for item in dcaps.get(1).unwrap().as_str().split(',') {
                         let t = item.trim();
-                        if !t.is_empty() {
-                            depends_on.push(t.to_string());
-                        }
+                        if !t.is_empty() { requires.push(t.to_string()); }
+                    }
+                }
+                if let Some(ecaps) = ens_hdr_re.captures(metadata) {
+                    ensures = ecaps.get(1).unwrap().as_str().trim().to_string();
+                }
+                if let Some(icaps) = inv_hdr_re.captures(metadata) {
+                    invariant = icaps.get(1).unwrap().as_str().trim().to_string();
+                }
+                if let Some(mcaps) = mod_hdr_re.captures(metadata) {
+                    for item in mcaps.get(1).unwrap().as_str().split(',') {
+                        let t = item.trim();
+                        if !t.is_empty() { modifies.push(t.to_string()); }
                     }
                 }
 
-                let mut description = inline_desc.to_string();
-                let mut criterion = String::new();
+                let mut field_order = Vec::new();
+                if !inline_desc.is_empty() {
+                    field_order.push(("action", 1));
+                    if requires_specified {
+                        field_order.push(("requires", 2));
+                    }
+                }
 
-                for next_line in lines.iter().skip(line_num).take(10) {
+                for next_line in lines.iter().skip(line_num).take(15) {
                     let next_trimmed = next_line.trim();
                     if next_trimmed == "*/" || next_trimmed == "]]" {
                         break;
@@ -468,18 +516,72 @@ impl TaskLinter {
                     if p.starts_with("SPEC(") || p.starts_with("TODO(") || p.starts_with("FIXME(") {
                         break;
                     }
-                    if let Some(dcaps) = desc_re.captures(next_line) {
-                        description = dcaps.get(1).unwrap().as_str().trim().to_string();
-                    } else if let Some(ccaps) = crit_re.captures(next_line) {
-                        criterion = ccaps.get(1).unwrap().as_str().trim().to_string();
+
+                    if let Some(scaps) = status_line_re.captures(next_line) {
+                        status = scaps.get(1).unwrap().as_str().to_string();
+                    } else if let Some(acaps) = action_re.captures(next_line) {
+                        action = acaps.get(1).unwrap().as_str().trim().to_string();
+                        field_order.push(("action", 1));
+                    } else if let Some(rcaps) = req_re.captures(next_line) {
+                        requires_specified = true;
+                        requires.clear();
+                        for item in rcaps.get(1).unwrap().as_str().split(',') {
+                            let t = item.trim();
+                            if !t.is_empty() { requires.push(t.to_string()); }
+                        }
+                        field_order.push(("requires", 2));
+                    } else if let Some(ecaps) = ens_re.captures(next_line) {
+                        ensures = ecaps.get(1).unwrap().as_str().trim().to_string();
+                        field_order.push(("ensures", 3));
+                    } else if let Some(icaps) = inv_re.captures(next_line) {
+                        let raw_inv = icaps.get(1).unwrap().as_str().trim();
+                        invariant = raw_inv.trim_matches('"').to_string();
+                        field_order.push(("invariant", 4));
+                    } else if let Some(mcaps) = mod_re.captures(next_line) {
+                        modifies.clear();
+                        for item in mcaps.get(1).unwrap().as_str().split(',') {
+                            let t = item.trim();
+                            if !t.is_empty() { modifies.push(t.to_string()); }
+                        }
+                        field_order.push(("modifies", 5));
+                    } else if let Some(bcaps) = blk_re.captures(next_line) {
+                        for item in bcaps.get(1).unwrap().as_str().split(',') {
+                            let t = item.trim();
+                            if !t.is_empty() { blocks.push(t.to_string()); }
+                        }
                     }
                 }
 
-                if description.is_empty() {
-                    errors.push(format!("{}:{}: Task '{}' is missing a Description field.", rel_path, line_num, id));
+                // Check Canonical Ordering: action (1) -> requires (2) -> ensures (3) -> invariant (4) -> modifies (5)
+                let mut last_rank = 0;
+                let mut last_name = "";
+                for (name, rank) in &field_order {
+                    if *rank < last_rank {
+                        errors.push(format!(
+                            "{}:{}: Task '{}' violates canonical Hoare field ordering. Found '{}' before '{}'. Required order: action -> requires -> ensures -> invariant -> modifies.",
+                            rel_path, line_num, id, last_name, name
+                        ));
+                        break;
+                    }
+                    last_rank = *rank;
+                    last_name = name;
                 }
-                if criterion.is_empty() {
-                    errors.push(format!("{}:{}: Task '{}' is missing a Criterion field.", rel_path, line_num, id));
+
+                // Check Completeness: All 5 fields MUST be defined
+                if action.is_empty() {
+                    errors.push(format!("{}:{}: Task '{}' is missing required 'action' field.", rel_path, line_num, id));
+                }
+                if !requires_specified {
+                    errors.push(format!("{}:{}: Task '{}' is missing required 'requires' field (use requires:[] if no dependencies).", rel_path, line_num, id));
+                }
+                if ensures.is_empty() {
+                    errors.push(format!("{}:{}: Task '{}' is missing required 'ensures' field.", rel_path, line_num, id));
+                }
+                if invariant.is_empty() {
+                    errors.push(format!("{}:{}: Task '{}' is missing required 'invariant' field.", rel_path, line_num, id));
+                }
+                if modifies.is_empty() {
+                    errors.push(format!("{}:{}: Task '{}' is missing required 'modifies' field.", rel_path, line_num, id));
                 }
 
                 let maturity = if kind == "SPEC" {
@@ -488,10 +590,20 @@ impl TaskLinter {
                     "INFORMAL".to_string()
                 };
 
+                let description = action.clone();
+                let criterion = ensures.clone();
+                let depends_on = requires.clone();
+
                 tasks.push(TaskRecord {
                     id,
                     kind,
                     tier,
+                    status,
+                    action,
+                    requires,
+                    ensures,
+                    invariant,
+                    modifies,
                     blocks,
                     depends_on,
                     description,
@@ -633,6 +745,53 @@ impl TaskLinter {
             }
         }
 
+        errors
+    }
+
+    pub fn check_function_contracts(repo_root: &Path, tasks: &[TaskRecord], require_approved: bool) -> Vec<String> {
+        use crate::ast::extractor::Extractor;
+        let mut errors = Vec::new();
+        let src_dirs = ["crates", "src", "bin", "nvim/lua"];
+        for dir in &src_dirs {
+            let dir_path = repo_root.join(dir);
+            if !dir_path.exists() { continue; }
+            for entry in walkdir::WalkDir::new(dir_path).into_iter().filter_map(|e| e.ok()) {
+                let p = entry.path();
+                if p.is_file() {
+                    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+                    if matches!(ext, "rs" | "lua" | "py" | "cpp" | "c" | "h" | "hpp") {
+                        let rel = p.strip_prefix(repo_root).unwrap_or(p).display().to_string();
+                        if rel.contains("/tests/") || rel.contains("/vendor/") || rel.contains("/target/") {
+                            continue;
+                        }
+                        let mod_data = Extractor::extract(p);
+                        for sym in &mod_data.symbols {
+                            if sym.kind == "function" || sym.kind == "method" {
+                                let matching_task = tasks.iter().find(|t| {
+                                    t.file == p && t.line < sym.line && (sym.line - t.line) <= 45
+                                });
+                                match matching_task {
+                                    None => {
+                                        errors.push(format!(
+                                            "{}:{}: Undocumented {} '{}' is missing an in-line contract specification.",
+                                            rel, sym.line, sym.kind, sym.name
+                                        ));
+                                    }
+                                    Some(t) => {
+                                        if require_approved && t.status != "APPROVED" {
+                                            errors.push(format!(
+                                                "{}:{}: Function '{}' has contract '{}' with status '{}', but APPROVED status is required before push.",
+                                                rel, sym.line, sym.name, t.id, t.status
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         errors
     }
 
@@ -986,9 +1145,9 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("lgcc_test_{}", std::process::id()));
         let _ = fs::create_dir_all(&temp_dir);
         let file_path = temp_dir.join("test.rs");
-        let tag = format!("{}(test-multiline | tier:B)", "SPEC");
+        let tag = format!("{}(test-multiline | tier:B | status:APPROVED)", "SPEC");
         let content = format!(
-            "/*\n\n{}: Test multiline block comment\nDescription: Ensure block comments work properly.\nCriterion: assert: \"Block comments parse correctly\"\n\n[lean:spec]\ndef test_multiline : Bool := 10 >= 0\ntheorem test_multiline_verified : test_multiline = true := by decide\n\n*/\npub fn dummy() {{}}\n",
+            "/*\n\n{}:\n  action:    Ensure block comments work properly.\n  requires:  []\n  ensures:   assert \"Block comments parse correctly\"\n  invariant: \"Block comments parse without side effects\"\n  modifies:  [test.rs]\n\n[lean:spec]\ndef test_multiline : Bool := 10 >= 0\ntheorem test_multiline_verified : test_multiline = true := by decide\n\n*/\npub fn dummy() {{}}\n",
             tag
         );
         fs::write(&file_path, content).unwrap();
@@ -1010,9 +1169,9 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("lgcc_lint_test_{}", std::process::id()));
         let _ = fs::create_dir_all(&temp_dir);
         let file_path = temp_dir.join("test.rs");
-        let tag = format!("{}(test-spec-block | tier:B)", "SPEC");
+        let tag = format!("{}(test-spec-block | tier:B | status:APPROVED)", "SPEC");
         let content = format!(
-            "/*\n\n{}: Test multiline block comment spec\nDescription: Ensure block comments extract lean specs properly.\nCriterion: assert: \"Block comments extract lean specs correctly\"\n\n[lean:spec]\ninductive TaskTier where\n  | TierA\n  | TierB\n  | TierC\n\nstructure TaskRecord where\n  id : String\n  tier : TaskTier\n\nstructure ContextBudget where\n  maxTokens : Nat\n\nstructure SymbolNode where\n  name : String\n\nstructure TestStruct where\n  count : Nat\n\ndef test_spec_block : Bool := 10 >= 0\ntheorem test_spec_block_verified : test_spec_block = true := by decide\n\n*/\npub fn dummy_block() {{}}\n",
+            "/*\n\n{}:\n  action:    Ensure block comments extract lean specs properly.\n  requires:  []\n  ensures:   assert \"Block comments extract lean specs correctly\"\n  invariant: \"Block comments extract without syntax errors\"\n  modifies:  [test.rs]\n\n[lean:spec]\ninductive TaskTier where\n  | TierA\n  | TierB\n  | TierC\n\nstructure TaskRecord where\n  id : String\n  tier : TaskTier\n\nstructure ContextBudget where\n  maxTokens : Nat\n\nstructure SymbolNode where\n  name : String\n\nstructure TestStruct where\n  count : Nat\n\ndef test_spec_block : Bool := 10 >= 0\ntheorem test_spec_block_verified : test_spec_block = true := by decide\n\n*/\npub fn dummy_block() {{}}\n",
             tag
         );
         fs::write(&file_path, content).unwrap();

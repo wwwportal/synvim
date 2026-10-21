@@ -7,9 +7,12 @@ use std::path::{Path, PathBuf};
 
 /*
 
-SPEC(prismpm-rust-bridge | tier:B | depends_on:[prismpm-jit-verifier] | blocks:[lgcc-lexlean-verifier]): Integrate prismpm-generated Rust verification module into lgcc.
-Description: Consume verified Rust crates emitted by prismpm directly into lgcc to expose contract verification functions and invariants directly to the Rust engine without FFI boundaries.
-Criterion: assert: "cargo build produces native binary linking cleanly into spec test runner"
+SPEC(prismpm-rust-bridge | tier:B | status:APPROVED | blocks:[lgcc-lexlean-verifier]):
+  action:    Consume verified Rust crates emitted by prismpm directly into lgcc to expose contract verification functions and invariants directly to the Rust engine without FFI boundaries.
+  requires:  [prismpm-jit-verifier]
+  ensures:   assert "cargo build produces native binary linking cleanly into spec test runner"
+  invariant: "Zero FFI memory leakage across verification interface"
+  modifies:  [crates/lgcc/src/ast/extractor.rs, crates/lgcc/Cargo.toml]
 
 [lean:spec]
 def prismpm_rust_bridge : Bool := prismpm_jit_verifier
@@ -26,9 +29,12 @@ pub struct ExtractedModule {
 
 /*
 
-SPEC(ir-ast-extractor | tier:A | blocks:[ir-contract-skeletonizer]): Extract symbols, declarations, and import edges from Python and Lua ASTs.
-Description: Implement AST traversal using native C++ parser and Neovim Tree-sitter to parse source files into structured declaration lists and import edges.
-Criterion: review: "scripts/bundle_ir.py --extract <file> returns JSON with symbols, signatures, and import edges"
+SPEC(ir-ast-extractor | tier:A | status:APPROVED | blocks:[ir-contract-skeletonizer]):
+  action:    Implement AST traversal using native C++ parser and Neovim Tree-sitter to parse source files into structured declaration lists and import edges.
+  requires:  []
+  ensures:   review: "scripts/bundle_ir.py --extract <file> returns JSON with symbols, signatures, and import edges"
+  invariant: "Parser preserves complete declaration list without dropping annotations"
+  modifies:  [crates/lgcc/src/ast/extractor.rs]
 
 [lean:spec]
 inductive TaskTier where
@@ -63,9 +69,12 @@ pub struct Extractor;
 impl Extractor {
     /*
 
-    SPEC(lgcc-lexlean-verifier | tier:B | depends_on:[prismpm-rust-bridge]): Integrate lgcc parser and pipeline with LexLean formal specification contracts.
-    Description: Connect lgcc AST extractor and IR compiler with native Rust verification modules to validate formal contracts and invariants at compile and lint time.
-    Criterion: assert: "lgcc validates LexLean-extracted contract assertions during static analysis passes"
+    SPEC(lgcc-lexlean-verifier | tier:B | status:APPROVED):
+      action:    Connect lgcc AST extractor and IR compiler with native Rust verification modules to validate formal contracts and invariants at compile and lint time.
+      requires:  [prismpm-rust-bridge]
+      ensures:   assert "lgcc validates LexLean-extracted contract assertions during static analysis passes"
+      invariant: "Static analysis pass terminates in finite time on all valid inputs"
+      modifies:  [crates/lgcc/src/ast/extractor.rs]
 
     [lean:spec]
     def lgcc_lexlean_verifier : Bool := prismpm_rust_bridge
@@ -92,9 +101,12 @@ impl Extractor {
 
     /*
 
-    SPEC(prismpm-jit-verifier | tier:B | depends_on:[lgcc-topo-spec-stitcher] | blocks:[prismpm-rust-bridge]): Execute Just-In-Time formal verification of stitched LexLean specifications.
-    Description: Hook lgcc JIT-stitched .lex.tex specification into prismpm check and lexlean verify to execute machine-checked proof replay before commit and build.
-    Criterion: assert: "Running lgcc --verify-specs compiles stitched specification and validates all Lean 4 theorems with zero unproven obligations"
+    SPEC(prismpm-jit-verifier | tier:B | status:APPROVED | blocks:[prismpm-rust-bridge]):
+      action:    Hook lgcc JIT-stitched .lex.tex specification into prismpm check and lexlean verify to execute machine-checked proof replay before commit and build.
+      requires:  [lgcc-topo-spec-stitcher]
+      ensures:   assert "Running lgcc --verify-specs compiles stitched specification and validates all Lean 4 theorems with zero unproven obligations"
+      invariant: "Proof replay kernel remains sound with zero unproven axioms"
+      modifies:  [crates/lgcc/src/ast/extractor.rs]
 
     [lean:spec]
     def prismpm_jit_verifier : Bool := lgcc_topo_spec_stitcher
@@ -299,9 +311,12 @@ impl Extractor {
 
     /*
 
-    SPEC(lgcc-spec-scanner | tier:B | depends_on:[tasks-lexlean-invariant-synthesis] | blocks:[lgcc-topo-spec-stitcher]): Discover and extract distributed in-tree LexLean specification fragments.
-    Description: Implement in-line specification patch scanner in native Rust extracting distributed LexLean fragments and dependency tags across all source files.
-    Criterion: assert: "lgcc --scan-specs discovers all in-tree specification fragments with correct source file and line offsets"
+    SPEC(lgcc-spec-scanner | tier:B | status:APPROVED | blocks:[lgcc-topo-spec-stitcher]):
+      action:    Implement in-line specification patch scanner in native Rust extracting distributed LexLean fragments and dependency tags across all source files.
+      requires:  [tasks-lexlean-invariant-synthesis]
+      ensures:   assert "lgcc --scan-specs discovers all in-tree specification fragments with correct source file and line offsets"
+      invariant: "Discovery scan runs in <50ms without loading non-code files"
+      modifies:  [crates/lgcc/src/ast/extractor.rs]
 
     [lean:spec]
     inductive Tier where

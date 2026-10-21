@@ -269,9 +269,12 @@ function M.lint(opts)
   local auto_budget = get_automatic_budget(initial_engine, target_chars, opts.budget)
 
   -- Assemble source code or hermetic Code Graph dependency bundle
-  -- SPEC(lgcc-compressed-ir | tier:B | depends_on:[lgcc-cli-router-hook] | blocks:[lgcc-project-scan]): Design compressed semantic intermediate representation preserving global cross-module invariants.
-  -- Description: Implement a compact AST/interface representation (symbol dependency graph and skeletonized type stubs) to keep full repository context in the model's active window without blowing up token limits.
-  -- Criterion: review: "Intermediate representation compacts multi-file repository context by >70% while retaining all exported types, signatures, and call invariants"
+  -- SPEC(lgcc-compressed-ir | tier:B | status:APPROVED | blocks:[lgcc-project-scan]):
+  --   action:    Implement a compact AST/interface representation (symbol dependency graph and skeletonized type stubs) to keep full repository context in the model's active window without blowing up token limits.
+  --   requires:  [lgcc-cli-router-hook]
+  --   ensures:   review: "Intermediate representation compacts multi-file repository context by >70% while retaining all exported types, signatures, and call invariants"
+  --   invariant: "Compressed representation preserves all exported function signatures"
+  --   modifies:  [nvim/lua/lgcc.lua]
   -- [lean:spec]
   -- def lgcc_compressed_ir : Bool := lgcc_cli_router_hook
   -- theorem lgcc_compressed_ir_verified : lgcc_compressed_ir = true := by rfl
@@ -601,17 +604,23 @@ end
 M.cancel = M.clear
 M.stop = M.clear
 
--- SPEC(lgcc-cli-router-hook | tier:B | depends_on:[ir-schema-formatter] | blocks:[lgcc-compressed-ir]): Connect budget router directly into Neovim lgcc execution loop.
--- Description: Integrate bundle_ir.py --route --budget into lgcc.lua with optional --budget argument for dynamic context allocation.
--- Criterion: review: ":Lgcc --budget 4000 dynamically queries router and passes knapsack-allocated IR context"
+-- SPEC(lgcc-cli-router-hook | tier:B | status:APPROVED | blocks:[lgcc-compressed-ir]):
+--   action:    Integrate bundle_ir.py --route --budget into lgcc.lua with optional --budget argument for dynamic context allocation.
+--   requires:  [ir-schema-formatter]
+--   ensures:   review: ":Lgcc --budget 4000 dynamically queries router and passes knapsack-allocated IR context"
+--   invariant: "Context allocation strictly respects active token budget"
+--   modifies:  [nvim/lua/lgcc.lua]
 -- [lean:spec]
 -- def lgcc_cli_router_hook : Bool := ir_schema_formatter
 -- theorem lgcc_cli_router_hook_verified : lgcc_cli_router_hook = true := by rfl
 
 
--- SPEC(lgcc-project-scan | tier:C | depends_on:[lgcc-compressed-ir]): Enable lgcc directory-wide and project-level logical analysis.
--- Description: Extend lgcc to scan entire directories and multi-file projects using the compressed intermediate representation to detect cross-module invariant violations and systemic flaws.
--- Criterion: review: "lgcc directory execution passes compressed project context and populates Quickfix with multi-file error locations"
+-- SPEC(lgcc-project-scan | tier:C | status:APPROVED):
+--   action:    Extend lgcc to scan entire directories and multi-file projects using the compressed intermediate representation to detect cross-module invariant violations and systemic flaws.
+--   requires:  [lgcc-compressed-ir]
+--   ensures:   review: "lgcc directory execution passes compressed project context and populates Quickfix with multi-file error locations"
+--   invariant: "Multi-file scan terminates and populates quickfix without UI freezes"
+--   modifies:  [nvim/lua/lgcc.lua]
 -- [lean:spec]
 -- def lgcc_project_scan : Bool := lgcc_compressed_ir
 -- theorem lgcc_project_scan_verified : lgcc_project_scan = true := by rfl

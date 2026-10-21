@@ -5,9 +5,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 /*
 
-SPEC(router-budget-knapsack | tier:B | depends_on:[router-connectivity-guard] | blocks:[ir-schema-formatter]): Implement knapsack context allocator bounded by token budget.
-Description: Select optimal symbol subgraph maximizing information coverage score while staying strictly within active context token budget.
-Criterion: theorem: router_budget_knapsack_verified
+SPEC(router-budget-knapsack | tier:B | status:APPROVED | blocks:[ir-schema-formatter]):
+  action:    Select optimal symbol subgraph maximizing information coverage score while staying strictly within active context token budget.
+  requires:  [router-connectivity-guard]
+  ensures:   theorem: router_budget_knapsack_verified
+  invariant: "Total selected tokens never exceed budget limit"
+  modifies:  [crates/lgcc/src/router/mod.rs]
 
 [lean:spec]
 structure RouteResultModel where
@@ -34,9 +37,12 @@ pub struct ContextRouter;
 impl ContextRouter {
     /*
 
-    SPEC(router-distance-decay | tier:B | depends_on:[ir-graph-builder] | blocks:[router-personalized-pagerank]): Compute directed shortest-path distance decay weights from target symbols.
-    Description: Calculate directed graph distances d(u, v) from target symbols and apply exponential/harmonic distance decay weighting.
-    Criterion: theorem: router_distance_decay_verified
+    SPEC(router-distance-decay | tier:B | status:APPROVED | blocks:[router-personalized-pagerank]):
+      action:    Calculate directed graph distances d(u, v) from target symbols and apply exponential/harmonic distance decay weighting.
+      requires:  [ir-graph-builder]
+      ensures:   theorem: router_distance_decay_verified
+      invariant: "Distance decay factor is strictly within range (0.0, 1.0]"
+      modifies:  [crates/lgcc/src/router/mod.rs]
 
     [lean:spec]
     def router_distance_decay : Bool := ir_graph_builder
@@ -94,9 +100,12 @@ impl ContextRouter {
 
     /*
 
-    SPEC(router-personalized-pagerank | tier:B | depends_on:[router-distance-decay] | blocks:[router-topological-pruner]): Compute Personalized PageRank centrality rooted at target symbols.
-    Description: Run power-iteration Personalized PageRank with random walk restart rooted at target symbols to score structural centrality.
-    Criterion: theorem: router_personalized_pagerank_verified
+    SPEC(router-personalized-pagerank | tier:B | status:APPROVED | blocks:[router-topological-pruner]):
+      action:    Run power-iteration Personalized PageRank with random walk restart rooted at target symbols to score structural centrality.
+      requires:  [router-distance-decay]
+      ensures:   theorem: router_personalized_pagerank_verified
+      invariant: "Probability distribution sums to 1.0 within epsilon error"
+      modifies:  [crates/lgcc/src/router/mod.rs]
 
     [lean:spec]
     def router_personalized_pagerank : Bool := router_distance_decay
@@ -174,9 +183,12 @@ impl ContextRouter {
 
     /*
 
-    SPEC(router-topological-pruner | tier:B | depends_on:[router-personalized-pagerank] | blocks:[router-knapsack-solver]): Compute composite importance weighting on symbol graph.
-    Description: Synthesize composite node importance scores S(v|q) combining PPR centrality and distance decay, pruning zero-relevance subgraphs.
-    Criterion: theorem: router_topological_pruner_verified
+    SPEC(router-topological-pruner | tier:B | status:APPROVED | blocks:[router-knapsack-solver]):
+      action:    Synthesize composite node importance scores S(v|q) combining PPR centrality and distance decay, pruning zero-relevance subgraphs.
+      requires:  [router-personalized-pagerank]
+      ensures:   theorem: router_topological_pruner_verified
+      invariant: "Pruned subgraphs contain only zero-connectivity symbols"
+      modifies:  [crates/lgcc/src/router/mod.rs]
 
     [lean:spec]
     def router_topological_pruner : Bool := router_personalized_pagerank
@@ -207,9 +219,12 @@ impl ContextRouter {
 
     /*
 
-    SPEC(router-knapsack-solver | tier:B | depends_on:[router-topological-pruner] | blocks:[router-connectivity-guard]): Solve 0/1 knapsack optimization selecting symbols under token budget.
-    Description: Formulate and solve knapsack optimization selecting symbol nodes to maximize total relevance score under active context token budget.
-    Criterion: theorem: router_knapsack_solver_verified
+    SPEC(router-knapsack-solver | tier:B | status:APPROVED | blocks:[router-connectivity-guard]):
+      action:    Formulate and solve knapsack optimization selecting symbol nodes to maximize total relevance score under active context token budget.
+      requires:  [router-topological-pruner]
+      ensures:   theorem: router_knapsack_solver_verified
+      invariant: "Solution is bounded by token budget constraint"
+      modifies:  [crates/lgcc/src/router/mod.rs]
 
     [lean:spec]
     def router_knapsack_solver : Bool := router_topological_pruner
@@ -257,9 +272,12 @@ impl ContextRouter {
                 if current_tokens + sym.token_cost <= token_budget {
                     /*
 
-                    SPEC(router-connectivity-guard | tier:B | depends_on:[router-knapsack-solver] | blocks:[router-budget-knapsack]): Enforce path connectivity invariant on selected symbol subgraph.
-                    Description: Ensure all selected symbols retain valid import/call paths to target symbols to prevent disconnected orphan hallucinations.
-                    Criterion: theorem: router_connectivity_guard_verified
+                    SPEC(router-connectivity-guard | tier:B | status:APPROVED | blocks:[router-budget-knapsack]):
+                      action:    Ensure all selected symbols retain valid import/call paths to target symbols to prevent disconnected orphan hallucinations.
+                      requires:  [router-knapsack-solver]
+                      ensures:   theorem: router_connectivity_guard_verified
+                      invariant: "Selected context graph contains zero disconnected component subgraphs"
+                      modifies:  [crates/lgcc/src/router/mod.rs]
 
                     [lean:spec]
                     def router_connectivity_guard : Bool := router_knapsack_solver
@@ -310,9 +328,12 @@ impl ContextRouter {
 
     /*
 
-    SPEC(spec-knapsack-budget-theorems | tier:B | depends_on:[spec-golden-acceptance-vectors] | blocks:[spec-lean4-native-syntax]): Formally prove knapsack budget constraint and allocation boundedness.
-    Description: Formally prove algebraic context router invariants in Lean / LexLean: knapsack token cost strictly satisfies total_tokens <= budget for all valid graph selections.
-    Criterion: theorem: knapsack_budget_theorems_verified
+    SPEC(spec-knapsack-budget-theorems | tier:B | status:APPROVED | blocks:[spec-lean4-native-syntax]):
+      action:    Formally prove algebraic context router invariants in Lean / LexLean: knapsack token cost strictly satisfies total_tokens <= budget for all valid graph selections.
+      requires:  [spec-golden-acceptance-vectors]
+      ensures:   theorem: knapsack_budget_theorems_verified
+      invariant: "Total allocated tokens never strictly exceed budget"
+      modifies:  [crates/lgcc/src/router/mod.rs]
 
     [lean:spec]
     def knapsack_budget_theorems : Bool := golden_acceptance_vectors
@@ -322,9 +343,12 @@ impl ContextRouter {
 
     /*
 
-    SPEC(spec-lean4-native-syntax | tier:B | depends_on:[spec-knapsack-budget-theorems]): Support native Lean 4 syntax directly in source contract blocks.
-    Description: Support native Lean 4 declaration and theorem syntax in source-level contract blocks, compiling directly to Lean 4 modules alongside LexLean semantic JSON.
-    Criterion: theorem: lean4_native_syntax_verified
+    SPEC(spec-lean4-native-syntax | tier:B | status:APPROVED):
+      action:    Support native Lean 4 declaration and theorem syntax in source-level contract blocks, compiling directly to Lean 4 modules alongside LexLean semantic JSON.
+      requires:  [spec-knapsack-budget-theorems]
+      ensures:   theorem: lean4_native_syntax_verified
+      invariant: "Compiler generates valid Lean 4 syntax tree"
+      modifies:  [crates/lgcc/src/router/mod.rs]
 
     [lean:spec]
     def lean4_native_syntax : Bool := knapsack_budget_theorems

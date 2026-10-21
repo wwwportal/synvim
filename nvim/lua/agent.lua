@@ -428,6 +428,109 @@ function M.clear_diff(keep_buffer)
   end
 end
 
+local function promote_contract_to_approved(filepath, task_id)
+  if not filepath or filepath == "" then return end
+  local root = get_root_dir()
+  local full_path = filepath:match("^/") and filepath or (root .. "/" .. filepath)
+  if vim.fn.filereadable(full_path) ~= 1 then return end
+
+  local lines = vim.fn.readfile(full_path)
+  local changed = false
+  for i, line in ipairs(lines) do
+    if line:find("SPEC%(") or line:find("TODO%(") or line:find("FIXME%(") then
+      if not task_id or line:find(task_id, 1, true) then
+        if line:find("status:DONE") then
+          lines[i] = line:gsub("status:DONE", "status:APPROVED")
+          changed = true
+        elseif line:find("status:TODO") then
+          lines[i] = line:gsub("status:TODO", "status:APPROVED")
+          changed = true
+        elseif not line:find("status:") then
+          lines[i] = line:gsub("%):", " | status:APPROVED):")
+          changed = true
+        end
+      end
+    elseif line:match("^[ \t]*[#/%-]+%s*status:%s*(TODO|DONE)") then
+      lines[i] = line:gsub("status:%s*(TODO|DONE)", "status: APPROVED")
+      changed = true
+    end
+  end
+
+  if changed then
+    vim.fn.writefile(lines, full_path)
+    local b = vim.fn.bufnr(full_path)
+    if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
+      vim.api.nvim_buf_call(b, function() vim.cmd("checktime") end)
+    end
+  end
+end
+
+local function ensure_contract_preserved_as_done(orig_slice, new_lines)
+  if not orig_slice or #orig_slice == 0 then return new_lines end
+  local first = orig_slice[1]
+  if not (first:find("SPEC%(") or first:find("TODO%(") or first:find("FIXME%(")) then
+    return new_lines
+  end
+
+  -- Check if new_lines already has the contract header
+  local new_first = new_lines[1] or ""
+  if new_first:find("SPEC%(") or new_first:find("TODO%(") or new_first:find("FIXME%(") then
+    for idx, nl in ipairs(new_lines) do
+      if nl:find("status:TODO") then
+        new_lines[idx] = nl:gsub("status:TODO", "status:DONE")
+      end
+    end
+    return new_lines
+  end
+
+  -- Extract contract comment lines from orig_slice
+  local contract_lines = {}
+  for _, l in ipairs(orig_slice) do
+    local trimmed = vim.trim(l)
+    if trimmed:find("^[#/%-]+%s*[a-zA-Z0-9_%-]+%s*%(.*%):")
+      or trimmed:find("^[#/%-]+%s*action:")
+      or trimmed:find("^[#/%-]+%s*requires:")
+      or trimmed:find("^[#/%-]+%s*ensures:")
+      or trimmed:find("^[#/%-]+%s*invariant:")
+      or trimmed:find("^[#/%-]+%s*modifies:")
+      or trimmed:find("^[#/%-]+%s*status:")
+      or trimmed:find("^[#/%-]+%s*%[lean:spec%]")
+      or trimmed:find("^[#/%-]+%s*def%s+")
+      or trimmed:find("^[#/%-]+%s*theorem%s+")
+      or trimmed:find("^[#/%-]+%s*inductive%s+")
+      or trimmed:find("^[#/%-]+%s*structure%s+")
+      or trimmed:find("^[#/%-]+%s*|%s+")
+      or trimmed:find("^[#/%-]+%s*Description:")
+      or trimmed:find("^[#/%-]+%s*Criterion:")
+    then
+      local updated_l = l
+      if updated_l:find("status:TODO") then
+        updated_l = updated_l:gsub("status:TODO", "status:DONE")
+      elseif updated_l:find("SPEC%(") or updated_l:find("TODO%(") or updated_l:find("FIXME%(") then
+        if not updated_l:find("status:") then
+          updated_l = updated_l:gsub("%):", " | status:DONE):")
+        end
+      end
+      table.insert(contract_lines, updated_l)
+    else
+      break
+    end
+  end
+
+  if #contract_lines > 0 then
+    local combined = {}
+    for _, cl in ipairs(contract_lines) do
+      table.insert(combined, cl)
+    end
+    for _, nl in ipairs(new_lines) do
+      table.insert(combined, nl)
+    end
+    return combined
+  end
+
+  return new_lines
+end
+
 --- Accept and permanently apply the pending in-line diff
 function M.accept_diff()
   if M.state.current_review then
@@ -446,6 +549,9 @@ function M.accept_diff()
   local new_lines = p.new_lines
   local old_count = p.old_count or 0
   local is_new_file = p.is_new_file
+  local filepath = vim.api.nvim_buf_get_name(bufnr)
+
+  promote_contract_to_approved(filepath, p.review and p.review.task_id)
 
   -- Mark diff as accepted so clear_diff will not revert buffer lines
   p.revert_lines = nil
@@ -544,19 +650,16 @@ local function wrap_diff_line(prefix, text, hl_group, max_w)
   return (#lines > 0) and lines or { { { full, hl_group } } }
 end
 
---- Show suggested code in-line with green-red diff colors.
---- Deleted lines are shown in RED as virtual lines above.
---- Added lines are highlighted IN-LINE directly on the buffer lines in GREEN.
---- No duplicate floating lines!
+--- Show suggested code in-line using standard gitsigns.nvim diff preview.
+--- Replaces custom ASCII boxes with native Neovim / gitsigns diffing.
 function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is_new_file, old_lines, review_meta)
   M.clear_diff()
-  setup_highlights()
 
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then return end
   if type(new_content) ~= "string" or vim.trim(new_content) == "" then return end
 
   local origin_win = get_primary_editor_win()
-  if vim.api.nvim_win_is_valid(origin_win) then
+  if origin_win and vim.api.nvim_win_is_valid(origin_win) then
     vim.api.nvim_set_current_win(origin_win)
   end
 
@@ -572,18 +675,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
   local already_applied = (table.concat(cur_slice, "\n") == new_content)
   local revert_lines = nil
 
-  -- Extract original deleted lines
-  local deleted_lines = {}
-  if type(old_lines) == "table" and #old_lines > 0 then
-    deleted_lines = old_lines
-  elseif already_applied and review_meta and review_meta.old_lines then
-    deleted_lines = review_meta.old_lines
-  elseif not already_applied and old_lines_count > 0 then
-    local e_idx = math.min(total_lines, s_idx + old_lines_count)
-    deleted_lines = vim.api.nvim_buf_get_lines(bufnr, s_idx, e_idx, false)
-  end
-
-  -- If not already applied to buffer, apply new_lines in-place so additions are truly in-line
+  -- If not already applied to buffer, apply new_lines in-place so additions are visible to git
   if not already_applied then
     local e_idx = math.min(total_lines, s_idx + old_lines_count)
     revert_lines = vim.api.nvim_buf_get_lines(bufnr, s_idx, e_idx, false)
@@ -591,63 +683,23 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     vim.bo[bufnr].modifiable = true
     vim.api.nvim_buf_set_lines(bufnr, s_idx, e_idx, false, new_lines)
     vim.bo[bufnr].modifiable = was_mod
+    vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write") end)
   end
-
-  local win_w = (origin_win and vim.api.nvim_win_is_valid(origin_win)) and vim.api.nvim_win_get_width(origin_win) or 80
-  local max_w = math.max(35, win_w - 6)
-
-  local task_name = (review_meta and (review_meta.task_id or review_meta.id))
-    or (is_new_file and "New File" or "Task")
-  local header_label = string.format(" Git Review: %s ", task_name)
-  local bar_len = math.max(4, max_w - #header_label - 4)
-  local header_text = "┌──" .. header_label .. string.rep("─", bar_len) .. "┐"
-  if #header_text > max_w then
-    header_text = header_text:sub(1, max_w - 1) .. "┐"
-  end
-
-  local footer_text = "└── :Accept | :Reject (revert) | :Revise " .. string.rep("─", math.max(2, max_w - 44)) .. "┘"
-  if #footer_text > max_w then
-    footer_text = footer_text:sub(1, max_w - 1) .. "┘"
-  end
-
-  -- 1. Top virtual lines: Header + Red deleted lines (with word-wrapping)
-  local virt_lines_top = {}
-  table.insert(virt_lines_top, { { header_text, "AgentDiffHeader" } })
-
-  for _, line in ipairs(deleted_lines) do
-    local chunks = wrap_diff_line("- ", line, "AgentDiffDelete", max_w)
-    for _, chunk in ipairs(chunks) do
-      table.insert(virt_lines_top, chunk)
-    end
-  end
-
-  local top_mark = vim.api.nvim_buf_set_extmark(bufnr, ns_diff, s_idx, 0, {
-    virt_lines = virt_lines_top,
-    virt_lines_above = true,
-  })
-
-  -- 2. Highlight additions IN-LINE directly on buffer lines in green, with '+' in sign column!
-  -- NO DUPLICATE VIRTUAL LINES ABOVE!
-  local num_added = math.max(1, #new_lines)
-  for i = 0, num_added - 1 do
-    local l_idx = s_idx + i
-    pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, l_idx, 0, {
-      line_hl_group = "AgentDiffAdd",
-      sign_text = "+",
-      sign_hl_group = "AgentDiffAddSign",
-    })
-  end
-
-  -- 3. Bottom virtual line: Footer attached below the last added line
-  local last_idx = s_idx + num_added - 1
-  local bot_mark = vim.api.nvim_buf_set_extmark(bufnr, ns_diff, last_idx, 0, {
-    virt_lines = { { { footer_text, "AgentDiffFooter" } } },
-    virt_lines_above = false,
-  })
 
   -- Direct cursor to the exact start line of the diff and center on screen
-  pcall(vim.api.nvim_win_set_cursor, origin_win, { target_line, 0 })
-  pcall(function() vim.cmd("normal! zz") end)
+  if origin_win and vim.api.nvim_win_is_valid(origin_win) then
+    pcall(vim.api.nvim_win_set_cursor, origin_win, { target_line, 0 })
+    pcall(function() vim.cmd("normal! zz") end)
+  end
+
+  -- Delegate in-file diff rendering to standard gitsigns.nvim
+  local ok_gs, gs = pcall(require, "gitsigns")
+  if ok_gs and gs then
+    pcall(gs.refresh)
+    vim.defer_fn(function()
+      pcall(gs.preview_hunk_inline)
+    end, 60)
+  end
 
   M.state.pending_diff = {
     bufnr = bufnr,
@@ -657,9 +709,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     old_count = old_lines_count,
     revert_lines = revert_lines,
     is_new_file = is_new_file or false,
-    top_mark = top_mark,
-    bot_mark = bot_mark,
-    bound_keys = {},
+    review = review_meta,
   }
 
   -- Buffer-local shortcuts that allow normal scrolling and review:
@@ -1135,6 +1185,7 @@ function M.accept(arg)
       for _, r in ipairs(unrev) do
         r.status = "accepted"
         r.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
+        promote_contract_to_approved(r.filepath or r.file, r.task_id)
         local meta_path = root .. "/" .. (r.patch_file:gsub("%.patch$", ".json"))
         if vim.fn.filereadable(meta_path) == 1 then
           vim.fn.writefile({ vim.fn.json_encode(r) }, meta_path)
@@ -1148,6 +1199,11 @@ function M.accept(arg)
     end
 
     -- Accept CURRENT file
+    for _, r in ipairs(unrev) do
+      if r.filepath == cur_file or r.file == cur_file then
+        promote_contract_to_approved(cur_file, r.task_id)
+      end
+    end
     vim.fn.system({ "git", "-C", root, "add", cur_file })
     pcall(vim.cmd, "DiffviewRefresh")
 
@@ -1178,6 +1234,7 @@ function M.accept(arg)
       for _, r in ipairs(unrev) do
         r.status = "accepted"
         r.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
+        promote_contract_to_approved(r.filepath or r.file, r.task_id)
         local meta_path = root .. "/" .. (r.patch_file:gsub("%.patch$", ".json"))
         if vim.fn.filereadable(meta_path) == 1 then
           vim.fn.writefile({ vim.fn.json_encode(r) }, meta_path)
@@ -2555,6 +2612,7 @@ function M.accept_review(rev_id)
   end
 
   M.clear_diff(true)
+  promote_contract_to_approved(rev.filepath or rev.file, rev.task_id)
   rev.status = "accepted"
   rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
   local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
@@ -2913,20 +2971,23 @@ function M.scaffold_and_run_task(instruction)
   slug = candidate
 
   -- Format comment line
-  local cs = vim.bo[cur_buf].commentstring
-  local stub_comment
-  if cs and cs:find("%%s") then
-    stub_comment = string.format(cs, string.format("TODO(%s | tier:A): %s", slug, instruction))
-  else
-    local ext = vim.fn.fnamemodify(filepath, ":e")
-    if ext == "lua" then
-      stub_comment = string.format("-- TODO(%s | tier:A): %s", slug, instruction)
-    elseif ext == "sh" or ext == "bash" or ext == "py" or ext == "yaml" or ext == "yml" or ext == "toml" then
-      stub_comment = string.format("# TODO(%s | tier:A): %s", slug, instruction)
-    else
-      stub_comment = string.format("// TODO(%s | tier:A): %s", slug, instruction)
-    end
+  local ext = vim.fn.fnamemodify(filepath, ":e")
+  local leader = "//"
+  if ext == "lua" then
+    leader = "--"
+  elseif ext == "sh" or ext == "bash" or ext == "py" or ext == "yaml" or ext == "yml" or ext == "toml" then
+    leader = "#"
   end
+
+  local rel_path = vim.fn.fnamemodify(filepath, ":.")
+  local stub_lines = {
+    string.format("%s SPEC(%s | tier:A | status:TODO):", leader, slug),
+    string.format("%s   action:    %s", leader, instruction),
+    string.format("%s   requires:  []", leader),
+    string.format('%s   ensures:   review "%s"', leader, instruction),
+    string.format('%s   invariant: "Module interfaces and type signatures preserved"', leader),
+    string.format("%s   modifies:  [%s]", leader, rel_path),
+  }
 
   local cur_win = get_primary_editor_win()
   local cursor_line = 1
@@ -2936,7 +2997,7 @@ function M.scaffold_and_run_task(instruction)
 
   local total_lines = vim.api.nvim_buf_line_count(cur_buf)
   local insert_idx = math.min(cursor_line, total_lines)
-  vim.api.nvim_buf_set_lines(cur_buf, insert_idx, insert_idx, false, { stub_comment })
+  vim.api.nvim_buf_set_lines(cur_buf, insert_idx, insert_idx, false, stub_lines)
   local target_line = insert_idx + 1
 
   pcall(function()
@@ -3220,11 +3281,26 @@ function M.run_todo(bufnr, target_arg)
   local raw_header = lines[chosen_line]
   chosen_desc = raw_header:gsub("^[ \t]*[#/%-]+%s*", "")
 
-  -- Count multi-line task comments (Description, Criterion, etc.)
+  -- Count multi-line task comments (Description, Criterion, action, requires, etc.)
   local j = chosen_line + 1
   while j <= #lines do
     local l = vim.trim(lines[j])
-    if l:find("^[#/%-]+%s*[Dd]escription:") or l:find("^[#/%-]+%s*[Cc]riterion:") or l:find("^[#/%-]+%s*[-*]") then
+    if l:find("^[#/%-]+%s*[Dd]escription:")
+      or l:find("^[#/%-]+%s*[Cc]riterion:")
+      or l:find("^[#/%-]+%s*action:")
+      or l:find("^[#/%-]+%s*requires:")
+      or l:find("^[#/%-]+%s*ensures:")
+      or l:find("^[#/%-]+%s*invariant:")
+      or l:find("^[#/%-]+%s*modifies:")
+      or l:find("^[#/%-]+%s*status:")
+      or l:find("^[#/%-]+%s*%[lean:spec%]")
+      or l:find("^[#/%-]+%s*def%s+")
+      or l:find("^[#/%-]+%s*theorem%s+")
+      or l:find("^[#/%-]+%s*inductive%s+")
+      or l:find("^[#/%-]+%s*structure%s+")
+      or l:find("^[#/%-]+%s*|%s+")
+      or l:find("^[#/%-]+%s*[-*]")
+    then
       old_lines_count = old_lines_count + 1
       chosen_desc = chosen_desc .. " " .. l:gsub("^[#/%-]+%s*", "")
       j = j + 1
@@ -3406,6 +3482,9 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
     local s_idx = math.max(0, start_lnum - 1)
     local e_idx = math.min(total, s_idx + old_cnt)
     local orig_slice = vim.api.nvim_buf_get_lines(bufnr, s_idx, e_idx, false)
+
+    new_lines = ensure_contract_preserved_as_done(orig_slice, new_lines)
+    new_content = table.concat(new_lines, "\n")
 
     -- Apply changes to buffer and save to file so code runs/inspects immediately
     vim.bo[bufnr].modifiable = true

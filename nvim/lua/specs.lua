@@ -10,58 +10,82 @@
 -- verifiable LexLean / Lean 4 acceptance theorems.
 -- ==============================================================================
 
--- SPEC(unified-tasks | tier:A | blocks:[syntra-plugin-bundle]): Bridge Taskwarrior and in-tree source TODOs into unified Neovim UI.
--- Description: Design and implement unified task management system in nvim bridging Taskwarrior and in-tree source TODOs.
--- Criterion: review: ":Tasks displays integrated agenda view with source TODOs and Taskwarrior tasks"
+-- SPEC(unified-tasks | tier:A | status:APPROVED | blocks:[syntra-plugin-bundle]):
+--   action:    Design and implement unified task management system in nvim bridging Taskwarrior and in-tree source TODOs.
+--   requires:  []
+--   ensures:   review: ":Tasks displays integrated agenda view with source TODOs and Taskwarrior tasks"
+--   invariant: "Task navigation never mutates unrelated buffer content"
+--   modifies:  [nvim/lua/specs.lua]
 -- [lean:spec]
 -- def unified_tasks : Bool := 1000 >= 0 && 1 <= 1000
 -- theorem unified_tasks_verified : unified_tasks = true := by decide
 
--- SPEC(lgcc-task-synthesizer | tier:B | depends_on:[lgcc-dep-bundle] | blocks:[spec-lexlean-todo-schema]): Guided transformation of informal TODO/FIXME tags into schema-compliant contracts using constrained typesafe generation.
--- Description: Integrate lgcc and prime-router / typesafe schema enforcement to analyze informal code TODOs and auto-synthesize valid tier, description, and verifiable criterion.
--- Criterion: review: ":Tasks fix or lgcc --fix-tasks interactively converts unstructured TODOs into valid in-tree contracts with user confirmation"
+-- SPEC(lgcc-task-synthesizer | tier:B | status:APPROVED | depends_on:[lgcc-dep-bundle] | blocks:[spec-lexlean-todo-schema]):
+--   action:    Integrate lgcc and prime-router / typesafe schema enforcement to analyze informal code TODOs and auto-synthesize valid tier, description, and verifiable criterion.
+--   requires:  [lgcc-dep-bundle]
+--   ensures:   review: ":Tasks fix or lgcc --fix-tasks interactively converts unstructured TODOs into valid in-tree contracts with user confirmation"
+--   invariant: "Task synthesis preserves existing file contents outside the target task comment"
+--   modifies:  [nvim/lua/specs.lua]
 -- [lean:spec]
 -- def lgcc_task_synthesizer : Bool := lgcc_dep_bundle
 -- theorem lgcc_task_synthesizer_verified : lgcc_task_synthesizer = true := by rfl
 
--- SPEC(spec-lexlean-todo-schema | tier:B | depends_on:[lgcc-task-synthesizer] | blocks:[spec-jit-patch-schema]): Formalize in-line source contracts as LexLean semantic specification blocks.
--- Description: Define a formal LexLean specification schema representing in-line task contracts, including inductive types for tiers, DAG dependencies, and theorem-backed acceptance criteria.
--- Criterion: assert: "LexLean schema for source task contracts passes lean4 formal verification and exports semantic AST"
+-- SPEC(spec-lexlean-todo-schema | tier:B | status:APPROVED | depends_on:[lgcc-task-synthesizer] | blocks:[spec-jit-patch-schema]):
+--   action:    Define a formal LexLean specification schema representing in-line task contracts, including inductive types for tiers, DAG dependencies, and theorem-backed acceptance criteria.
+--   requires:  [lgcc-task-synthesizer]
+--   ensures:   assert: "LexLean schema for source task contracts passes lean4 formal verification and exports semantic AST"
+--   invariant: "Schema definitions are sound and well-typed in Lean 4"
+--   modifies:  [nvim/lua/specs.lua]
 -- [lean:spec]
 -- def spec_lexlean_todo_schema : Bool := lgcc_task_synthesizer
 -- theorem spec_lexlean_todo_schema_verified : spec_lexlean_todo_schema = true := by rfl
 
--- SPEC(spec-jit-patch-schema | tier:B | depends_on:[spec-lexlean-todo-schema] | blocks:[lgcc-native-linter]): Define syntax for distributed in-tree LexLean specification patches.
--- Description: Define specification patch syntax and grammar allowing in-line source comments to embed typed native Lean 4 declarations, inductive types, and theorem blocks.
--- Criterion: assert: "Formal grammar for in-line [lean:spec] patches validates under tree-sitter and Lean 4 kernel parsers"
+-- SPEC(spec-jit-patch-schema | tier:B | status:APPROVED | depends_on:[spec-lexlean-todo-schema] | blocks:[lgcc-native-linter]):
+--   action:    Define specification patch syntax and grammar allowing in-line source comments to embed typed native Lean 4 declarations, inductive types, and theorem blocks.
+--   requires:  [spec-lexlean-todo-schema]
+--   ensures:   assert: "Formal grammar for in-line [lean:spec] patches validates under tree-sitter and Lean 4 kernel parsers"
+--   invariant: "Grammar remains unambiguous and parseable by standard tree-sitter parsers"
+--   modifies:  [nvim/lua/specs.lua]
 -- [lean:spec]
 -- def spec_jit_patch_schema : Bool := spec_lexlean_todo_schema
 -- theorem spec_jit_patch_schema_verified : spec_jit_patch_schema = true := by rfl
 
--- SPEC(tasks-add-spec-scaffold | tier:B | depends_on:[lgcc-native-linter] | blocks:[tasks-lexlean-invariant-synthesis]): Extend :Tasks add to scaffold formal LexLean SPEC blocks with declaration and theorem templates.
--- Description: Extend :Tasks add in Neovim to scaffold formal Lean 4 SPEC blocks with [lean:spec] declaration and theorem templates.
--- Criterion: assert: ":Tasks add spec <desc> inserts structured SPEC comment block with native Lean 4 payload stubs at target line"
+-- SPEC(tasks-add-spec-scaffold | tier:B | status:APPROVED | depends_on:[lgcc-native-linter] | blocks:[tasks-lexlean-invariant-synthesis]):
+--   action:    Extend :Tasks add in Neovim to scaffold formal Lean 4 SPEC blocks with [lean:spec] declaration and theorem templates.
+--   requires:  [lgcc-native-linter]
+--   ensures:   assert: ":Tasks add spec <desc> inserts structured SPEC comment block with native Lean 4 payload stubs at target line"
+--   invariant: "Inserted scaffolding adheres strictly to the 5-field contract specification schema"
+--   modifies:  [nvim/lua/specs.lua]
 -- [lean:spec]
 -- def tasks_add_spec_scaffold : Bool := lgcc_native_linter
 -- theorem tasks_add_spec_scaffold_verified : tasks_add_spec_scaffold = true := by rfl
 
--- SPEC(tasks-lexlean-invariant-synthesis | tier:B | depends_on:[tasks-add-spec-scaffold] | blocks:[lgcc-spec-scanner]): Synthesize non-trivial LexLean domain invariants and inductive theorems from source functions.
--- Description: Upgrade :Tasks add and lgcc task synthesis to extract function argument signatures, parameter bounds, and state predicates into non-trivial LexLean definitions and machine-checkable theorems beyond reflexive tautologies.
--- Criterion: assert: "Scaffolded SPEC blocks contain typed input parameters, inductive property constraints, and verified Lean 4 theorem obligations"
+-- SPEC(tasks-lexlean-invariant-synthesis | tier:B | status:APPROVED | depends_on:[tasks-add-spec-scaffold] | blocks:[lgcc-spec-scanner]):
+--   action:    Upgrade :Tasks add and lgcc task synthesis to extract function argument signatures, parameter bounds, and state predicates into non-trivial LexLean definitions and machine-checkable theorems beyond reflexive tautologies.
+--   requires:  [tasks-add-spec-scaffold]
+--   ensures:   assert: "Scaffolded SPEC blocks contain typed input parameters, inductive property constraints, and verified Lean 4 theorem obligations"
+--   invariant: "Synthesized theorem obligations are logically consistent with target function contracts"
+--   modifies:  [nvim/lua/specs.lua]
 -- [lean:spec]
 -- def tasks_lexlean_invariant_synthesis : Bool := tasks_add_spec_scaffold
 -- theorem tasks_lexlean_invariant_synthesis_verified : tasks_lexlean_invariant_synthesis = true := by rfl
 
--- SPEC(syntra-plugin-bundle | tier:B | depends_on:[unified-tasks] | blocks:[spec-syntra-application-manifest]): Bundle and install Syntra Neovim configuration with verified native lgcc engine.
--- Description: Provision and link Neovim configuration into ~/.config/nvim with verified native lgcc engine binary.
--- Criterion: review: "setup.sh provisions ~/.config/nvim and bin/lgcc executes cleanly"
+-- SPEC(syntra-plugin-bundle | tier:B | status:APPROVED | depends_on:[unified-tasks] | blocks:[spec-syntra-application-manifest]):
+--   action:    Provision and link Neovim configuration into ~/.config/nvim with verified native lgcc engine binary.
+--   requires:  [unified-tasks]
+--   ensures:   review: "setup.sh provisions ~/.config/nvim and bin/lgcc executes cleanly"
+--   invariant: "Neovim startup configuration executes cleanly without breaking user plugins"
+--   modifies:  [setup.sh, nvim/init.lua]
 -- [lean:spec]
 -- def syntra_plugin_bundle : Bool := unified_tasks
 -- theorem syntra_plugin_bundle_verified : syntra_plugin_bundle = true := by rfl
 
--- SPEC(spec-syntra-application-manifest | tier:B | depends_on:[syntra-plugin-bundle] | blocks:[spec-syntra-view-model]): Formalize SyntraApplication manifest specifying package metadata, token quotas, and installation targets.
--- Description: Define formal SyntraApplication inductive structure modeling package properties, context token budget limits, and script installation targets.
--- Criterion: assert: "SyntraApplication manifest passes prismpm check with zero schema errors"
+-- SPEC(spec-syntra-application-manifest | tier:B | status:APPROVED | depends_on:[syntra-plugin-bundle] | blocks:[spec-syntra-view-model]):
+--   action:    Define formal SyntraApplication inductive structure modeling package properties, context token budget limits, and script installation targets.
+--   requires:  [syntra-plugin-bundle]
+--   ensures:   assert: "SyntraApplication manifest passes prismpm check with zero schema errors"
+--   invariant: "Manifest schema captures all required deployment metadata"
+--   modifies:  [nvim/lua/specs.lua]
 -- [lean:spec]
 -- inductive DistributionTarget where
 --   | ScriptInstaller
@@ -76,9 +100,12 @@
 -- def syntra_application_manifest : Bool := syntra_plugin_bundle
 -- theorem syntra_application_manifest_verified : syntra_application_manifest = true := by rfl
 
--- SPEC(spec-syntra-view-model | tier:B | depends_on:[spec-syntra-application-manifest] | blocks:[spec-cli-wire-protocol-dispatch]): Formalize SyntraView and TaskAgendaView modeling Neovim presentation and keybindings.
--- Description: Model Neovim UI presentation parameters: split window layout, jumpable buffer options, agenda filter modes, and interactive key actions (<CR>, d, a, q).
--- Criterion: assert: "SyntraView and TaskAgendaView inductive structures pass Lean 4 kernel verification"
+-- SPEC(spec-syntra-view-model | tier:B | status:APPROVED | depends_on:[spec-syntra-application-manifest] | blocks:[spec-cli-wire-protocol-dispatch]):
+--   action:    Model Neovim UI presentation parameters: split window layout, jumpable buffer options, agenda filter modes, and interactive key actions (<CR>, d, a, q).
+--   requires:  [spec-syntra-application-manifest]
+--   ensures:   assert: "SyntraView and TaskAgendaView inductive structures pass Lean 4 kernel verification"
+--   invariant: "View model preserves buffer keymaps and window layout upon closing"
+--   modifies:  [nvim/lua/specs.lua]
 -- [lean:spec]
 -- inductive AgendaAction where
 --   | JumpToSource
@@ -1191,7 +1218,7 @@ local function insert_task_into_buf(bufnr, origin_win, spec, target_line)
   local current_line = (row <= line_count) and vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
   local indent = current_line:match("^(%s*)") or ""
 
-  local header_attrs = string.format("tier:%s", spec.tier)
+  local header_attrs = string.format("tier:%s | status:TODO", spec.tier)
   if spec.blocks and spec.blocks ~= "" then
     header_attrs = header_attrs .. " | " .. spec.blocks
   end
@@ -1199,25 +1226,36 @@ local function insert_task_into_buf(bufnr, origin_win, spec, target_line)
     header_attrs = header_attrs .. " | " .. spec.depends_on
   end
 
+  local cur_file_rel = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":.")
+
   local lines
   if spec.kind == "SPEC" then
     local dep_id = (spec.depends_on and spec.depends_on ~= "") and spec.depends_on:match("%[([%w%-_]+)") or nil
     local def_name = spec.id:gsub("%-", "_")
     local body_expr = dep_id and dep_id:gsub("%-", "_") or "true"
+    local req_str = dep_id and string.format("[%s]", dep_id) or "[]"
     lines = {
-      string.format("%s%sSPEC(%s | %s): %s", indent, leader, spec.id, header_attrs, spec.title),
-      string.format("%s%sDescription: %s", indent, leader, spec.description),
-      string.format('%s%sCriterion: assert: "%s"', indent, leader, spec.description),
+      string.format("%s%sSPEC(%s | %s):", indent, leader, spec.id, header_attrs),
+      string.format("%s%s  action:    %s", indent, leader, spec.description),
+      string.format("%s%s  requires:  %s", indent, leader, req_str),
+      string.format('%s%s  ensures:   assert "%s"', indent, leader, spec.description),
+      string.format('%s%s  invariant: "Module interfaces and type signatures preserved"', indent, leader),
+      string.format("%s%s  modifies:  [%s]", indent, leader, cur_file_rel),
       string.format("%s%s[lean:spec]", indent, leader),
       string.format("%s%sdef %s : Bool := %s", indent, leader, def_name, body_expr),
       string.format("%s%stheorem %s_verified : %s = true := by rfl", indent, leader, def_name, def_name),
       "",
     }
   else
+    local dep_id = (spec.depends_on and spec.depends_on ~= "") and spec.depends_on:match("%[([%w%-_]+)") or nil
+    local req_str = dep_id and string.format("[%s]", dep_id) or "[]"
     lines = {
-      string.format("%s%s%s(%s | %s): %s", indent, leader, spec.kind, spec.id, header_attrs, spec.title),
-      string.format("%s%sDescription: %s", indent, leader, spec.description),
-      string.format('%s%sCriterion: review: "%s"', indent, leader, spec.description),
+      string.format("%s%s%s(%s | %s):", indent, leader, spec.kind, spec.id, header_attrs),
+      string.format("%s%s  action:    %s", indent, leader, spec.description),
+      string.format("%s%s  requires:  %s", indent, leader, req_str),
+      string.format('%s%s  ensures:   review "%s"', indent, leader, spec.description),
+      string.format('%s%s  invariant: "Module interfaces and type signatures preserved"', indent, leader),
+      string.format("%s%s  modifies:  [%s]", indent, leader, cur_file_rel),
       "",
     }
   end

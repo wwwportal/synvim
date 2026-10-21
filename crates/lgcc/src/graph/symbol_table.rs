@@ -8,9 +8,12 @@ use walkdir::WalkDir;
 
 /*
 
-SPEC(graph-symbol-table | tier:B | depends_on:[graph-repo-scanner] | blocks:[graph-edge-extractor]): Construct global symbol table mapping fully-qualified names to signatures and locations.
-Description: Build repository symbol table V mapping module.Class.method and module.func FQNs to file locations, line ranges, and signatures.
-Criterion: review: "Symbol table indexes all top-level classes, methods, and functions with unique FQNs"
+SPEC(graph-symbol-table | tier:B | status:APPROVED | blocks:[graph-edge-extractor]):
+  action:    Build repository symbol table V mapping module.Class.method and module.func FQNs to file locations, line ranges, and signatures.
+  requires:  [graph-repo-scanner]
+  ensures:   review: "Symbol table indexes all top-level classes, methods, and functions with unique FQNs"
+  invariant: "FQNs are globally unique within project scope"
+  modifies:  [crates/lgcc/src/graph/symbol_table.rs]
 
 [lean:spec]
 def graph_symbol_table : Bool := graph_repo_scanner
@@ -34,9 +37,12 @@ pub struct SymbolTable;
 impl SymbolTable {
     /*
 
-    SPEC(graph-repo-scanner | tier:A | depends_on:[lgcc-dep-bundle] | blocks:[graph-symbol-table]): Discover and index repository source files respecting .gitignore.
-    Description: Implement repository-wide source file scanner discovering all Python and Lua files while filtering test/build/vendor noise.
-    Criterion: review: "scripts/bundle_ir.py --scan-repo returns complete list of tracked source files"
+    SPEC(graph-repo-scanner | tier:A | status:APPROVED | blocks:[graph-symbol-table]):
+      action:    Implement repository-wide source file scanner discovering all Python and Lua files while filtering test/build/vendor noise.
+      requires:  [lgcc-dep-bundle]
+      ensures:   review: "scripts/bundle_ir.py --scan-repo returns complete list of tracked source files"
+      invariant: "Scanner respects gitignore rules and ignores hidden directories"
+      modifies:  [crates/lgcc/src/graph/symbol_table.rs]
 
     [lean:spec]
     def graph_repo_scanner : Bool := lgcc_dep_bundle

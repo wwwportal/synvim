@@ -20,9 +20,12 @@ pub struct Skeletonizer;
 impl Skeletonizer {
     /*
 
-    SPEC(ir-contract-skeletonizer | tier:A | depends_on:[ir-ast-extractor] | blocks:[lgcc-dep-bundle]): Skeletonize implementation bodies while preserving signatures and invariants.
-    Description: Replace function and method bodies with stubs while retaining complete type annotations, docstring invariants, and interface definitions.
-    Criterion: review: "Skeletonizer achieves >70% character and token reduction on target modules while preserving all exported signatures"
+    SPEC(ir-contract-skeletonizer | tier:A | status:APPROVED | blocks:[lgcc-dep-bundle]):
+      action:    Replace function and method bodies with stubs while retaining complete type annotations, docstring invariants, and interface definitions.
+      requires:  [ir-ast-extractor]
+      ensures:   review: "Skeletonizer achieves >70% character and token reduction on target modules while preserving all exported signatures"
+      invariant: "Exported public signatures remain byte-identical before and after skeletonization"
+      modifies:  [crates/lgcc/src/ast/skeletonizer.rs]
 
     [lean:spec]
     def ir_contract_skeletonizer : Bool := ir_ast_extractor

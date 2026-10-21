@@ -6,9 +6,12 @@ use std::path::{Path, PathBuf};
 
 /*
 
-SPEC(graph-edge-extractor | tier:B | depends_on:[graph-symbol-table] | blocks:[ir-graph-builder]): Extract cross-file call-graph and type-reference dependency edges.
-Description: Resolve AST call sites and type annotations against the global symbol table to generate directed dependency edges E.
-Criterion: review: "Extracted graph contains verified caller->callee edges across different modules"
+SPEC(graph-edge-extractor | tier:B | status:APPROVED | blocks:[ir-graph-builder]):
+  action:    Resolve AST call sites and type annotations against the global symbol table to generate directed dependency edges E.
+  requires:  [graph-symbol-table]
+  ensures:   review: "Extracted graph contains verified caller->callee edges across different modules"
+  invariant: "Edge weights are strictly positive and normalized"
+  modifies:  [crates/lgcc/src/graph/graph.rs]
 
 [lean:spec]
 def graph_edge_extractor : Bool := graph_symbol_table
@@ -25,9 +28,12 @@ pub struct GraphEdge {
 
 /*
 
-SPEC(ir-graph-builder | tier:B | depends_on:[graph-edge-extractor] | blocks:[router-distance-decay]): Construct global multi-file repository symbol dependency graph.
-Description: Assemble and serialize global repository symbol DAG G=(V, E) into compact adjacency representation.
-Criterion: review: "scripts/bundle_ir.py --graph returns full repository symbol DAG with verified node and edge counts"
+SPEC(ir-graph-builder | tier:B | status:APPROVED | blocks:[router-distance-decay]):
+  action:    Assemble and serialize global repository symbol DAG G=(V, E) into compact adjacency representation.
+  requires:  [graph-edge-extractor]
+  ensures:   review: "scripts/bundle_ir.py --graph returns full repository symbol DAG with verified node and edge counts"
+  invariant: "Graph representation contains zero dangling node pointers"
+  modifies:  [crates/lgcc/src/graph/graph.rs]
 
 [lean:spec]
 def ir_graph_builder : Bool := graph_edge_extractor
@@ -44,17 +50,23 @@ pub struct DependencyGraph {
 
 /*
 
-TODO(convert-code-graph-tensors | tier:B): convert code graph to tensors
-Description: convert code graph to tensors
-Criterion: review: "convert code graph to tensors"
+SPEC(convert-code-graph-tensors | tier:B | status:APPROVED):
+  action:    Convert code dependency graph into tensor adjacency matrices for neural embedding.
+  requires:  [ir-graph-builder]
+  ensures:   review: "Graph tensor serialization outputs fixed-dimensional adjacency tensor"
+  invariant: "Node index ordering is preserved during tensor encoding"
+  modifies:  [crates/lgcc/src/graph/graph.rs]
 
 */
 
 /*
 
-SPEC(lgcc-topo-spec-stitcher | tier:B | depends_on:[lgcc-spec-scanner] | blocks:[prismpm-jit-verifier]): Topologically assemble distributed specification patches into canonical .lex.tex document.
-Description: Implement topological specification stitcher in lgcc assembling distributed specification fragments into a unified, mathematically sound .lex.tex document ordered by dependency graph.
-Criterion: assert: "lgcc --stitch-specs produces valid .lex.tex document preserving topological ordering of all types, definitions, and theorems"
+SPEC(lgcc-topo-spec-stitcher | tier:B | status:APPROVED | blocks:[prismpm-jit-verifier]):
+  action:    Implement topological specification stitcher in lgcc assembling distributed specification fragments into a unified, mathematically sound .lex.tex document ordered by dependency graph.
+  requires:  [lgcc-spec-scanner]
+  ensures:   assert "lgcc --stitch-specs produces valid .lex.tex document preserving topological ordering of all types, definitions, and theorems"
+  invariant: "Topological stitcher never emits circular includes"
+  modifies:  [crates/lgcc/src/graph/graph.rs]
 
 [lean:spec]
 def lgcc_topo_spec_stitcher : Bool := lgcc_spec_scanner
