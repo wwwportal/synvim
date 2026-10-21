@@ -2055,66 +2055,6 @@ local function search_and_rank(query, root)
   return candidates
 end
 
---- Exact Local Code Search (:Grep <query|symbol|file:line>)
-function M.grep(query)
-  query = vim.trim(query or "")
-  if query == "" then
-    vim.notify("Usage: :Grep <pattern, symbol name, or file:line>", vim.log.levels.INFO)
-    return
-  end
-
-  local root = get_root_dir()
-
-  -- 1. Direct file:line jump (e.g. :Grep src/main.rs:25 or :Grep agent.lua:100)
-  local file_target, line_target = query:match("^([^:]+):(%d+)$")
-  if file_target and line_target then
-    local full_path = file_target:match("^/") and file_target or (root .. "/" .. file_target)
-    if vim.fn.filereadable(full_path) ~= 1 then
-      local find_f = vim.fn.systemlist({ "git", "-C", root, "ls-files", "*" .. file_target })
-      if #find_f > 0 and vim.fn.filereadable(root .. "/" .. find_f[1]) == 1 then
-        file_target = find_f[1]
-        full_path = root .. "/" .. file_target
-      end
-    end
-
-    if vim.fn.filereadable(full_path) == 1 then
-      local target = {
-        path = file_target,
-        line = tonumber(line_target),
-        col = 1,
-        action = "navigate",
-        description = file_target .. ":" .. line_target,
-      }
-      M.state.queue = { target }
-      M.state.queue_index = 1
-      jump_to_target(target)
-      update_queue_display(false)
-      vim.api.nvim_echo({
-        { "● [Direct Jump] ", "ModeMsg" },
-        { string.format("%s:%s", file_target, line_target), "Directory" },
-      }, false, {})
-      return
-    end
-  end
-
-  -- 2. Instant local ranked search
-  local candidates = search_and_rank(query, root)
-  if #candidates > 0 then
-    local best = candidates[1]
-    M.state.queue = candidates
-    M.state.queue_index = 1
-    jump_to_target(best)
-    update_queue_display(#candidates > 1)
-    vim.api.nvim_echo({
-      { "● [Grep Found] ", "ModeMsg" },
-      { string.format("%s:%d", best.path, best.line), "Directory" },
-      { string.format(" — %s (%d ranked match%s)", best.description, #candidates, #candidates > 1 and "es" or ""), "Normal" },
-    }, false, {})
-  else
-    vim.notify("No local grep matches for '" .. query .. "'", vim.log.levels.WARN)
-  end
-end
-
 --- Semantic Code Search (:Find <concept|description>)
 -- Uses LLM to locate the exact code implementation corresponding to the concept.
 function M.find(query)
@@ -3519,7 +3459,6 @@ local function show_help()
     "",
     "Search & Inspection",
     "  :Find <concept>        Semantic LLM search; jumps directly to relevant code",
-    "  :Grep <pattern>        Fast local regex search across repo into Quickfix",
     "  :Ask <question>        Navigate to code and insert an in-line explanation diff",
     "",
     "In-Line Diff Shortcuts (when diff is active)",
@@ -3971,11 +3910,6 @@ function M.setup()
     M.find(ctx.args)
   end, { nargs = "*", desc = "Semantic code search across repository with LLM (:Find <concept>)" })
 
-  vim.api.nvim_create_user_command("Grep", function(ctx)
-    M.state.origin_win = vim.api.nvim_get_current_win()
-    M.grep(ctx.args)
-  end, { nargs = "*", desc = "Instant local literal code & symbol search (:Grep <pattern|symbol>)" })
-
   vim.api.nvim_create_user_command("Ask", function(ctx)
     M.state.origin_win = vim.api.nvim_get_current_win()
     M.ask(ctx.args)
@@ -4025,14 +3959,12 @@ function M.setup()
     cnoreabbrev <expr> tasks (getcmdtype() ==# ':' && getcmdline() ==# 'tasks') ? 'Tasks' : 'tasks'
     cnoreabbrev <expr> ask (getcmdtype() ==# ':' && getcmdline() ==# 'ask') ? 'Ask' : 'ask'
     cnoreabbrev <expr> find (getcmdtype() ==# ':' && getcmdline() ==# 'find') ? 'Find' : 'find'
-    cnoreabbrev <expr> grep (getcmdtype() ==# ':' && getcmdline() ==# 'grep') ? 'Grep' : 'grep'
     cnoreabbrev <expr> synvim (getcmdtype() ==# ':' && getcmdline() ==# 'synvim') ? 'Synvim' : 'synvim'
   ]])
 
   M.get_root_dir = get_root_dir
   M.collect_context = collect_context
   M.search_and_rank = search_and_rank
-  M.grep = M.grep
   M.find = M.find
   M.ask = M.ask
   M.add_task = M.add_task
@@ -4050,7 +3982,6 @@ end
 M.get_root_dir = get_root_dir
 M.collect_context = collect_context
 M.search_and_rank = search_and_rank
-M.grep = M.grep
 M.find = M.find
 M.ask = M.ask
 M.add_task = M.add_task

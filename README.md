@@ -27,7 +27,6 @@ Run `:Synvim help` inside Neovim at any time to view this list.
 | `:Tasks reject <id>` | Reject and revert specific review by ID |
 | `:Tasks stop` | Abort running background synthesis job and clear preview diffs |
 | `:Find <concept>` | Semantic LLM search; jumps directly to relevant code |
-| `:Grep <pattern>` | Local regex search across files; opens results in Quickfix |
 | `:Ask <question>` | Jump to relevant code and insert an in-line explanatory comment |
 
 ## Split & Terminal Keybindings
