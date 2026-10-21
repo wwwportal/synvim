@@ -52,8 +52,7 @@ clone_plugin "plenary.nvim" "https://github.com/nvim-lua/plenary.nvim.git"
 clone_plugin "lualine.nvim" "https://github.com/nvim-lualine/lualine.nvim.git"
 clone_plugin "nvim-web-devicons" "https://github.com/nvim-tree/nvim-web-devicons.git"
 clone_plugin "todo-comments.nvim" "https://github.com/folke/todo-comments.nvim.git"
-clone_plugin "diffview.nvim" "https://github.com/sindrets/diffview.nvim.git"
-clone_plugin "gitsigns.nvim" "https://github.com/lewis6991/gitsigns.nvim.git"
+
 
 echo "==> [3/3] Verifying configuration..."
 nvim --headless -u "$TARGET_DIR/init.lua" -c "qall"

@@ -5,34 +5,26 @@ local ui = require("agent.ui")
 function M.setup_highlights()
   local is_dark = (vim.o.background == "dark")
   if is_dark then
-    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#a6f3a6", bg = "#144620", ctermfg = 10, ctermbg = 22, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffAddWord", { fg = "#ffffff", bg = "#166534", bold = true, ctermfg = 15, ctermbg = 28, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#22c55e", bold = true, ctermfg = 10, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#ff8585", bg = "#4a0e0e", strikethrough = true, ctermfg = 9, ctermbg = 52, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffDeleteWord", { fg = "#ffffff", bg = "#7f1d1d", bold = true, strikethrough = true, ctermfg = 15, ctermbg = 52, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffDeleteDim", { fg = "#737373", bg = "#262626", ctermfg = 8, ctermbg = 235, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffUnchanged", { fg = "#9ca3af", bg = "#2b2b2b", ctermfg = 8, ctermbg = 236, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffChangeSign", { fg = "#eab308", bold = true, ctermfg = 11, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#86efac", bg = "#143820", ctermfg = 10, ctermbg = 22, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAddWord", { fg = "#bbf7d0", bg = "#1e532d", bold = true, ctermfg = 15, ctermbg = 28, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#4ade80", bold = true, ctermfg = 10, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#fca5a5", bg = "#381717", strikethrough = true, ctermfg = 9, ctermbg = 52, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDeleteWord", { fg = "#fecaca", bg = "#4f1e1e", bold = true, strikethrough = true, ctermfg = 15, ctermbg = 52, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDeleteDim", { fg = "#fca5a5", bg = "#381717", strikethrough = true, ctermfg = 8, ctermbg = 235, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffUnchanged", { fg = "#9ca3af", bg = "#262626", ctermfg = 8, ctermbg = 236, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffChangeSign", { fg = "#facc15", bold = true, ctermfg = 11, default = false })
   else
-    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#14532d", bg = "#bbf7d0", ctermfg = 28, ctermbg = 194, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffAddWord", { fg = "#ffffff", bg = "#15803d", bold = true, ctermfg = 15, ctermbg = 28, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#166534", bg = "#e6ffec", ctermfg = 28, ctermbg = 194, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAddWord", { fg = "#14532d", bg = "#bbf7d0", bold = true, ctermfg = 15, ctermbg = 28, default = false })
     vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#16a34a", bold = true, ctermfg = 28, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#991b1b", bg = "#fecaca", strikethrough = true, ctermfg = 160, ctermbg = 224, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffDeleteWord", { fg = "#ffffff", bg = "#dc2626", bold = true, strikethrough = true, ctermfg = 15, ctermbg = 160, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffDeleteDim", { fg = "#9ca3af", bg = "#f3f4f6", ctermfg = 8, ctermbg = 254, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffUnchanged", { fg = "#6b7280", bg = "#f3f4f6", ctermfg = 8, ctermbg = 254, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffChangeSign", { fg = "#a16207", bold = true, ctermfg = 94, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#991b1b", bg = "#ffeef0", strikethrough = true, ctermfg = 160, ctermbg = 224, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDeleteWord", { fg = "#7f1d1d", bg = "#fecaca", bold = true, strikethrough = true, ctermfg = 15, ctermbg = 160, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDeleteDim", { fg = "#991b1b", bg = "#ffeef0", strikethrough = true, ctermfg = 8, ctermbg = 254, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffUnchanged", { fg = "#6b7280", bg = "#f9fafb", ctermfg = 8, ctermbg = 254, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffChangeSign", { fg = "#d97706", bold = true, ctermfg = 94, default = false })
   end
   pcall(vim.api.nvim_set_hl, 0, "GitReviewAdd", { link = "AgentDiffAdd", default = false })
   pcall(vim.api.nvim_set_hl, 0, "GitReviewDelete", { link = "AgentDiffDelete", default = false })
-  pcall(vim.api.nvim_set_hl, 0, "GitSignsDeleteVirtLn", { link = "AgentDiffDelete", default = false })
-  pcall(vim.api.nvim_set_hl, 0, "GitSignsDeleteVirtLnInLine", { link = "AgentDiffDeleteWord", default = false })
-  pcall(vim.api.nvim_set_hl, 0, "GitSignsDeleteInline", { link = "AgentDiffDeleteWord", default = false })
-  pcall(vim.api.nvim_set_hl, 0, "GitSignsDeleteLnInline", { link = "AgentDiffDeleteWord", default = false })
-  pcall(vim.api.nvim_set_hl, 0, "GitSignsAddInline", { link = "AgentDiffAddWord", default = false })
-  pcall(vim.api.nvim_set_hl, 0, "GitSignsAddLnInline", { link = "AgentDiffAddWord", default = false })
-  pcall(vim.api.nvim_set_hl, 0, "GitSignsChangeInline", { link = "AgentDiffAddWord", default = false })
-  pcall(vim.api.nvim_set_hl, 0, "GitSignsChangeLnInline", { link = "AgentDiffAddWord", default = false })
 end
 
 --- Wrap virtual diff line into visual chunks not exceeding max_w
@@ -86,10 +78,10 @@ function M.tokenize_line(line)
   return tokens
 end
 
---- Compute character/word diff between old_line and new_line
+--- Compute inline token diff between old_line and new_line
 --- Returns:
----   1. vline_chunks: array of chunks for virt_lines { { text, hl_group }, ... }
----   2. add_ranges: array of { start_col, end_col } for AgentDiffAddWord on the buffer line
+---   1. inline_deletes: array of { col = int, text = string } for inline virtual text (AgentDiffDeleteWord)
+---   2. add_ranges: array of { start_col = int, end_col = int } for AgentDiffAddWord on the buffer line
 function M.compute_char_diff(old_line, new_line)
   local old_toks = M.tokenize_line(old_line)
   local new_toks = M.tokenize_line(new_line)
@@ -100,29 +92,42 @@ function M.compute_char_diff(old_line, new_line)
   for _, t in ipairs(new_toks) do table.insert(nt, t.text) end
 
   local hunk_indices = vim.diff(table.concat(ot, "\n") .. "\n", table.concat(nt, "\n") .. "\n", { result_type = "indices", algorithm = "histogram" }) or {}
-  local old_del = {}
-  local new_add = {}
+  local inline_deletes = {}
+  local add_ranges = {}
 
   for _, h in ipairs(hunk_indices) do
     local sa, ca, sb, cb = h[1], h[2], h[3], h[4]
-    for k = sa, sa + ca - 1 do old_del[k] = true end
-    for k = sb, sb + cb - 1 do new_add[k] = true end
-  end
+    local del_str = ""
+    if ca > 0 then
+      for k = sa, sa + ca - 1 do
+        del_str = del_str .. (old_toks[k] and old_toks[k].text or "")
+      end
+    end
 
-  local vline_chunks = { { "- ", "AgentDiffDelete" } }
-  for idx, t in ipairs(old_toks) do
-    local hl = old_del[idx] and "AgentDiffDeleteWord" or "AgentDiffDeleteDim"
-    table.insert(vline_chunks, { t.text, hl })
-  end
+    local anchor_col = #new_line
+    if cb > 0 and new_toks[sb] then
+      anchor_col = new_toks[sb].start_col
+      local end_col = new_toks[sb + cb - 1] and new_toks[sb + cb - 1].end_col or anchor_col
+      table.insert(add_ranges, { start_col = anchor_col, end_col = end_col })
+    elseif sb <= #new_toks and new_toks[sb] then
+      anchor_col = new_toks[sb].start_col
+    end
 
-  local add_ranges = {}
-  for idx, t in ipairs(new_toks) do
-    if new_add[idx] and not t.is_ws then
-      table.insert(add_ranges, { start_col = t.start_col, end_col = t.end_col })
+    if #del_str > 0 then
+      if cb > 0 and not del_str:match("%s$") and new_toks[sb] and not new_toks[sb].text:match("^%s") then
+        del_str = del_str .. " "
+      end
+      table.insert(inline_deletes, { col = anchor_col, text = del_str })
     end
   end
 
-  return vline_chunks, add_ranges
+  -- Fallback if diff found no hunks but lines differ
+  if #inline_deletes == 0 and #add_ranges == 0 and old_line ~= new_line then
+    table.insert(inline_deletes, { col = 0, text = old_line .. " " })
+    table.insert(add_ranges, { start_col = 0, end_col = #new_line })
+  end
+
+  return inline_deletes, add_ranges
 end
 
 function M.promote_contract_to_approved(filepath, task_id)
@@ -363,6 +368,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
   local line_kind = {}
   for i = 1, #new_lines do line_kind[i] = "same" end
   local virt_by_line = {}
+  local inline_deletes_by_line = {}
   local char_adds_by_line = {}
 
   local function add_virt_line(idx, vline_chunks)
@@ -384,14 +390,14 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
       -- pure insertion: mark as added
       for k = 1, (cb or 0) do line_kind[sb + k - 1] = "added" end
     elseif cb == 0 then
-      -- pure deletion: red virtual line above the anchor line
+      -- pure deletion: soft pink virtual line above the anchor line
       local anchor = math.max(1, math.min(sb, #new_lines))
       for k = 1, ca do
         local old_l = deleted_lines[sa + k - 1] or ""
         add_virt_line(anchor, { { "- " .. old_l, "AgentDiffDelete" } })
       end
     else
-      -- mixed: pair min(ca,cb) as changed with character-level diff
+      -- mixed: pair min(ca,cb) as changed with inline interleaved diff
       local min_n = math.min(ca, cb)
       for k = 1, min_n do
         local old_i = sa + k - 1
@@ -400,8 +406,8 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
         local new_l = new_lines[new_i] or ""
         if old_l ~= new_l then
           line_kind[new_i] = "changed"
-          local vchunks, aranges = M.compute_char_diff(old_l, new_l)
-          add_virt_line(new_i, vchunks)
+          local inlines, aranges = M.compute_char_diff(old_l, new_l)
+          inline_deletes_by_line[new_i] = inlines
           char_adds_by_line[new_i] = aranges
         else
           line_kind[new_i] = "same"
@@ -409,7 +415,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
       end
       -- extra insertions beyond pairs -> green addition
       for k = min_n + 1, cb do line_kind[sb + k - 1] = "added" end
-      -- extra deletions beyond pairs -> red virtual line above next new line
+      -- extra deletions beyond pairs -> soft pink virtual line above next new line
       if min_n < ca then
         local anchor = math.max(1, math.min(sb + min_n, #new_lines))
         for k = min_n + 1, ca do
@@ -428,14 +434,14 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
       local new_l = new_lines[i]
       if old_l and old_l ~= new_l then
         line_kind[i] = "changed"
-        local vchunks, aranges = M.compute_char_diff(old_l, new_l)
-        add_virt_line(i, vchunks)
+        local inlines, aranges = M.compute_char_diff(old_l, new_l)
+        inline_deletes_by_line[i] = inlines
         char_adds_by_line[i] = aranges
       end
     end
   end
 
-  -- Render virtual lines (Array of Lines, each line is an Array of Chunks {text, hl})
+  -- Render virtual lines (only for pure deleted lines with no replacement line)
   for i = 1, math.max(1, #new_lines) do
     local vlines = virt_by_line[i]
     if vlines and #vlines > 0 then
@@ -448,7 +454,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     end
   end
 
-  -- Highlight added lines (green line + '+') and changed lines ('~' with character-level highlights)
+  -- Highlight added lines (soft green + '+') and changed lines ('~' with inline deleted tokens + added word highlights)
   for i = 1, #new_lines do
     local l_idx = s_idx + (i - 1)
     if line_kind[i] == "added" then
@@ -464,6 +470,18 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
         sign_hl_group = "AgentDiffChangeSign",
         priority = 250,
       })
+      -- Render inline deleted tokens interleaved directly in the line
+      local inlines = inline_deletes_by_line[i]
+      if inlines and #inlines > 0 then
+        for _, d in ipairs(inlines) do
+          pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, l_idx, d.col, {
+            virt_text = { { d.text, "AgentDiffDeleteWord" } },
+            virt_text_pos = "inline",
+            priority = 255,
+          })
+        end
+      end
+      -- Highlight added token ranges
       local aranges = char_adds_by_line[i]
       if aranges and #aranges > 0 then
         for _, r in ipairs(aranges) do
@@ -492,12 +510,6 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     end
     vim.cmd("redraw")
   end)
-
-  -- Refresh gitsigns in the background
-  local ok_gs, gs = pcall(require, "gitsigns")
-  if ok_gs and gs then
-    pcall(gs.refresh)
-  end
 
   state.pending_diff = {
     bufnr = bufnr,

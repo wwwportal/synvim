@@ -26,32 +26,7 @@ return {
       })
     end,
   },
-  {
-    "lewis6991/gitsigns.nvim",
-    event = { "BufReadPre", "BufNewFile" },
-    opts = {
-      signs = {
-        add          = { text = "│" },
-        change       = { text = "│" },
-        delete       = { text = "-" },
-        topdelete    = { text = "‾" },
-        changedelete = { text = "~" },
-        untracked    = { text = "┆" },
-      },
-      diff_opts = {
-        internal = true,
-        linematch = 60,
-      },
-      word_diff = true,
-      on_attach = function(bufnr)
-        local ok, gs = pcall(require, "gitsigns")
-        if ok and gs then
-          pcall(gs.toggle_deleted, true)
-          pcall(gs.toggle_word_diff, true)
-        end
-      end,
-    },
-  },
+
   {
     "nvim-lualine/lualine.nvim",
     dependencies = { "nvim-tree/nvim-web-devicons" },
@@ -196,15 +171,7 @@ return {
               icon = "",
               color = { fg = colors.white, gui = "bold" },
             },
-            {
-              "diff",
-              colored = true,
-              diff_color = {
-                added = { fg = colors.diff_add, gui = "bold" },
-                modified = { fg = colors.diff_mod, gui = "bold" },
-                removed = { fg = colors.diff_del, gui = "bold" },
-              },
-            },
+
             {
               "diagnostics",
               sources = { "nvim_diagnostic" },
