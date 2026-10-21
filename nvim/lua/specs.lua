@@ -1225,37 +1225,10 @@ local function insert_task_into_buf(bufnr, origin_win, spec, target_line)
 
   local cur_file_rel = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":.")
 
-  local lines
-  if spec.kind == "SPEC" then
-    local dep_id = (spec.depends_on and spec.depends_on ~= "") and spec.depends_on:match("%[([%w%-_]+)") or nil
-    local def_name = spec.id:gsub("%-", "_")
-    local body_expr = dep_id and dep_id:gsub("%-", "_") or "true"
-    local req_str = dep_id and string.format("[%s]", dep_id) or "[]"
-    lines = {
-      string.format("%s%sSPEC(%s | %s):", indent, leader, spec.id, header_attrs),
-      string.format("%s%s  action:    %s", indent, leader, spec.description),
-      string.format("%s%s  requires:  %s", indent, leader, req_str),
-      string.format('%s%s  ensures:   assert "%s"', indent, leader, spec.description),
-      string.format('%s%s  invariant: "Module interfaces and type signatures preserved"', indent, leader),
-      string.format("%s%s  modifies:  [%s]", indent, leader, cur_file_rel),
-      string.format("%s%s[lean:spec]", indent, leader),
-      string.format("%s%sdef %s : Bool := %s", indent, leader, def_name, body_expr),
-      string.format("%s%stheorem %s_verified : %s = true := by rfl", indent, leader, def_name, def_name),
-      "",
-    }
-  else
-    local dep_id = (spec.depends_on and spec.depends_on ~= "") and spec.depends_on:match("%[([%w%-_]+)") or nil
-    local req_str = dep_id and string.format("[%s]", dep_id) or "[]"
-    lines = {
-      string.format("%s%s%s(%s | %s):", indent, leader, spec.kind, spec.id, header_attrs),
-      string.format("%s%s  action:    %s", indent, leader, spec.description),
-      string.format("%s%s  requires:  %s", indent, leader, req_str),
-      string.format('%s%s  ensures:   review "%s"', indent, leader, spec.description),
-      string.format('%s%s  invariant: "Module interfaces and type signatures preserved"', indent, leader),
-      string.format("%s%s  modifies:  [%s]", indent, leader, cur_file_rel),
-      "",
-    }
-  end
+  local lines = {
+    string.format("%s%s %s(%s): %s", indent, leader, spec.kind or "TODO", spec.id, spec.description),
+    "",
+  }
 
   local insert_idx = math.max(0, row - 1)
   vim.api.nvim_buf_set_lines(bufnr, insert_idx, insert_idx, false, lines)

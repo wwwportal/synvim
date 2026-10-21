@@ -1875,17 +1875,17 @@ local function search_and_rank(query, root)
   return candidates
 end
 
---- Specialized Code Search & Implementation Finder (:Find <description|symbol>)
-function M.find(query)
+--- Exact Local Code Search (:Grep <query|symbol|file:line>)
+function M.grep(query)
   query = vim.trim(query or "")
   if query == "" then
-    vim.notify("Usage: :Find <description or symbol name>", vim.log.levels.INFO)
+    vim.notify("Usage: :Grep <pattern, symbol name, or file:line>", vim.log.levels.INFO)
     return
   end
 
   local root = get_root_dir()
 
-  -- 1. Direct file:line jump (e.g. :Find crates/lgcc/src/ast/extractor.rs:25 or :Find agent.lua:100)
+  -- 1. Direct file:line jump (e.g. :Grep crates/lgcc/src/ast/extractor.rs:25 or :Grep agent.lua:100)
   local file_target, line_target = query:match("^([^:]+):(%d+)$")
   if file_target and line_target then
     local full_path = file_target:match("^/") and file_target or (root .. "/" .. file_target)
@@ -1917,34 +1917,36 @@ function M.find(query)
     end
   end
 
-  -- 2. Exact single-word symbol fast path (e.g. :Find ExtractedModule or :Find jump_to_target)
-  local is_single_ident = query:match("^[%a_][%w_]*$") ~= nil
-  local is_conceptual = query:find("%s") ~= nil
-    or query:lower():match("^where")
-    or query:lower():match("^how")
-    or query:lower():match("^why")
-    or query:lower():match("^what")
-    or query:lower():match("^find%s")
+  -- 2. Instant local ranked search
+  local candidates = search_and_rank(query, root)
+  if #candidates > 0 then
+    local best = candidates[1]
+    M.state.queue = candidates
+    M.state.queue_index = 1
+    jump_to_target(best)
+    update_queue_display(#candidates > 1)
+    vim.api.nvim_echo({
+      { "● [Grep Found] ", "ModeMsg" },
+      { string.format("%s:%d", best.path, best.line), "Directory" },
+      { string.format(" — %s (%d ranked match%s)", best.description, #candidates, #candidates > 1 and "es" or ""), "Normal" },
+    }, false, {})
+  else
+    vim.notify("No local grep matches for '" .. query .. "'", vim.log.levels.WARN)
+  end
+end
 
-  if is_single_ident and not is_conceptual then
-    local candidates = search_and_rank(query, root)
-    if #candidates > 0 and candidates[1].score >= 300 then
-      local best = candidates[1]
-      M.state.queue = candidates
-      M.state.queue_index = 1
-      jump_to_target(best)
-      update_queue_display(#candidates > 1)
-      vim.api.nvim_echo({
-        { "● [Symbol Found] ", "ModeMsg" },
-        { string.format("%s:%d", best.path, best.line), "Directory" },
-        { string.format(" — %s (%d match%s)", best.description, #candidates, #candidates > 1 and "es" or ""), "Normal" },
-      }, false, {})
-      return
-    end
+--- Semantic Code Search (:Find <concept|description>)
+-- Uses LLM to locate the exact code implementation corresponding to the concept.
+function M.find(query)
+  query = vim.trim(query or "")
+  if query == "" then
+    vim.notify("Usage: :Find <concept or description of code>", vim.log.levels.INFO)
+    return
   end
 
-  -- 3. Conceptual & Semantic Queries: Analyze with LLM to pinpoint exact implementation
-  vim.api.nvim_echo({ { "● [Semantic Search] ", "ModeMsg" }, { "Locating code with LLM...", "Comment" } }, false, {})
+  local root = get_root_dir()
+
+  vim.api.nvim_echo({ { "● [Finding Code] ", "ModeMsg" }, { "Locating code with LLM...", "Comment" } }, false, {})
   local prompt = "where did we implement " .. query .. " (locate the exact source file and line implementing this logic)"
   M.run(prompt, false, function(res)
     if res and res.active_target and res.active_target.path then
@@ -1957,7 +1959,7 @@ function M.find(query)
         { target.description and (" — " .. target.description) or "", "Normal" },
       }, false, {})
     else
-      -- Fallback to ranked local search if model was offline or returned nothing
+      -- Fallback to local grep if model offline or returned nothing
       local candidates = search_and_rank(query, root)
       if #candidates > 0 then
         local best = candidates[1]
@@ -1966,12 +1968,12 @@ function M.find(query)
         jump_to_target(best)
         update_queue_display(#candidates > 1)
         vim.api.nvim_echo({
-          { "● [Found (Local)] ", "ModeMsg" },
+          { "● [Found (Local Fallback)] ", "ModeMsg" },
           { string.format("%s:%d", best.path, best.line), "Directory" },
           { string.format(" — %s (%d match%s)", best.description, #candidates, #candidates > 1 and "es" or ""), "Normal" },
         }, false, {})
       else
-        vim.notify("No matches found for '" .. query .. "'", vim.log.levels.WARN)
+        vim.notify("No code found matching '" .. query .. "'", vim.log.levels.WARN)
       end
     end
   end)
@@ -3236,11 +3238,164 @@ function M.setup()
     return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, completions)
   end
 
+  --- Get comment leader for a given file extension
+  local function get_comment_leader(filepath)
+    local ext = vim.fn.fnamemodify(filepath, ":e"):lower()
+    if ext == "py" or ext == "sh" or ext == "bash" or ext == "yaml" or ext == "yml" or ext == "toml" or ext == "rb" then
+      return "#"
+    elseif ext == "lua" or ext == "lean" or ext == "hs" or ext == "sql" then
+      return "--"
+    else
+      return "//"
+    end
+  end
+
+  --- Add an in-line task at the cursor position in active buffer or specified target file
+  function M.add_task(arg_str, win)
+    win = win or get_primary_editor_win()
+    arg_str = vim.trim(arg_str or "")
+    if arg_str == "" then
+      vim.ui.input({ prompt = "Task description: " }, function(input)
+        if input and vim.trim(input) ~= "" then
+          M.add_task(input, win)
+        end
+      end)
+      return
+    end
+
+    local bufnr = vim.api.nvim_win_get_buf(win)
+    local filepath = vim.api.nvim_buf_get_name(bufnr)
+    local cur_line = vim.api.nvim_win_get_cursor(win)[1]
+
+    -- Check if user specified a file:line in arg (e.g. :Task add src/main.rs:10 description)
+    local file_arg, line_arg, desc_arg = arg_str:match("^([^%s:]+):(%d+)%s+(.*)$")
+    if file_arg and line_arg and desc_arg then
+      local root = get_root_dir()
+      local full = file_arg:match("^/") and file_arg or (root .. "/" .. file_arg)
+      local tbuf = vim.fn.bufadd(full)
+      vim.fn.bufload(tbuf)
+      bufnr = tbuf
+      filepath = full
+      cur_line = tonumber(line_arg) or 1
+      arg_str = desc_arg
+    else
+      local f_arg, d_arg = arg_str:match("^([^%s]+%.[%w]+)%s+(.*)$")
+      if f_arg and d_arg then
+        local root = get_root_dir()
+        local full = f_arg:match("^/") and f_arg or (root .. "/" .. f_arg)
+        local tbuf = vim.fn.bufadd(full)
+        vim.fn.bufload(tbuf)
+        bufnr = tbuf
+        filepath = full
+        cur_line = 1
+        arg_str = d_arg
+      end
+    end
+
+    if not filepath or filepath == "" or vim.bo[bufnr].buftype ~= "" then
+      vim.notify("Error: No active editable file. Specify a file path: :Add <file> <description>", vim.log.levels.ERROR)
+      return
+    end
+
+    local leader = get_comment_leader(filepath)
+    local indent = ""
+    local total_lines = vim.api.nvim_buf_line_count(bufnr)
+    if cur_line <= total_lines and cur_line > 0 then
+      local line_content = vim.api.nvim_buf_get_lines(bufnr, cur_line - 1, cur_line, false)[1] or ""
+      indent = line_content:match("^(%s*)") or ""
+    end
+
+    local slug = arg_str:lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 32):gsub("%-+$", "")
+    if slug == "" then slug = "task" end
+
+    local task_line_str = string.format("%s%s TODO(%s): %s", indent, leader, slug, arg_str)
+    local insert_idx = math.max(0, cur_line - 1)
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, insert_idx, insert_idx, false, { task_line_str })
+    vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write") end)
+
+    local new_line_num = insert_idx + 1
+    if win and vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_set_buf(win, bufnr)
+      pcall(vim.api.nvim_win_set_cursor, win, { new_line_num, #indent })
+      vim.api.nvim_win_call(win, function() vim.cmd("normal! zz") end)
+      local ns = vim.api.nvim_create_namespace("agent_jump_flash")
+      vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+      vim.api.nvim_buf_add_highlight(bufnr, ns, "IncSearch", new_line_num - 1, 0, -1)
+      vim.defer_fn(function()
+        if vim.api.nvim_buf_is_valid(bufnr) then
+          vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+        end
+      end, 1000)
+    end
+
+    local rel_path = vim.fn.fnamemodify(filepath, ":.")
+    vim.api.nvim_echo({
+      { "● [Task Added] ", "ModeMsg" },
+      { string.format("%s:%d", rel_path, new_line_num), "Directory" },
+      { string.format(" — %s (Run :Do to implement)", task_line_str:gsub("^%s*", "")), "Normal" },
+    }, false, {})
+  end
+
   local function do_dispatcher(ctx)
     M.state.origin_win = get_primary_editor_win()
     local raw = vim.trim(ctx.args or "")
+
+    -- If called without arguments: execute closest in-line task visible in the current window
     if raw == "" then
-      M.run_todo(nil, nil)
+      local win = get_primary_editor_win()
+      local bufnr = vim.api.nvim_win_get_buf(win)
+      if vim.bo[bufnr].buftype ~= "" then
+        vim.notify("Error: Active split is not an editable file.", vim.log.levels.ERROR)
+        return
+      end
+
+      local w0 = vim.fn.line("w0", win)
+      local w_dollar = vim.fn.line("w$", win)
+      local cursor_line = vim.api.nvim_win_get_cursor(win)[1]
+      local lines = vim.api.nvim_buf_get_lines(bufnr, w0 - 1, w_dollar, false)
+
+      local best_line = nil
+      local best_dist = 999999
+      local best_text = nil
+
+      for idx, l in ipairs(lines) do
+        local actual_line = (w0 - 1) + idx
+        local has_task = l:find("%f[%a]TODO%f[%A]") or l:find("%f[%a]FIXME%f[%A]") or l:find("%f[%a]SPEC%f[%A]")
+        local is_comment = l:find("^%s*//") or l:find("^%s*#") or l:find("^%s*%-%-") or l:find("^%s*/%*")
+        if has_task and is_comment then
+          local dist = math.abs(actual_line - cursor_line)
+          if dist < best_dist then
+            best_dist = dist
+            best_line = actual_line
+            best_text = l
+          end
+        end
+      end
+
+      if not best_line then
+        vim.notify(string.format("Error: No in-line task (TODO/FIXME/SPEC) visible in current window (lines %d–%d).", w0, w_dollar), vim.log.levels.ERROR)
+        return
+      end
+
+      -- Jump to the visible task line, center, flash, and execute
+      vim.api.nvim_win_set_cursor(win, { best_line, 0 })
+      vim.cmd("normal! zz")
+      local ns = vim.api.nvim_create_namespace("agent_jump_flash")
+      vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+      vim.api.nvim_buf_add_highlight(bufnr, ns, "IncSearch", best_line - 1, 0, -1)
+      vim.defer_fn(function()
+        if vim.api.nvim_buf_is_valid(bufnr) then
+          vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+        end
+      end, 1000)
+
+      vim.api.nvim_echo({
+        { "● [Executing Closest Visible Task] ", "ModeMsg" },
+        { string.format("Line %d: %s", best_line, vim.trim(best_text)), "Normal" },
+      }, false, {})
+
+      M.run_todo(bufnr, best_line)
       return
     end
 
@@ -3312,7 +3467,37 @@ function M.setup()
   vim.api.nvim_create_user_command("Find", function(ctx)
     M.state.origin_win = vim.api.nvim_get_current_win()
     M.find(ctx.args)
-  end, { nargs = "*", desc = "Find implementation or definition across repository (:Find <query>)" })
+  end, { nargs = "*", desc = "Semantic code search across repository with LLM (:Find <concept>)" })
+
+  vim.api.nvim_create_user_command("Grep", function(ctx)
+    M.state.origin_win = vim.api.nvim_get_current_win()
+    M.grep(ctx.args)
+  end, { nargs = "*", desc = "Instant local literal code & symbol search (:Grep <pattern|symbol>)" })
+
+  vim.api.nvim_create_user_command("Add", function(ctx)
+    M.add_task(ctx.args, vim.api.nvim_get_current_win())
+  end, { nargs = "*", desc = "Add an in-line task at cursor position (:Add <description>)" })
+
+  vim.api.nvim_create_user_command("Task", function(ctx)
+    local raw = vim.trim(ctx.args or "")
+    if vim.startswith(raw, "add ") or raw == "add" then
+      local desc = vim.trim(raw:sub(4))
+      M.add_task(desc, vim.api.nvim_get_current_win())
+    elseif raw == "" or raw == "list" or raw == "all" then
+      M.run_todo(nil, "list")
+    else
+      do_dispatcher(ctx)
+    end
+  end, {
+    nargs = "*",
+    complete = function(arglead, cmdline)
+      local subcmds = { "add", "list", "reindex" }
+      local all_t = task_id_complete(arglead, cmdline)
+      for _, t in ipairs(all_t) do table.insert(subcmds, t) end
+      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
+    end,
+    desc = "Manage repository tasks (:Task [list|add <desc>|<task_id>])",
+  })
 
   vim.api.nvim_create_user_command("Ask", function(ctx)
     M.state.origin_win = vim.api.nvim_get_current_win()
@@ -3397,7 +3582,7 @@ function M.setup()
     desc = "Reject and revert current file or all files (:Reject [all|file|reason])",
   })
 
-  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :find, :ask, :reindex, :lgcc, :queue, :stop, :gitreview)
+  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :find, :grep, :ask, :add, :task, :reindex, :lgcc, :queue, :stop, :gitreview)
   pcall(vim.cmd, [[
     cnoreabbrev <expr> accept (getcmdtype() ==# ':' && getcmdline() ==# 'accept') ? 'Accept' : 'accept'
     cnoreabbrev <expr> reject (getcmdtype() ==# ':' && getcmdline() ==# 'reject') ? 'Reject' : 'reject'
@@ -3405,7 +3590,10 @@ function M.setup()
     cnoreabbrev <expr> do (getcmdtype() ==# ':' && getcmdline() ==# 'do') ? 'Do' : 'do'
     cnoreabbrev <expr> todo (getcmdtype() ==# ':' && getcmdline() ==# 'todo') ? 'Todo' : 'todo'
     cnoreabbrev <expr> find (getcmdtype() ==# ':' && getcmdline() ==# 'find') ? 'Find' : 'find'
+    cnoreabbrev <expr> grep (getcmdtype() ==# ':' && getcmdline() ==# 'grep') ? 'Grep' : 'grep'
     cnoreabbrev <expr> ask (getcmdtype() ==# ':' && getcmdline() ==# 'ask') ? 'Ask' : 'ask'
+    cnoreabbrev <expr> add (getcmdtype() ==# ':' && getcmdline() ==# 'add') ? 'Add' : 'add'
+    cnoreabbrev <expr> task (getcmdtype() ==# ':' && getcmdline() ==# 'task') ? 'Task' : 'task'
     cnoreabbrev <expr> reindex (getcmdtype() ==# ':' && getcmdline() ==# 'reindex') ? 'Reindex' : 'reindex'
     cnoreabbrev <expr> lgcc (getcmdtype() ==# ':' && getcmdline() ==# 'lgcc') ? 'Lgcc' : 'lgcc'
     cnoreabbrev <expr> queue (getcmdtype() ==# ':' && getcmdline() ==# 'queue') ? 'Queue' : 'queue'
@@ -3416,8 +3604,10 @@ function M.setup()
   M.get_root_dir = get_root_dir
   M.collect_context = collect_context
   M.search_and_rank = search_and_rank
+  M.grep = M.grep
   M.find = M.find
   M.ask = M.ask
+  M.add_task = M.add_task
   M.review = M.review
   M.git_review = M.review
   M.review_command = M.review
@@ -3427,8 +3617,10 @@ end
 M.get_root_dir = get_root_dir
 M.collect_context = collect_context
 M.search_and_rank = search_and_rank
+M.grep = M.grep
 M.find = M.find
 M.ask = M.ask
+M.add_task = M.add_task
 M.review = M.review
 M.git_review = M.review
 M.review_command = M.review
