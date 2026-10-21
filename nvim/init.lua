@@ -535,9 +535,6 @@ vim.keymap.set("n", "ZQ", function() smart_quit({ force = true }) end, { desc = 
 -- ── LSP ──
 require("lsp")
 
--- ── First-Time Feature Checklist & Onboarding ──
-require("onboarding").setup()
-
 -- ── Voice Transcription (:Listen) ──
 require("voice").setup()
 

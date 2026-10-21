@@ -21,7 +21,7 @@ echo "==> [1/3] Deploying Neovim configuration and CLI binaries..."
 mkdir -p "$TARGET_DIR"
 
 # Clean up deprecated legacy modules and orphaned binaries if upgrading
-rm -f "$TARGET_DIR/lua/lgcc.lua" "$TARGET_DIR/lua/specs.lua" "$TARGET_DIR/lua/tasks.lua"
+rm -f "$TARGET_DIR/lua/lgcc.lua" "$TARGET_DIR/lua/specs.lua" "$TARGET_DIR/lua/tasks.lua" "$TARGET_DIR/lua/onboarding.lua" "$TARGET_DIR/syntra_config.json"
 rm -rf "$TARGET_DIR/scripts" "$TARGET_DIR/bin/lgcc" "$TARGET_DIR/bin/tasks" "$TARGET_DIR/bin/specs"
 rm -f "$LOCAL_BIN/lgcc" "$LOCAL_BIN/tasks" "$LOCAL_BIN/specs"
 

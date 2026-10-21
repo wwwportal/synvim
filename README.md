@@ -17,19 +17,18 @@ Run `:Synvim help` inside Neovim at any time to view this list.
 | Command | Action |
 | :--- | :--- |
 | `:Synvim help` | Show available commands and keybindings in a floating window |
-| `:Grep <pattern>` | Local regex search across files; opens results in quickfix |
+| `:Tasks` | Toggle repository task agenda in Quickfix (`<leader>q`) |
+| `:Tasks list` | List in-tree tasks in Quickfix |
+| `:Tasks add <desc>` | Insert formatted task contract at cursor line |
+| `:Tasks start [id]` | Implement nearest visible task or specified task contract by ID/index |
+| `:Tasks revise [id]` | Mark task as `status:REVISE` and critique directly via in-line comments |
+| `:Tasks review` | List pending changes and reviews with IDs/indexes in Quickfix |
+| `:Tasks accept <id>` | Accept and approve specific review by ID (atomic; no batch accept) |
+| `:Tasks reject <id>` | Reject and revert specific review by ID |
+| `:Tasks stop` | Abort running background synthesis job and clear preview diffs |
 | `:Find <concept>` | Semantic LLM search; jumps directly to relevant code |
+| `:Grep <pattern>` | Local regex search across files; opens results in Quickfix |
 | `:Ask <question>` | Jump to relevant code and insert an in-line explanatory comment |
-| `:Add <desc>` | Insert a `// TODO(slug): desc` comment at the cursor line |
-| `:Task add <desc>` | Alias for `:Add` |
-| `:Do` | Implement the nearest task visible in the active window |
-| `:Do <id\|prompt>` | Implement specified task contract or instruction |
-| `:Stop` | Abort running background LLM job and clear preview diffs |
-| `:Review` | Open side-by-side Git Diffview for pending changes |
-| `:Accept [file\|all]` | Stage current file or commit all reviewed changes |
-| `:Reject [file\|all]` | Revert pending changes |
-| `:Revise <prompt>` | Request adjustments to current diff in natural language |
-| `:Tasks` | Toggle repository in-tree tasks agenda (<leader>q) |
 
 ## Split & Terminal Keybindings
 

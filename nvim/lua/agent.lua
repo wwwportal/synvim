@@ -28,6 +28,7 @@ local update_queue_display = nil
 local jump_to_target = nil
 local setup_agent_qf_keymaps = nil
 local scan_repository_tasks = nil
+local extract_task_info = nil
 
 local function setup_highlights()
   local is_dark = (vim.o.background == "dark")
@@ -452,6 +453,8 @@ local function ensure_contract_preserved_as_done(orig_slice, new_lines)
     for idx, nl in ipairs(new_lines) do
       if nl:find("status:TODO") then
         new_lines[idx] = nl:gsub("status:TODO", "status:DONE")
+      elseif nl:find("status:REVISE") then
+        new_lines[idx] = nl:gsub("status:REVISE", "status:DONE")
       end
     end
     return new_lines
@@ -480,6 +483,8 @@ local function ensure_contract_preserved_as_done(orig_slice, new_lines)
       local updated_l = l
       if updated_l:find("status:TODO") then
         updated_l = updated_l:gsub("status:TODO", "status:DONE")
+      elseif updated_l:find("status:REVISE") then
+        updated_l = updated_l:gsub("status:REVISE", "status:DONE")
       elseif updated_l:find("SPEC%(") or updated_l:find("TODO%(") or updated_l:find("FIXME%(") then
         if not updated_l:find("status:") then
           updated_l = updated_l:gsub("%):", " | status:DONE):")
@@ -543,7 +548,7 @@ function M.accept_diff()
     else
       local name = vim.api.nvim_buf_get_name(bufnr)
       if name ~= "" and vim.bo[bufnr].buftype == "" then
-        vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write") end)
+        vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write!") end)
       end
       vim.notify("✓ GitReview: Implementation accepted and saved to " .. (name ~= "" and vim.fn.fnamemodify(name, ":.") or "buffer"), vim.log.levels.INFO)
     end
@@ -565,20 +570,108 @@ function M.accept_diff()
   end
 end
 
---- Revise instruction in natural language
-function M.write_revision()
-  M.clear_diff()
-  local input = vim.fn.input({
-    prompt = "● [Agent] Revise instruction (type or 'listen'): ",
-    cancelreturn = "__CANCEL__",
-  })
-  if input ~= "__CANCEL__" and vim.trim(input) ~= "" then
-    if vim.trim(input) == "listen" then
-      M.record_voice(function(prompt) M.run(prompt, true) end)
+--- Mark task as REVISE and allow user to write in-line critique comments directly in the code
+function M.revise_task(task_arg)
+  task_arg = vim.trim(task_arg or "")
+  local cur_buf = vim.api.nvim_get_current_buf()
+  local root = get_root_dir()
+
+  -- If viewing a pending diff, dismiss the diff visualization and keep buffer modifiable
+  M.clear_diff(true)
+
+  local target_buf = cur_buf
+  local target_line = nil
+  local target_task_id = nil
+
+  if task_arg ~= "" then
+    local all_tasks = scan_repository_tasks()
+    local matched = nil
+    local num = tonumber(task_arg)
+    if num and all_tasks[num] then
+      matched = all_tasks[num]
     else
-      M.run(input, true)
+      for _, t in ipairs(all_tasks) do
+        if t.task_id and t.task_id:lower() == task_arg:lower() then
+          matched = t
+          break
+        end
+      end
+    end
+
+    if matched then
+      local full_path = (matched.file:sub(1, 1) == "/") and matched.file or (root .. "/" .. matched.file)
+      target_buf = vim.fn.bufadd(full_path)
+      vim.fn.bufload(target_buf)
+      target_line = matched.line
+      target_task_id = matched.task_id
+    else
+      vim.notify("Tasks: Task '" .. task_arg .. "' not found", vim.log.levels.WARN)
+      return
+    end
+  else
+    -- Use cursor line or closest task in current buffer
+    local cur_win = get_primary_editor_win()
+    if cur_win and vim.api.nvim_win_is_valid(cur_win) then
+      local lnum = vim.api.nvim_win_get_cursor(cur_win)[1]
+      local lines = vim.api.nvim_buf_get_lines(cur_buf, 0, -1, false)
+      for i = lnum, 1, -1 do
+        if is_todo_comment(lines[i]) then
+          target_line = i
+          break
+        end
+      end
+      if not target_line then
+        for i = lnum, #lines do
+          if is_todo_comment(lines[i]) then
+            target_line = i
+            break
+          end
+        end
+      end
     end
   end
+
+  if not target_line then
+    vim.notify("Tasks: Place cursor on/near a task to revise, or specify :Tasks revise <id>", vim.log.levels.INFO)
+    return
+  end
+
+  -- Update contract header to status:REVISE
+  local lines = vim.api.nvim_buf_get_lines(target_buf, 0, -1, false)
+  local header = lines[target_line]
+  if header then
+    local new_header = header
+    if new_header:find("status:%s*[%w_%-]+") then
+      new_header = new_header:gsub("status:%s*[%w_%-]+", "status:REVISE")
+    elseif new_header:find("%):") then
+      new_header = new_header:gsub("%):", " | status:REVISE):")
+    elseif new_header:find("%)") then
+      new_header = new_header:gsub("%)", " | status:REVISE)")
+    end
+
+    if new_header ~= header then
+      vim.bo[target_buf].modifiable = true
+      vim.api.nvim_buf_set_lines(target_buf, target_line - 1, target_line, false, { new_header })
+      vim.api.nvim_buf_call(target_buf, function() vim.cmd("silent! write") end)
+    end
+
+    local t_info = extract_task_info(header)
+    target_task_id = (t_info and t_info.id) or target_task_id or "task"
+  end
+
+  local origin_win = get_primary_editor_win()
+  if origin_win and vim.api.nvim_win_is_valid(origin_win) then
+    vim.api.nvim_set_current_win(origin_win)
+    vim.api.nvim_win_set_buf(origin_win, target_buf)
+    pcall(vim.api.nvim_win_set_cursor, origin_win, { math.min(#lines, target_line + 1), 0 })
+    pcall(function() vim.cmd("normal! zz") end)
+  end
+
+  vim.notify(string.format("● [Tasks] Task '%s' marked as REVISE. Add in-line comments (e.g. '# REVISE: ...') and run ':Tasks start' when ready.", target_task_id or "task"), vim.log.levels.INFO)
+end
+
+function M.write_revision()
+  M.revise_task()
 end
 
 --- Wrap virtual diff line into visual chunks not exceeding max_w
@@ -685,7 +778,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     header_text = header_text:sub(1, max_w - 1) .. "┐"
   end
 
-  local footer_text = "└── :Accept (<M-a>) | :Reject (<M-r>) | :Revise (<M-w>) " .. string.rep("─", math.max(2, max_w - 56)) .. "┘"
+  local footer_text = "└── :Tasks accept (<M-a>) | :Tasks reject (<M-r>) | :Tasks revise (<M-w>) " .. string.rep("─", math.max(2, max_w - 75)) .. "┘"
   if #footer_text > max_w then
     footer_text = footer_text:sub(1, max_w - 1) .. "┘"
   end
@@ -754,9 +847,9 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     table.insert(M.state.pending_diff.bound_keys, lhs)
   end
 
-  bind_buf_key("<M-a>", function() M.accept_diff() end, "Accept diff")
-  bind_buf_key("<M-r>", function() M.reject("") end, "Reject diff")
-  bind_buf_key("<M-w>", function() M.write_revision() end, "Revise diff")
+  bind_buf_key("<M-a>", function() M.accept() end, "Accept diff (:Tasks accept)")
+  bind_buf_key("<M-r>", function() M.reject() end, "Reject diff (:Tasks reject)")
+  bind_buf_key("<M-w>", function() M.revise_task() end, "Revise diff (:Tasks revise)")
   bind_buf_key("<Esc>", function()
     M.clear_diff()
     vim.notify("GitReview: Dismissed in-line diff preview", vim.log.levels.INFO)
@@ -1158,10 +1251,11 @@ function M.show_tasks()
 
   local qf_list = {}
   local task_queue = {}
-  for _, t in ipairs(tasks) do
+  for idx, t in ipairs(tasks) do
     local label = (t.task_id and t.task_id ~= "task") and t.task_id or ""
     local tier_str = (t.tier and t.tier ~= "U") and string.format("[Tier %s] ", t.tier) or ""
-    local text = label ~= "" and string.format("%s%s: %s", tier_str, label, t.description) or string.format("%s%s", tier_str, t.description)
+    local status_str = string.format("[%s] ", t.status or "TODO")
+    local text = label ~= "" and string.format("%s%s%s: %s", tier_str, status_str, label, t.description) or string.format("%s%s%s", tier_str, status_str, t.description)
     local abs_path = (t.file:match("^/") and t.file) or (root .. "/" .. t.file)
     table.insert(qf_list, {
       filename = abs_path,
@@ -1247,101 +1341,53 @@ local function get_diffview_current_file()
   return nil
 end
 
---- Accept currently pending target from dir preview, in-line diff, or visual Diffview
+--- Accept review by ID or active pending diff
 function M.accept(arg)
-  local mode = vim.trim(arg or ""):lower()
+  arg = vim.trim(arg or "")
 
-  -- 1. In Diffview:
-  if is_diffview_open() then
-    local root = get_root_dir()
-    local cur_file = get_diffview_current_file()
+  if arg:lower() == "all" then
+    vim.notify("Tasks: Batch accept is disabled. Please accept changes individually by review ID: :Tasks accept <id>", vim.log.levels.WARN)
+    return
+  end
 
-    -- Accept ALL files across review
-    if mode == "all" or not cur_file then
-      vim.fn.system({ "git", "-C", root, "add", "-A" })
-
-      local author_name = vim.trim(vim.fn.system("git config user.name"))
-      local author_email = vim.trim(vim.fn.system("git config user.email"))
-      if author_name == "" then author_name = "User" end
-      if author_email == "" then author_email = "user@syntra" end
-
-      local unrev = M.get_reviews("unreviewed")
-      local task_label = (unrev[1] and unrev[1].task_id) or "contract-review"
-      local desc_label = (unrev[1] and unrev[1].description) or "Human reviewed changes"
-      local commit_msg = string.format("feat: %s\n\nTask: %s\nApproved-by: %s <%s>\nApproved-at: %s",
-        desc_label, task_label, author_name, author_email, os.date("%Y-%m-%d %H:%M:%S"))
-
-      vim.fn.system({ "git", "-C", root, "commit", "-m", commit_msg })
-
-      for _, r in ipairs(unrev) do
-        r.status = "accepted"
-        r.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
-        promote_contract_to_approved(r.filepath or r.file, r.task_id)
-        local meta_path = root .. "/" .. (r.patch_file:gsub("%.patch$", ".json"))
-        if vim.fn.filereadable(meta_path) == 1 then
-          vim.fn.writefile({ vim.fn.json_encode(r) }, meta_path)
+  local rev_id = nil
+  if arg ~= "" then
+    local num = tonumber(arg:match("^#?(%d+)$"))
+    local reviews = M.get_reviews("all")
+    if num and reviews[num] then
+      rev_id = reviews[num].id
+    else
+      for _, r in ipairs(reviews) do
+        if r.id == arg or (r.task_id and r.task_id:lower() == arg:lower()) or (r.id and tostring(r.id):sub(-6) == tostring(arg):sub(-6)) then
+          rev_id = r.id
+          break
         end
       end
-
-      pcall(vim.cmd, "DiffviewClose")
-      vim.cmd("cclose")
-      vim.notify(string.format("✓ Accepted ALL files in review! Committed with Approved-by: %s", author_name), vim.log.levels.INFO)
+    end
+    if not rev_id then
+      vim.notify("Tasks: Review ID '" .. arg .. "' not found. Run :Tasks review to see active reviews.", vim.log.levels.WARN)
       return
     end
+    M.accept_review(rev_id)
+    return
+  end
 
-    -- Accept CURRENT file
-    for _, r in ipairs(unrev) do
-      if r.filepath == cur_file or r.file == cur_file then
-        promote_contract_to_approved(cur_file, r.task_id)
-      end
-    end
-    vim.fn.system({ "git", "-C", root, "add", cur_file })
-    pcall(vim.cmd, "DiffviewRefresh")
-
-    -- Check if any unstaged files remain
-    local status_out = vim.fn.system({ "git", "-C", root, "status", "--porcelain" })
-    local has_unstaged = false
-    for line in status_out:gmatch("[^\r\n]+") do
-      if line:sub(2, 2) ~= " " and not line:match("^%s*$") then
-        has_unstaged = true
-        break
-      end
-    end
-
-    if not has_unstaged then
-      local author_name = vim.trim(vim.fn.system("git config user.name"))
-      local author_email = vim.trim(vim.fn.system("git config user.email"))
-      if author_name == "" then author_name = "User" end
-      if author_email == "" then author_email = "user@syntra" end
-
-      local unrev = M.get_reviews("unreviewed")
-      local task_label = (unrev[1] and unrev[1].task_id) or "contract-review"
-      local desc_label = (unrev[1] and unrev[1].description) or "Human reviewed changes"
-      local commit_msg = string.format("feat: %s\n\nTask: %s\nApproved-by: %s <%s>\nApproved-at: %s",
-        desc_label, task_label, author_name, author_email, os.date("%Y-%m-%d %H:%M:%S"))
-
-      vim.fn.system({ "git", "-C", root, "commit", "-m", commit_msg })
-
-      for _, r in ipairs(unrev) do
-        r.status = "accepted"
-        r.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
-        promote_contract_to_approved(r.filepath or r.file, r.task_id)
-        local meta_path = root .. "/" .. (r.patch_file:gsub("%.patch$", ".json"))
-        if vim.fn.filereadable(meta_path) == 1 then
-          vim.fn.writefile({ vim.fn.json_encode(r) }, meta_path)
-        end
-      end
-
-      pcall(vim.cmd, "DiffviewClose")
-      vim.cmd("cclose")
-      vim.notify(string.format("✓ Accepted %s — All files now approved! Committed with Approved-by trailer.", vim.fn.fnamemodify(cur_file, ":t")), vim.log.levels.INFO)
-    else
-      vim.notify(string.format("✓ Accepted %s. (Unstaged files remaining. Use :Accept for next file, or :Accept all for all.)", vim.fn.fnamemodify(cur_file, ":t")), vim.log.levels.INFO)
+  -- In-line diff active
+  if M.state.pending_diff then
+    local review = M.state.pending_diff.review
+    M.accept_diff()
+    if review and review.id then
+      M.accept_review(review.id)
     end
     return
   end
 
-  -- 2. Dir preview:
+  if M.state.current_review then
+    M.accept_review(M.state.current_review.id)
+    return
+  end
+
+  -- Dir preview:
   if M.state.dir_preview_win then
     local fn = M.state.on_path_accept
     M.state.on_path_accept = nil
@@ -1359,17 +1405,25 @@ function M.accept(arg)
     return
   end
 
-  -- 3. In-line diff:
-  if M.state.pending_diff then
-    M.accept_diff()
-    return
-  end
-
   if M.state.pending_target then
     local target = M.state.pending_target
     M.state.pending_target = nil
     M.state.last_target = target
     jump_to_target(target)
+    return
+  end
+
+  local unrev = M.get_reviews("unreviewed")
+  if #unrev == 1 then
+    M.accept_review(unrev[1].id)
+    return
+  elseif #unrev > 1 then
+    vim.notify(string.format("Tasks: Multiple pending reviews exist (%d). Specify review ID: :Tasks accept <id>. Run :Tasks review to list them.", #unrev), vim.log.levels.INFO)
+    M.list_reviews_qf()
+    return
+  else
+    vim.notify("Tasks: No pending review or diff to accept", vim.log.levels.INFO)
+    return
   end
 end
 
@@ -1722,83 +1776,66 @@ process_agent_response = function(data, on_done)
 end
 M.process_response = process_agent_response
 
---- Reject current location and re-route
+--- Reject and revert review by ID or active pending diff
 function M.reject(arg)
   arg = vim.trim(arg or "")
-  local parts = vim.split(arg, "%s+", { trimempty = true })
-  local first = (parts[1] or ""):lower()
 
-  -- 1. In Diffview:
-  if is_diffview_open() then
-    local root = get_root_dir()
-    local cur_file = get_diffview_current_file()
+  if arg:lower() == "all" then
+    vim.notify("Tasks: Batch reject is disabled. Please reject changes individually by review ID: :Tasks reject <id>", vim.log.levels.WARN)
+    return
+  end
 
-    -- Reject ALL files across review
-    if first == "all" or not cur_file then
-      vim.fn.system({ "git", "-C", root, "restore", "--staged", "." })
-      vim.fn.system({ "git", "-C", root, "restore", "." })
-      vim.fn.system({ "git", "-C", root, "clean", "-fd" })
-
-      local unrev = M.get_reviews("unreviewed")
-      for _, r in ipairs(unrev) do
-        r.status = "rejected"
-        r.rejected_at = os.date("%Y-%m-%d %H:%M:%S")
-        local meta_path = root .. "/" .. (r.patch_file:gsub("%.patch$", ".json"))
-        if vim.fn.filereadable(meta_path) == 1 then
-          vim.fn.writefile({ vim.fn.json_encode(r) }, meta_path)
+  local rev_id = nil
+  if arg ~= "" then
+    local num = tonumber(arg:match("^#?(%d+)$"))
+    local reviews = M.get_reviews("all")
+    if num and reviews[num] then
+      rev_id = reviews[num].id
+    else
+      for _, r in ipairs(reviews) do
+        if r.id == arg or (r.task_id and r.task_id:lower() == arg:lower()) or (r.id and tostring(r.id):sub(-6) == tostring(arg):sub(-6)) then
+          rev_id = r.id
+          break
         end
       end
-
-      pcall(vim.cmd, "DiffviewClose")
-      vim.cmd("cclose")
-      vim.notify("✗ Rejected and reverted ALL files across review.", vim.log.levels.INFO)
+    end
+    if not rev_id then
+      vim.notify("Tasks: Review ID '" .. arg .. "' not found. Run :Tasks review to see active reviews.", vim.log.levels.WARN)
       return
     end
+    M.revert_review(rev_id)
+    return
+  end
 
-    -- Reject CURRENT file
-    vim.fn.system({ "git", "-C", root, "restore", "--staged", cur_file })
-    vim.fn.system({ "git", "-C", root, "restore", cur_file })
-    pcall(vim.cmd, "DiffviewRefresh")
-
-    local status_out = vim.trim(vim.fn.system({ "git", "-C", root, "status", "--porcelain" }))
-    if status_out == "" then
-      pcall(vim.cmd, "DiffviewClose")
-      vim.cmd("cclose")
-      vim.notify(string.format("✗ Reverted %s. No modified files remain; review closed.", vim.fn.fnamemodify(cur_file, ":t")), vim.log.levels.INFO)
+  -- In-line diff active
+  if M.state.pending_diff then
+    local review = M.state.pending_diff.review
+    if review and review.id then
+      M.revert_review(review.id)
     else
-      vim.notify(string.format("✗ Reverted %s. (Files remaining in review. Use :Reject all to revert all.)", vim.fn.fnamemodify(cur_file, ":t")), vim.log.levels.INFO)
+      M.clear_diff()
+      vim.notify("Tasks: In-line diff reverted", vim.log.levels.INFO)
     end
     return
   end
 
   if M.state.current_review then
-    local rev_id = M.state.current_review.id
-    M.revert_review(rev_id)
-    return
-  end
-  M.clear_diff()
-  if arg == "listen" then
-    M.record_voice(function(text)
-      M.state.last_rejection = text
-      M.run(text, true)
-    end)
+    M.revert_review(M.state.current_review.id)
     return
   end
 
-  if arg == "" then
-    local input = vim.fn.input({
-      prompt = "● [Agent Rejection] Explain why to reject current location: ",
-      cancelreturn = "__CANCEL__",
-    })
-    if input == "__CANCEL__" or vim.trim(input) == "" then
-      vim.notify("Agent: Rejection cancelled", vim.log.levels.INFO)
-      return
-    end
-    arg = vim.trim(input)
+  local unrev = M.get_reviews("unreviewed")
+  if #unrev == 1 then
+    M.revert_review(unrev[1].id)
+    return
+  elseif #unrev > 1 then
+    vim.notify(string.format("Tasks: Multiple pending reviews exist (%d). Specify review ID: :Tasks reject <id>. Run :Tasks review to list them.", #unrev), vim.log.levels.INFO)
+    M.list_reviews_qf()
+    return
+  else
+    vim.notify("Tasks: No pending review to reject", vim.log.levels.INFO)
+    return
   end
-
-  M.state.last_rejection = arg
-  M.run(arg, true)
 end
 
 --- Stop any active background agent job and clear all previews/diffs
@@ -2333,7 +2370,7 @@ function M.revert_review(rev_id)
       local e_line = math.min(total, s_line + new_cnt)
       vim.bo[bufnr].modifiable = true
       vim.api.nvim_buf_set_lines(bufnr, s_line, e_line, false, rev.old_lines)
-      vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write") end)
+      vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write!") end)
       reverted = true
     end
   elseif not reverted and vim.fn.filereadable(target_full) == 1 and rev.old_lines then
@@ -2421,7 +2458,47 @@ function M.accept_review(rev_id)
   end
 
   M.state.current_review = nil
-  vim.notify(string.format("✓ GitReview: %s accepted and approved by human!", rev.id), vim.log.levels.INFO)
+  vim.notify(string.format("✓ Tasks: %s accepted and approved!", rev.id), vim.log.levels.INFO)
+
+  -- Check and notify if this task unblocks downstream tasks
+  local accepted_id = rev.task_id
+  if accepted_id and accepted_id ~= "" and accepted_id ~= "task" then
+    local all_tasks = scan_repository_tasks()
+    for _, t in ipairs(all_tasks) do
+      if t.status ~= "DONE" and t.status ~= "APPROVED" then
+        local was_blocked = false
+        for _, dep in ipairs(t.depends_on or {}) do
+          if dep:lower() == accepted_id:lower() then
+            was_blocked = true
+            break
+          end
+        end
+        if was_blocked then
+          local all_met = true
+          for _, dep in ipairs(t.depends_on or {}) do
+            if dep:lower() ~= accepted_id:lower() then
+              local dep_met = false
+              for _, other in ipairs(all_tasks) do
+                if other.task_id and other.task_id:lower() == dep:lower() then
+                  if other.status == "DONE" or other.status == "APPROVED" then
+                    dep_met = true
+                  end
+                  break
+                end
+              end
+              if not dep_met then
+                all_met = false
+                break
+              end
+            end
+          end
+          if all_met then
+            vim.notify(string.format("● [Tasks] '%s' is now UNBLOCKED and ready to start (:Tasks start %s)", t.task_id, t.task_id), vim.log.levels.INFO)
+          end
+        end
+      end
+    end
+  end
 
   -- Refresh review list
   local rem = M.get_reviews("unreviewed")
@@ -2435,9 +2512,52 @@ function M.accept_review(rev_id)
       pcall(vim.cmd, "DiffviewClose")
     end
     vim.cmd("cclose")
-    vim.notify("✓ GitReview: All implementations have been reviewed by a human!", vim.log.levels.INFO)
+    vim.notify("✓ Tasks: All implementations have been reviewed and approved!", vim.log.levels.INFO)
   end
   return true
+end
+
+--- List all reviews in quickfix (:Tasks review)
+function M.list_reviews_qf()
+  local root = get_root_dir()
+  local all_reviews = M.get_reviews("all")
+  local unreviewed = M.get_reviews("unreviewed")
+
+  if #all_reviews == 0 then
+    local git_status = vim.trim(vim.fn.system({ "git", "-C", root, "status", "--porcelain" }))
+    if git_status ~= "" then
+      vim.notify("Tasks: No review records, but uncommitted Git changes exist.", vim.log.levels.INFO)
+    else
+      vim.notify("Tasks: No review changes recorded. Run :Tasks start to generate implementations.", vim.log.levels.INFO)
+    end
+    vim.cmd("cclose")
+    return
+  end
+
+  local qf_list = {}
+  for idx, r in ipairs(all_reviews) do
+    local f = r.target_file or r.file or r.filepath or ""
+    local full = (f:match("^/") and f) or (root .. "/" .. f)
+    local status_label = (r.status == "accepted") and "[APPROVED]" or ((r.status == "rejected") and "[REJECTED]" or "[PENDING]")
+    local item_type = (r.status == "accepted") and "I" or ((r.status == "rejected") and "E" or "W")
+    local text = string.format("#%d %s ID: %s | Task: %s | %s", idx, status_label, r.id or "unknown", r.task_id or "task", r.description or "")
+    table.insert(qf_list, {
+      filename = full,
+      lnum = r.start_line or 1,
+      col = 1,
+      text = text,
+      type = item_type,
+    })
+  end
+
+  vim.fn.setqflist(qf_list, "r")
+  vim.fn.setqflist({}, "a", { title = string.format("[Tasks Review: %d pending, %d total]", #unreviewed, #all_reviews) })
+  vim.cmd("botright copen 6")
+  local cur_w = get_primary_editor_win()
+  if cur_w and vim.api.nvim_win_is_valid(cur_w) then
+    pcall(vim.api.nvim_set_current_win, cur_w)
+  end
+  vim.notify(string.format("Tasks: %d pending review%s (:Tasks accept <id> | :Tasks reject <id>)", #unreviewed, #unreviewed == 1 and "" or "s"), vim.log.levels.INFO)
 end
 
 --- Display a specific review in-line
@@ -2560,26 +2680,54 @@ local function is_todo_comment(line)
          line:match("^[ \t]*[-*]%s*%[%s*%]") ~= nil
 end
 
-local function extract_task_info(line)
+extract_task_info = function(line)
   if not line then return nil end
-  local kind, id_raw, tier, desc = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%(([^|)]+)%|%s*tier:([ABC])%)%s*:%s*(.*)$")
-  if kind and id_raw then
-    local clean_id = vim.trim(vim.split(id_raw, "%s*|%s*")[1])
-    return { kind = kind, id = clean_id, tier = tier, desc = desc }
+  local kind, inside, desc = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%(([^)]+)%)%s*:%s*(.*)$")
+  if kind and inside then
+    local parts = vim.split(inside, "%s*|%s*")
+    local clean_id = vim.trim(parts[1] or "task")
+    local tier = "U"
+    local status = "TODO"
+    local depends_on = {}
+    local blocks = {}
+
+    for _, p in ipairs(parts) do
+      local t = p:match("tier:([ABCU])")
+      if t then tier = t end
+      local s = p:match("status:([%w_%-]+)")
+      if s then status = s:upper() end
+      local dep_str = p:match("depends_on:%[([^%]]+)%]")
+      if dep_str then
+        for d in dep_str:gmatch("[^,%s%[%]]+") do
+          table.insert(depends_on, vim.trim(d))
+        end
+      end
+      local blk_str = p:match("blocks:%[([^%]]+)%]")
+      if blk_str then
+        for b in blk_str:gmatch("[^,%s%[%]]+") do
+          table.insert(blocks, vim.trim(b))
+        end
+      end
+    end
+
+    return {
+      kind = kind,
+      id = clean_id,
+      tier = tier,
+      status = status,
+      depends_on = depends_on,
+      blocks = blocks,
+      desc = desc,
+    }
   end
-  local kind2, id_raw2, desc2 = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%(([^)]+)%)%s*:%s*(.*)$")
-  if kind2 and id_raw2 then
-    local clean_id = vim.trim(vim.split(id_raw2, "%s*|%s*")[1])
-    local tier2 = id_raw2:match("tier:([ABC])") or "U"
-    return { kind = kind2, id = clean_id, tier = tier2, desc = desc2 }
-  end
+
   local kind3, desc3 = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%s*:%s*(.*)$")
   if kind3 and (kind3 == "TODO" or kind3 == "FIXME" or kind3 == "SPEC") then
-    return { kind = kind3, id = "task", tier = "U", desc = desc3 }
+    return { kind = kind3, id = "task", tier = "U", status = "TODO", depends_on = {}, blocks = {}, desc = desc3 }
   end
   local kind4, desc4 = line:match("^[ \t]*[#/%-%*%\"]+%s*(%a+)%s+(.*)$")
   if kind4 and (kind4 == "TODO" or kind4 == "FIXME" or kind4 == "SPEC") then
-    return { kind = kind4, id = "task", tier = "U", desc = desc4 }
+    return { kind = kind4, id = "task", tier = "U", status = "TODO", depends_on = {}, blocks = {}, desc = desc4 }
   end
   return nil
 end
@@ -2628,6 +2776,9 @@ scan_repository_tasks = function()
             line = tonumber(lnum) or 1,
             task_id = t_info.id,
             tier = t_info.tier or "U",
+            status = t_info.status or "TODO",
+            depends_on = t_info.depends_on or {},
+            blocks = t_info.blocks or {},
             kind = t_info.kind or "TODO",
             description = desc,
             raw = txt,
@@ -2639,40 +2790,11 @@ scan_repository_tasks = function()
   return tasks
 end
 
-local function get_task_index_path()
-  local root = get_root_dir()
-  local adir = root .. "/.agent"
-  pcall(vim.fn.mkdir, adir, "p")
-  return adir .. "/task_index.json"
-end
+local function resolve_task_identifier(arg)
+  arg = vim.trim(arg or "")
+  if arg == "" then return nil end
 
-local function load_task_index()
-  local path = get_task_index_path()
-  if vim.fn.filereadable(path) == 1 then
-    local ok, content = pcall(vim.fn.readfile, path)
-    if ok and content then
-      local j_ok, data = pcall(vim.fn.json_decode, table.concat(content, "\n"))
-      if j_ok and type(data) == "table" then
-        return data
-      end
-    end
-  end
-  return { index_to_id = {}, id_to_index = {} }
-end
-
-local function save_task_index(index_to_id, id_to_index)
-  local path = get_task_index_path()
-  local data = {
-    updated_at = os.date("%Y-%m-%d %H:%M:%S"),
-    index_to_id = index_to_id,
-    id_to_index = id_to_index,
-  }
-  pcall(vim.fn.writefile, { vim.fn.json_encode(data) }, path)
-end
-
-function M.reindex_tasks()
   local all_tasks = scan_repository_tasks()
-
   table.sort(all_tasks, function(a, b)
     if (a.tier or "U") ~= (b.tier or "U") then
       return (a.tier or "U") < (b.tier or "U")
@@ -2683,35 +2805,14 @@ function M.reindex_tasks()
     return (a.line or 0) < (b.line or 0)
   end)
 
-  local index_to_id = {}
-  local id_to_index = {}
-  for idx, t in ipairs(all_tasks) do
-    if t.task_id and t.task_id ~= "task" then
-      index_to_id[tostring(idx)] = t.task_id
-      id_to_index[t.task_id] = idx
-    end
+  local num = tonumber(arg:match("^#?(%d+)$"))
+  if num and all_tasks[num] then
+    return all_tasks[num].task_id or all_tasks[num]
   end
 
-  save_task_index(index_to_id, id_to_index)
-  vim.notify(string.format("Reindexed %d tasks across repository (indices 1 to %d).", #all_tasks, #all_tasks), vim.log.levels.INFO)
-  return index_to_id, id_to_index
-end
-
-local function resolve_task_identifier(arg)
-  arg = vim.trim(arg or "")
-  if arg == "" then return nil end
-
-  local num = arg:match("^#?(%d+)$")
-  local index_data = load_task_index()
-
-  if num then
-    local mapped_id = index_data.index_to_id and index_data.index_to_id[num]
-    if mapped_id then
-      return mapped_id
-    end
-    local idx_map = M.reindex_tasks()
-    if idx_map and idx_map[num] then
-      return idx_map[num]
+  for _, t in ipairs(all_tasks) do
+    if t.task_id and t.task_id:lower() == arg:lower() then
+      return t.task_id
     end
   end
 
@@ -2963,7 +3064,7 @@ M.parse_solution_from_raw = parse_solution_from_raw
 
 --- Find and execute in-line TODO/FIXME task in the current buffer or repository
 function M.run_todo(bufnr, target_arg)
-  -- 1. If target_arg is a string query (e.g. :Todo normalize audio | :Todo list)
+  -- 1. If target_arg is a string query (e.g. :Tasks start normalize audio | :Tasks list)
   if type(target_arg) == "string" and vim.trim(target_arg) ~= "" and not tonumber(target_arg) then
     local query = vim.trim(target_arg)
     local all_tasks = scan_repository_tasks()
@@ -3165,7 +3266,7 @@ function M.run_todo(bufnr, target_arg)
       if cur_win and vim.api.nvim_win_is_valid(cur_win) then
         pcall(vim.api.nvim_set_current_win, cur_win)
       end
-      vim.notify(string.format("Opened task list (%d tasks pending in repository). Select one or use ':Todo <query>'.", #all_tasks), vim.log.levels.INFO)
+      vim.notify(string.format("Opened task list (%d tasks pending in repository). Select one or use ':Tasks start <id>'.", #all_tasks), vim.log.levels.INFO)
     else
       vim.notify("No in-line TODO/FIXME contracts found in repository.", vim.log.levels.INFO)
     end
@@ -3230,13 +3331,52 @@ function M.run_todo(bufnr, target_arg)
   end
   local code_section = table.concat(numbered_lines, "\n")
 
+  -- Scan for in-line revision critique comments within the target function/block
+  local critiques = {}
+  if raw_header:find("status:REVISE") or raw_header:find("REVISE") then
+    -- Task was marked as revise
+  end
+
+  local scan_end = math.min(#lines, chosen_line + 40)
+  for k = chosen_line + 1, scan_end do
+    local l = vim.trim(lines[k])
+    if l:match("^[#/%-]+%s*[A-Z]+%(") then
+      break
+    end
+    local c_text = l:match("^[#/%-]+%s*[Rr][Ee][Vv][Ii][Ss][Ee]:%s*(.*)$")
+      or l:match("^[#/%-]+%s*[Cc][Rr][Ii][Tt][Ii][Qq][Uu][Ee]:%s*(.*)$")
+      or l:match("^[#/%-]+%s*[Ff][Ii][Xx]:%s*(.*)$")
+      or l:match("^[#/%-]+%s*[Nn][Oo][Tt][Ee]:%s*(.*)$")
+    if c_text and vim.trim(c_text) ~= "" then
+      table.insert(critiques, vim.trim(c_text))
+    end
+  end
+
+  local critique_section = ""
+  if #critiques > 0 then
+    local crit_lines = {}
+    for _, c in ipairs(critiques) do
+      table.insert(crit_lines, "• " .. c)
+    end
+    critique_section = string.format([[
+
+USER IN-LINE REVISION CRITIQUES (MUST BE ADDRESSED):
+%s
+
+CRITICAL REVISION INSTRUCTION:
+The user reviewed the previous implementation and left the in-line critique notes above.
+You MUST update the implementation to satisfy all of these critiques.
+Do NOT retain the temporary critique comments (e.g. # REVISE:, # CRITIQUE:) in your replacement output.
+]], table.concat(crit_lines, "\n"))
+  end
+
   local prompt = string.format([[You are a direct code generator assistant. Do NOT call any tools, do NOT run bash commands or tests, and do NOT read other files.
 Generate the replacement code for the following in-line task directly and return strict JSON immediately.
 
 TARGET FILE: %s
 TASK: %s
 DESCRIPTION: %s
-TARGET LINE: %d (replaces lines %d to %d)
+TARGET LINE: %d (replaces lines %d to %d)%s
 
 SURROUNDING SOURCE CODE (with 1-based line numbers):
 %s
@@ -3254,7 +3394,7 @@ RULES:
 }
 Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
 ]], rel_path, raw_header, chosen_desc, chosen_line, chosen_line, chosen_line + old_lines_count - 1,
-    code_section, chosen_line, old_lines_count)
+    critique_section, code_section, chosen_line, old_lines_count)
 
   local agy_bin = vim.fn.exepath("agy")
   local opencode_bin = vim.fn.exepath("opencode")
@@ -3344,7 +3484,7 @@ end
 function M.run_file(file_arg)
   file_arg = vim.trim(file_arg or "")
   if file_arg == "" then
-    vim.notify("Usage: :Todo <path/to/file>", vim.log.levels.INFO)
+    vim.notify("Usage: :Tasks start <path/to/file>", vim.log.levels.INFO)
     return
   end
   local root = get_root_dir()
@@ -3366,26 +3506,27 @@ local function show_help()
     "synvim - commands & usage",
     "─────────────────────────────────────────────────────────────────────────────",
     "",
-    "Search & Navigation",
-    "  :Grep <pattern>        Fast local regex search across repo into Quickfix",
+    "Unified Tasks Workflow",
+    "  :Tasks                 Toggle repository task agenda (:Tasks or <leader>q)",
+    "  :Tasks list            List in-tree tasks in Quickfix",
+    "  :Tasks add <desc>      Insert formatted task contract at cursor",
+    "  :Tasks start [id]      Implement task (closest visible, or by ID/index)",
+    "  :Tasks revise [id]     Mark task as REVISE; critique directly via in-line comments",
+    "  :Tasks review          List pending reviews and changes with IDs",
+    "  :Tasks accept <id>     Accept and approve specific review by ID",
+    "  :Tasks reject <id>     Reject and revert specific review by ID",
+    "  :Tasks stop            Stop active agent synthesis job and clear diffs",
+    "",
+    "Search & Inspection",
     "  :Find <concept>        Semantic LLM search; jumps directly to relevant code",
+    "  :Grep <pattern>        Fast local regex search across repo into Quickfix",
     "  :Ask <question>        Navigate to code and insert an in-line explanation diff",
     "",
-    "Task Management",
-    "  :Tasks                 Toggle repository in-tree tasks agenda (:Tasks or <leader>q)",
-    "  :Add <desc>            Insert standard // TODO(slug): desc comment at cursor",
-    "  :Task add <desc>       Alias for :Add",
-    "  :Do                    Implement nearest task visible in the active window",
-    "  :Do <id|prompt>        Implement specified task contract or instruction",
-    "  :Todo [id|prompt]      Alias for :Do",
-    "  :Reindex               Reindex all repository task contracts sequentially (1..N)",
-    "  :Stop                  Abort running background LLM job and clear diffs",
-    "",
-    "Review & Git",
-    "  :Review                Open side-by-side Git Diffview for pending changes",
-    "  :Accept [file|all]     Stage file or commit all changes (Approved-by)",
-    "  :Reject [file|all]     Discard pending changes and revert files",
-    "  :Revise <prompt>       Request revisions to current diff in natural language",
+    "In-Line Diff Shortcuts (when diff is active)",
+    "  <M-a>                  Accept active review diff (:Tasks accept)",
+    "  <M-r>                  Reject active review diff (:Tasks reject)",
+    "  <M-w>                  Mark task for revision (:Tasks revise)",
+    "  <Esc>                  Dismiss diff view",
     "",
     "Voice Dictation",
     "  :Listen                Voice-to-text dictation into active buffer (<leader>v)",
@@ -3602,20 +3743,20 @@ function M.setup()
     vim.api.nvim_echo({
       { "● [Task Added] ", "ModeMsg" },
       { string.format("%s:%d", rel_path, new_line_num), "Directory" },
-      { string.format(" — %s%s (Run :Do to implement)", task_line_str:gsub("^%s*", ""), dup_notice), "Normal" },
+      { string.format(" — %s%s (Run :Tasks start to implement)", task_line_str:gsub("^%s*", ""), dup_notice), "Normal" },
     }, false, {})
   end
 
-  local function do_dispatcher(ctx)
+  function M.start_task(raw)
     M.state.origin_win = get_primary_editor_win()
-    local raw = vim.trim(ctx.args or "")
+    raw = vim.trim(raw or "")
 
     -- If called without arguments: execute closest in-line task visible in the current window
     if raw == "" then
       local win = get_primary_editor_win()
       local bufnr = vim.api.nvim_win_get_buf(win)
       if vim.bo[bufnr].buftype ~= "" then
-        vim.notify("Error: Active split is not an editable file.", vim.log.levels.ERROR)
+        vim.notify("Tasks: Active split is not an editable file.", vim.log.levels.ERROR)
         return
       end
 
@@ -3643,8 +3784,26 @@ function M.setup()
       end
 
       if not best_line then
-        vim.notify(string.format("Error: No in-line task (TODO/FIXME/SPEC) visible in current window (lines %d–%d).", w0, w_dollar), vim.log.levels.ERROR)
+        vim.notify(string.format("Tasks: No in-line task (TODO/FIXME/SPEC) visible in current window (lines %d–%d). Specify task: :Tasks start <id>", w0, w_dollar), vim.log.levels.ERROR)
         return
+      end
+
+      -- Check dependencies for closest visible task
+      local t_info = extract_task_info(best_text)
+      if t_info and t_info.depends_on and #t_info.depends_on > 0 then
+        local all_tasks = scan_repository_tasks()
+        for _, dep_id in ipairs(t_info.depends_on) do
+          local dep_status = "NOT_FOUND"
+          for _, ot in ipairs(all_tasks) do
+            if ot.task_id and ot.task_id:lower() == dep_id:lower() then
+              dep_status = ot.status or "TODO"
+              break
+            end
+          end
+          if dep_status ~= "DONE" and dep_status ~= "APPROVED" then
+            vim.notify(string.format("⚠ [Tasks] Dependency warning: '%s' depends on '%s' (status: %s)", t_info.id or "task", dep_id, dep_status), vim.log.levels.WARN)
+          end
+        end
       end
 
       -- Jump to the visible task line, center, flash, and execute
@@ -3679,6 +3838,22 @@ function M.setup()
     end
 
     if matched_task then
+      -- Check dependencies
+      if matched_task.depends_on and #matched_task.depends_on > 0 then
+        for _, dep_id in ipairs(matched_task.depends_on) do
+          local dep_status = "NOT_FOUND"
+          for _, ot in ipairs(all_tasks) do
+            if ot.task_id and ot.task_id:lower() == dep_id:lower() then
+              dep_status = ot.status or "TODO"
+              break
+            end
+          end
+          if dep_status ~= "DONE" and dep_status ~= "APPROVED" then
+            vim.notify(string.format("⚠ [Tasks] Dependency warning: '%s' depends on '%s' (status: %s)", matched_task.task_id, dep_id, dep_status), vim.log.levels.WARN)
+          end
+        end
+      end
+
       local root = get_root_dir()
       local full_path = (matched_task.file:sub(1, 1) == "/") and matched_task.file or (root .. "/" .. matched_task.file)
       local target_buf = vim.fn.bufadd(full_path)
@@ -3700,38 +3875,96 @@ function M.setup()
     end
 
     if raw:match("^#?%d+$") then
-      vim.notify(string.format("Agent: Task index '%s' not found. Run :Reindex or :Tasks to view available tasks.", raw), vim.log.levels.WARN)
+      vim.notify(string.format("Tasks: Task index '%s' not found. Run :Tasks to view available tasks.", raw), vim.log.levels.WARN)
       return
     end
 
     M.scaffold_and_run_task(raw)
   end
 
-  -- :Do <task_id|index|instruction>
-  vim.api.nvim_create_user_command("Do", do_dispatcher, {
+  local function tasks_complete(arglead, cmdline)
+    local parts = vim.split(vim.trim(cmdline), "%s+")
+    local has_trailing = cmdline:match("%s+$") ~= nil
+    local subcmds = { "list", "add", "start", "stop", "review", "accept", "reject", "revise" }
+
+    if #parts == 1 or (#parts == 2 and not has_trailing) then
+      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
+    end
+
+    local sub = (parts[2] or ""):lower()
+    if sub == "start" or sub == "revise" then
+      local ids = {}
+      local all_tasks = scan_repository_tasks()
+      for idx, t in ipairs(all_tasks) do
+        if t.task_id and t.task_id ~= "task" then
+          table.insert(ids, t.task_id)
+        end
+        table.insert(ids, tostring(idx))
+      end
+      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, ids)
+    elseif sub == "accept" or sub == "reject" then
+      local ids = {}
+      local reviews = M.get_reviews("all")
+      for idx, r in ipairs(reviews) do
+        if r.id then table.insert(ids, r.id) end
+        if r.task_id and r.task_id ~= "task" then table.insert(ids, r.task_id) end
+        table.insert(ids, tostring(idx))
+      end
+      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, ids)
+    end
+
+    return {}
+  end
+
+  function M.tasks_command(args)
+    args = vim.trim(args or "")
+    local parts = vim.split(args, "%s+", { trimempty = true })
+    local subcmd = (parts[1] or ""):lower()
+    local rest = table.concat(vim.list_slice(parts, 2), " ")
+
+    if subcmd == "" or subcmd == "list" then
+      local qf_open = false
+      for _, win in ipairs(vim.api.nvim_list_wins()) do
+        local buf = vim.api.nvim_win_get_buf(win)
+        if vim.bo[buf].buftype == "quickfix" then
+          qf_open = true
+          break
+        end
+      end
+      if qf_open and subcmd == "" then
+        vim.cmd("cclose")
+      else
+        M.show_tasks()
+      end
+    elseif subcmd == "add" then
+      M.add_task(rest, vim.api.nvim_get_current_win())
+    elseif subcmd == "start" then
+      M.start_task(rest)
+    elseif subcmd == "stop" then
+      M.stop()
+      M.clear_diff()
+      vim.notify("Tasks: Execution stopped and diff previews cleared.", vim.log.levels.INFO)
+    elseif subcmd == "review" then
+      M.list_reviews_qf()
+    elseif subcmd == "accept" then
+      M.accept(rest)
+    elseif subcmd == "reject" then
+      M.reject(rest)
+    elseif subcmd == "revise" then
+      M.revise_task(rest)
+    else
+      vim.notify(string.format("Tasks: Unknown subcommand '%s'. Available: list, add, start, stop, review, accept, reject, revise", subcmd), vim.log.levels.WARN)
+    end
+  end
+
+  -- Unified :Tasks command
+  vim.api.nvim_create_user_command("Tasks", function(ctx)
+    M.tasks_command(ctx.args)
+  end, {
     nargs = "*",
-    complete = task_id_complete,
-    desc = "Have the agent implement a task contract or auto-scaffold a new contract (:Do <task_id|idx|instruction>)",
+    complete = tasks_complete,
+    desc = "Unified tasks manager (:Tasks [list|add|start|stop|review|accept|reject|revise])",
   })
-
-  -- :Reindex
-  vim.api.nvim_create_user_command("Reindex", function()
-    M.reindex_tasks()
-  end, { desc = "Reindex all repository task contracts sequentially 1..N (:Reindex)" })
-
-  -- :Todo [task_id]
-  vim.api.nvim_create_user_command("Todo", do_dispatcher, {
-    nargs = "*",
-    complete = task_id_complete,
-    desc = "Execute task contract (:Todo <task_id>)",
-  })
-
-  -- :Stop
-  vim.api.nvim_create_user_command("Stop", function()
-    M.stop()
-    M.clear_diff()
-    vim.notify("Agent execution stopped and diff previews cleared.", vim.log.levels.INFO)
-  end, { desc = "Stop active agent background job and clear previews (:Stop)" })
 
   vim.api.nvim_create_user_command("Find", function(ctx)
     M.state.origin_win = vim.api.nvim_get_current_win()
@@ -3743,60 +3976,17 @@ function M.setup()
     M.grep(ctx.args)
   end, { nargs = "*", desc = "Instant local literal code & symbol search (:Grep <pattern|symbol>)" })
 
-  vim.api.nvim_create_user_command("Add", function(ctx)
-    M.add_task(ctx.args, vim.api.nvim_get_current_win())
-  end, { nargs = "*", desc = "Add an in-line task at cursor position (:Add <description>)" })
-
-  vim.api.nvim_create_user_command("Task", function(ctx)
-    local raw = vim.trim(ctx.args or "")
-    if vim.startswith(raw, "add ") or raw == "add" then
-      local desc = vim.trim(raw:sub(4))
-      M.add_task(desc, vim.api.nvim_get_current_win())
-    elseif raw == "" or raw == "list" or raw == "all" then
-      M.run_todo(nil, "list")
-    else
-      do_dispatcher(ctx)
-    end
-  end, {
-    nargs = "*",
-    complete = function(arglead, cmdline)
-      local subcmds = { "add", "list", "reindex" }
-      local all_t = task_id_complete(arglead, cmdline)
-      for _, t in ipairs(all_t) do table.insert(subcmds, t) end
-      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
-    end,
-    desc = "Manage repository tasks (:Task [list|add <desc>|<task_id>])",
-  })
-
   vim.api.nvim_create_user_command("Ask", function(ctx)
     M.state.origin_win = vim.api.nvim_get_current_win()
     M.ask(ctx.args)
   end, { nargs = "+", desc = "Ask a question about the code: navigates to exact line with clarifying in-line comment (:Ask <question>)" })
 
-
-  local function review_dispatcher(ctx)
-    local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
-    M.review(parts[1], parts[2])
-  end
-
-  local review_cmd_opts = {
-    nargs = "*",
-    complete = function(arglead, cmdline)
-      local subcmds = { "list", "accept", "reject", "next", "prev", "clear", "open" }
-      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
-    end,
-    desc = "Git Review Queue: Inspect, accept, or revert unreviewed implementations (:GitReview [list|accept|reject])",
-  }
-
-  vim.api.nvim_create_user_command("GitReview", review_dispatcher, review_cmd_opts)
-  vim.api.nvim_create_user_command("Review", review_dispatcher, review_cmd_opts)
-
-  -- If :Git command does not exist, provide :Git with review support
+  -- If :Git command does not exist, provide basic :Git with review support
   if vim.fn.exists(":Git") ~= 2 then
     vim.api.nvim_create_user_command("Git", function(ctx)
       local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
       if parts[1] == "review" then
-        M.review(parts[2], parts[3])
+        M.list_reviews_qf()
       else
         local cmd = "git " .. ctx.args
         vim.cmd("!" .. cmd)
@@ -3808,45 +3998,12 @@ function M.setup()
         if #parts <= 2 and not cmdline:match("%s+$") then
           local git_subs = { "review", "status", "diff", "log", "commit", "push", "pull", "checkout", "branch" }
           return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, git_subs)
-        elseif parts[2] == "review" then
-          local rsubs = { "list", "accept", "reject", "next", "prev", "clear" }
-          return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, rsubs)
         end
         return {}
       end,
-      desc = "Git command runner with review support (:Git review [list|accept|reject])",
+      desc = "Git command runner (:Git <command>)",
     })
   end
-
-  vim.api.nvim_create_user_command("Revise", function(ctx)
-    local arg = vim.trim(ctx.args or "")
-    if arg ~= "" then
-      M.clear_diff()
-      M.run(arg, true)
-    else
-      M.write_revision()
-    end
-  end, { nargs = "*", desc = "Revise current agent instruction in natural language" })
-
-  vim.api.nvim_create_user_command("Accept", function(ctx)
-    M.accept(ctx.args)
-  end, {
-    nargs = "*",
-    complete = function(arglead, cmdline)
-      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "all", "file" })
-    end,
-    desc = "Accept and permanently apply current file or all files (:Accept [all|file])",
-  })
-
-  vim.api.nvim_create_user_command("Reject", function(ctx)
-    M.reject(ctx.args)
-  end, {
-    nargs = "*",
-    complete = function(arglead, cmdline)
-      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "all", "file" })
-    end,
-    desc = "Reject and revert current file or all files (:Reject [all|file|reason])",
-  })
 
   vim.api.nvim_create_user_command("Synvim", function(ctx)
     local arg = vim.trim(ctx.args or ""):lower()
@@ -3863,39 +4020,12 @@ function M.setup()
     desc = "Show synvim commands and usage (:Synvim help)",
   })
 
-  vim.api.nvim_create_user_command("Tasks", function()
-    local qf_open = false
-    for _, win in ipairs(vim.api.nvim_list_wins()) do
-      local buf = vim.api.nvim_win_get_buf(win)
-      if vim.bo[buf].buftype == "quickfix" then
-        qf_open = true
-        break
-      end
-    end
-    if qf_open then
-      vim.cmd("cclose")
-    else
-      M.show_tasks()
-    end
-  end, { desc = "Toggle repository in-tree tasks agenda (:Tasks)" })
-
-  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :find, :grep, :ask, :add, :task, :tasks, :reindex, :queue, :stop, :gitreview, :synvim)
+  -- Enable native lowercase command abbreviations
   pcall(vim.cmd, [[
-    cnoreabbrev <expr> accept (getcmdtype() ==# ':' && getcmdline() ==# 'accept') ? 'Accept' : 'accept'
-    cnoreabbrev <expr> reject (getcmdtype() ==# ':' && getcmdline() ==# 'reject') ? 'Reject' : 'reject'
-    cnoreabbrev <expr> revise (getcmdtype() ==# ':' && getcmdline() ==# 'revise') ? 'Revise' : 'revise'
-    cnoreabbrev <expr> do (getcmdtype() ==# ':' && getcmdline() ==# 'do') ? 'Do' : 'do'
-    cnoreabbrev <expr> todo (getcmdtype() ==# ':' && getcmdline() ==# 'todo') ? 'Todo' : 'todo'
+    cnoreabbrev <expr> tasks (getcmdtype() ==# ':' && getcmdline() ==# 'tasks') ? 'Tasks' : 'tasks'
+    cnoreabbrev <expr> ask (getcmdtype() ==# ':' && getcmdline() ==# 'ask') ? 'Ask' : 'ask'
     cnoreabbrev <expr> find (getcmdtype() ==# ':' && getcmdline() ==# 'find') ? 'Find' : 'find'
     cnoreabbrev <expr> grep (getcmdtype() ==# ':' && getcmdline() ==# 'grep') ? 'Grep' : 'grep'
-    cnoreabbrev <expr> ask (getcmdtype() ==# ':' && getcmdline() ==# 'ask') ? 'Ask' : 'ask'
-    cnoreabbrev <expr> add (getcmdtype() ==# ':' && getcmdline() ==# 'add') ? 'Add' : 'add'
-    cnoreabbrev <expr> task (getcmdtype() ==# ':' && getcmdline() ==# 'task') ? 'Task' : 'task'
-    cnoreabbrev <expr> tasks (getcmdtype() ==# ':' && getcmdline() ==# 'tasks') ? 'Tasks' : 'tasks'
-    cnoreabbrev <expr> reindex (getcmdtype() ==# ':' && getcmdline() ==# 'reindex') ? 'Reindex' : 'reindex'
-    cnoreabbrev <expr> stop (getcmdtype() ==# ':' && getcmdline() ==# 'stop') ? 'Stop' : 'stop'
-    cnoreabbrev <expr> review (getcmdtype() ==# ':' && getcmdline() ==# 'review') ? 'Review' : 'review'
-    cnoreabbrev <expr> gitreview (getcmdtype() ==# ':' && getcmdline() ==# 'gitreview') ? 'GitReview' : 'gitreview'
     cnoreabbrev <expr> synvim (getcmdtype() ==# ':' && getcmdline() ==# 'synvim') ? 'Synvim' : 'synvim'
   ]])
 
