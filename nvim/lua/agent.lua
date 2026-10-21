@@ -33,21 +33,21 @@ local extract_task_info = nil
 local function setup_highlights()
   local is_dark = (vim.o.background == "dark")
   if is_dark then
-    vim.api.nvim_set_hl(0, "AgentDiffAdd", { bg = "#163b22", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#85e89d", bold = true, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#ff7b72", bg = "#490202", strikethrough = true, ctermfg = "Red", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#c9d1d9", bg = "#21262d", bold = true, ctermfg = "White", ctermbg = "DarkGray", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffFooter", { fg = "#8b949e", bg = "#161b22", bold = true, ctermfg = "Gray", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#238636", bold = true, ctermfg = "White", ctermbg = "DarkGreen", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#8b949e", bg = "#161b22", ctermfg = "LightGray", ctermbg = "Black", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#85e89d", bg = "#143d22", ctermfg = 10, ctermbg = 22, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#85e89d", bold = true, ctermfg = 10, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#ff7b72", bg = "#490202", strikethrough = true, ctermfg = 9, ctermbg = 52, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#c9d1d9", bg = "#21262d", bold = true, ctermfg = 15, ctermbg = 236, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffFooter", { fg = "#8b949e", bg = "#161b22", bold = true, ctermfg = 244, ctermbg = 234, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#238636", bold = true, ctermfg = 15, ctermbg = 28, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#8b949e", bg = "#161b22", ctermfg = 244, ctermbg = 234, default = false })
   else
-    vim.api.nvim_set_hl(0, "AgentDiffAdd", { bg = "#dcfce7", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#16a34a", bold = true, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#991b1b", bg = "#fee2e2", strikethrough = true, ctermfg = "DarkRed", ctermbg = "LightRed", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#ffffff", bg = "#1e293b", bold = true, ctermfg = "White", ctermbg = "DarkGray", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffFooter", { fg = "#334155", bg = "#f1f5f9", bold = true, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#0969da", bold = true, ctermfg = "White", ctermbg = "Blue", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#24292f", bg = "#eaeef2", ctermfg = "Black", ctermbg = "LightGray", default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#166534", bg = "#c6f6d5", ctermfg = 28, ctermbg = 194, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#16a34a", bold = true, ctermfg = 28, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#991b1b", bg = "#fed7d7", strikethrough = true, ctermfg = 160, ctermbg = 224, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#ffffff", bg = "#1e293b", bold = true, ctermfg = 15, ctermbg = 237, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffFooter", { fg = "#334155", bg = "#f1f5f9", bold = true, ctermfg = 238, ctermbg = 254, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#0969da", bold = true, ctermfg = 15, ctermbg = 25, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#24292f", bg = "#eaeef2", ctermfg = 235, ctermbg = 254, default = false })
   end
   pcall(vim.api.nvim_set_hl, 0, "GitReviewAdd", { link = "AgentDiffAdd", default = false })
   pcall(vim.api.nvim_set_hl, 0, "GitReviewDelete", { link = "AgentDiffDelete", default = false })
@@ -797,6 +797,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
   pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, s_idx, 0, {
     virt_lines = virt_lines_top,
     virt_lines_above = true,
+    priority = 200,
   })
 
   -- 2. Highlight additions IN-LINE directly on buffer lines in green, with '+' in sign column!
@@ -807,6 +808,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
       line_hl_group = "AgentDiffAdd",
       sign_text = "+",
       sign_hl_group = "AgentDiffAddSign",
+      priority = 200,
     })
   end
 
@@ -815,6 +817,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
   pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, last_idx, 0, {
     virt_lines = { { { footer_text, "AgentDiffFooter" } } },
     virt_lines_above = false,
+    priority = 200,
   })
 
   -- Direct cursor to the exact start line of the diff and center on screen
@@ -1039,6 +1042,19 @@ setup_agent_qf_keymaps = function(origin_win, qf_buf)
     local qf_list = vim.fn.getqflist()
     local item = qf_list[idx]
     if not item then return end
+
+    -- Check if this quickfix item represents a review
+    local rev_id = item.text and item.text:match("ID:%s*([%w_%-]+)")
+    if rev_id then
+      local all_reviews = M.get_reviews("all")
+      for _, r in ipairs(all_reviews) do
+        if r.id == rev_id then
+          if close_qf then vim.cmd("cclose") end
+          M.show_review(r)
+          return
+        end
+      end
+    end
 
     local filepath = (item.filename and item.filename ~= "") and item.filename
     if not filepath or filepath == "" then
@@ -1302,44 +1318,6 @@ function M.toggle_tasks()
   end
 end
 M.toggle_queue = M.toggle_tasks
-
-local function is_diffview_open()
-  local ok, lib = pcall(require, "diffview.lib")
-  if not ok or not lib or not lib.get_current_view then return false end
-  return lib.get_current_view() ~= nil
-end
-
-local function get_diffview_current_file()
-  local ok, lib = pcall(require, "diffview.lib")
-  if not ok or not lib or not lib.get_current_view then return nil end
-  local view = lib.get_current_view()
-  if not view then return nil end
-
-  -- 1. Try file panel item at cursor
-  if view.panel and view.panel.get_item_at_cursor then
-    local ok_item, item = pcall(function() return view.panel:get_item_at_cursor() end)
-    if ok_item and item and item.path then
-      return item.path
-    end
-  end
-
-  -- 2. Try current layout files
-  if view.cur_layout then
-    if view.cur_layout.b and view.cur_layout.b.file and view.cur_layout.b.file.path then
-      return view.cur_layout.b.file.path
-    elseif view.cur_layout.a and view.cur_layout.a.file and view.cur_layout.a.file.path then
-      return view.cur_layout.a.file.path
-    end
-  end
-
-  -- 3. Fallback to active buffer name
-  local bname = vim.api.nvim_buf_get_name(0)
-  if bname ~= "" and not bname:match("^diffview://") then
-    return vim.fn.fnamemodify(bname, ":.")
-  end
-
-  return nil
-end
 
 --- Accept review by ID or active pending diff
 function M.accept(arg)
@@ -2335,21 +2313,15 @@ function M.revert_review(rev_id)
   end
 
   M.state.current_review = nil
-  vim.notify(string.format("✗ GitReview: Reverted %s on %s!", rev.id, vim.fn.fnamemodify(target_full, ":.")), vim.log.levels.INFO)
+  vim.notify(string.format("✗ Tasks: Reverted %s on %s!", rev.id, vim.fn.fnamemodify(target_full, ":.")), vim.log.levels.INFO)
 
   -- Refresh review list
   local rem = M.get_reviews("unreviewed")
   if #rem > 0 then
-    if vim.fn.exists(":DiffviewRefresh") == 2 then
-      pcall(vim.cmd, "DiffviewRefresh")
-    end
     M.review("list")
   else
-    if vim.fn.exists(":DiffviewClose") == 2 then
-      pcall(vim.cmd, "DiffviewClose")
-    end
     vim.cmd("cclose")
-    vim.notify("✓ GitReview: All implementations have been reviewed by a human!", vim.log.levels.INFO)
+    vim.notify("✓ Tasks: All implementations have been reviewed by a human!", vim.log.levels.INFO)
   end
   return true
 end
@@ -2443,14 +2415,8 @@ function M.accept_review(rev_id)
   -- Refresh review list
   local rem = M.get_reviews("unreviewed")
   if #rem > 0 then
-    if vim.fn.exists(":DiffviewRefresh") == 2 then
-      pcall(vim.cmd, "DiffviewRefresh")
-    end
     M.review("list")
   else
-    if vim.fn.exists(":DiffviewClose") == 2 then
-      pcall(vim.cmd, "DiffviewClose")
-    end
     vim.cmd("cclose")
     vim.notify("✓ Tasks: All implementations have been reviewed and approved!", vim.log.levels.INFO)
   end
@@ -2493,8 +2459,10 @@ function M.list_reviews_qf()
   vim.fn.setqflist(qf_list, "r")
   vim.fn.setqflist({}, "a", { title = string.format("[Tasks Review: %d pending, %d total]", #unreviewed, #all_reviews) })
   vim.cmd("botright copen 6")
+  local qf_win = vim.api.nvim_get_current_win()
   local cur_w = get_primary_editor_win()
   if cur_w and vim.api.nvim_win_is_valid(cur_w) then
+    setup_agent_qf_keymaps(cur_w, vim.api.nvim_win_get_buf(qf_win))
     pcall(vim.api.nvim_set_current_win, cur_w)
   end
   vim.notify(string.format("Tasks: %d pending review%s (:Tasks accept <id> | :Tasks reject <id>)", #unreviewed, #unreviewed == 1 and "" or "s"), vim.log.levels.INFO)
@@ -2532,7 +2500,7 @@ function M.show_review(rev)
   }, false, {})
 end
 
---- Human Review Command Dispatcher (:Review [list|accept|reject|next|prev])
+--- Human Review Command Dispatcher (:Tasks review [id])
 function M.review(subcmd, arg)
   subcmd = (subcmd or ""):lower()
   local root = get_root_dir()
@@ -2542,7 +2510,7 @@ function M.review(subcmd, arg)
     if target_id then
       M.accept_review(target_id)
     else
-      vim.notify("Review: No active review to accept. Run :Review to select one.", vim.log.levels.WARN)
+      vim.notify("Review: No active review to accept. Run :Tasks review to select one.", vim.log.levels.WARN)
     end
     return
   elseif subcmd == "reject" or subcmd == "r" then
@@ -2550,7 +2518,7 @@ function M.review(subcmd, arg)
     if target_id then
       M.revert_review(target_id)
     else
-      vim.notify("Review: No active review to reject. Run :Review to select one.", vim.log.levels.WARN)
+      vim.notify("Review: No active review to reject. Run :Tasks review to select one.", vim.log.levels.WARN)
     end
     return
   elseif subcmd == "clear" or subcmd == "close" then
@@ -2561,55 +2529,51 @@ function M.review(subcmd, arg)
     return
   end
 
-  -- Default or "list": show all unreviewed implementations
+  local all_reviews = M.get_reviews("all")
   local unreviewed = M.get_reviews("unreviewed")
-  local git_status = vim.trim(vim.fn.system({ "git", "-C", root, "status", "--porcelain" }))
-  if #unreviewed == 0 and git_status == "" then
-    vim.notify("✓ Review: All implementations have been reviewed by a human! (0 pending)", vim.log.levels.INFO)
+
+  if #all_reviews == 0 then
+    vim.notify("Tasks: No reviews recorded. Run :Tasks start to generate implementations.", vim.log.levels.INFO)
     vim.cmd("cclose")
     return
   end
 
-  if #unreviewed == 0 and git_status ~= "" then
-    if vim.fn.exists(":DiffviewOpen") == 2 then
-      pcall(vim.cmd, "DiffviewOpen")
-      vim.notify("GitReview: Opened visual Diffview for uncommitted changes. Use :Accept [all|file] or :Reject [all|file].", vim.log.levels.INFO)
+  -- If user passed a specific review id or index: :Tasks review <id|index>
+  if subcmd ~= "" and subcmd ~= "list" then
+    local target_id = subcmd
+    local num = tonumber(target_id:match("^#?(%d+)$"))
+    local matched = nil
+    if num and all_reviews[num] then
+      matched = all_reviews[num]
     else
-      vim.notify("GitReview: Uncommitted changes pending review.", vim.log.levels.INFO)
+      for _, r in ipairs(all_reviews) do
+        if r.id == target_id or (r.task_id and r.task_id:lower() == target_id:lower()) or (r.id and tostring(r.id):sub(-6) == tostring(target_id):sub(-6)) then
+          matched = r
+          break
+        end
+      end
     end
+    if matched then
+      M.show_review(matched)
+      return
+    else
+      vim.notify("Tasks: Review '" .. target_id .. "' not found.", vim.log.levels.WARN)
+    end
+  end
+
+  -- If exactly 1 unreviewed review exists, show it directly in the active split
+  if #unreviewed == 1 then
+    M.show_review(unreviewed[1])
     return
   end
 
-  -- If diffview is available, delegate directly to visual side-by-side Diffview
-  if vim.fn.exists(":DiffviewOpen") == 2 then
-    pcall(vim.cmd, "DiffviewOpen")
-    vim.notify("Review: Opened visual Diffview. Review file-by-file with :Accept or :Reject, or :Accept all to approve all.", vim.log.levels.INFO)
-    return
+  -- Otherwise list in Quickfix and show the first unreviewed review in the split
+  M.list_reviews_qf()
+  if #unreviewed > 0 then
+    M.show_review(unreviewed[1])
+  elseif #all_reviews > 0 then
+    M.show_review(all_reviews[#all_reviews])
   end
-
-  local qf_list = {}
-  for _, r in ipairs(unreviewed) do
-    local full = r.target_file:match("^/") and r.target_file or (root .. "/" .. r.target_file)
-    table.insert(qf_list, {
-      filename = full,
-      lnum = r.start_line or 1,
-      col = 1,
-      text = string.format("[UNREVIEWED: %s] %s (%s)", r.id, r.description or "", r.task_id or ""),
-      type = "W",
-    })
-  end
-
-  vim.fn.setqflist(qf_list, "r")
-  vim.fn.setqflist({}, "a", { title = string.format("[Human Review Queue: %d unreviewed implementation%s]", #unreviewed, #unreviewed == 1 and "" or "s") })
-  vim.cmd("botright copen 6")
-
-  local origin_win = get_primary_editor_win()
-  if origin_win and vim.api.nvim_win_is_valid(origin_win) then
-    setup_agent_qf_keymaps(origin_win, vim.api.nvim_win_get_buf(vim.api.nvim_get_current_win()))
-  end
-
-  -- Show first unreviewed item
-  M.show_review(unreviewed[1])
 end
 
 local function is_todo_comment(line)
