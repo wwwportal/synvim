@@ -55,23 +55,26 @@ function M.wrap_diff_line(prefix, text, hl_group, max_w)
   return (#lines > 0) and lines or { { { full, hl_group } } }
 end
 
---- Tokenize line into words, whitespace, and punctuation symbols
+--- Tokenize line into words, whitespace, and UTF-8 symbols
 function M.tokenize_line(line)
   local tokens = {}
   local pos = 1
+  local utf8_pat = "^[%z\1-\127\194-\244][\128-\191]*"
   while pos <= #line do
-    local s, e = line:find("[%w_]+", pos)
-    if s == pos then
+    local s, e = line:find("^[%w_]+", pos)
+    if s then
       table.insert(tokens, { text = line:sub(s, e), start_col = s - 1, end_col = e })
       pos = e + 1
     else
-      local ws_s, ws_e = line:find("%s+", pos)
-      if ws_s == pos then
+      local ws_s, ws_e = line:find("^%s+", pos)
+      if ws_s then
         table.insert(tokens, { text = line:sub(ws_s, ws_e), start_col = ws_s - 1, end_col = ws_e, is_ws = true })
         pos = ws_e + 1
       else
-        table.insert(tokens, { text = line:sub(pos, pos), start_col = pos - 1, end_col = pos })
-        pos = pos + 1
+        local char = line:sub(pos):match(utf8_pat) or line:sub(pos, pos)
+        local c_len = #char
+        table.insert(tokens, { text = char, start_col = pos - 1, end_col = pos - 1 + c_len })
+        pos = pos + c_len
       end
     end
   end

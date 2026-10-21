@@ -318,6 +318,69 @@ do
 end
 
 -- -----------------------------------------------------------------------------
+-- TEST 11: Multi-byte UTF-8 Math Symbols (Lean 4 & Geometry)
+-- -----------------------------------------------------------------------------
+print("\n[TEST 11] Multi-byte UTF-8 Math & Symbol Preservation")
+do
+  local inlines, adds = diff_mod.compute_char_diff(
+    "assert shannon_entropy >= 3.0 and theta <= 0.25",
+    "assert shannon_entropy ≥ 3.0 and θ ≤ 0.25"
+  )
+  assert_eq(#inlines, 3, "3 unicode/math replacements detected (>=, theta, <=)")
+  assert_eq(#adds, 3, "3 addition ranges for unicode characters detected (≥, θ, ≤)")
+  assert_true(inlines[1].text:find(">=") ~= nil, "Inline delete of '>=' detected cleanly")
+  assert_true(adds[1].end_col > adds[1].start_col, "Valid byte length for '≥' (3-byte UTF-8)")
+end
+
+-- -----------------------------------------------------------------------------
+-- TEST 12: Buffer Switching & Diff Re-attachment Persistence
+-- -----------------------------------------------------------------------------
+print("\n[TEST 12] Buffer Switching & Pending Diff Persistence")
+do
+  local bufA = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(bufA, 0, -1, false, { "def function_a(): return 1" })
+  local bufB = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(bufB, 0, -1, false, { "def function_b(): return 2" })
+
+  local win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(win, bufA)
+
+  diff_mod.show_inline_diff(bufA, 1, "def function_a_new(): return 1", 1, false, { "def function_a(): return 1" }, { task_id = "task-persist" })
+  local marks_before = vim.api.nvim_buf_get_extmarks(bufA, state_mod.ns_diff, 0, -1, {})
+  assert_true(#marks_before > 0, "Extmarks active on buffer A")
+
+  -- Switch window to buffer B
+  vim.api.nvim_win_set_buf(win, bufB)
+  assert_eq(vim.api.nvim_win_get_buf(win), bufB, "Switched to buffer B")
+
+  -- Switch back to buffer A and call attach_pending_diff
+  vim.api.nvim_win_set_buf(win, bufA)
+  local reattached = diff_mod.attach_pending_diff(bufA, "task-persist")
+  local marks_after = vim.api.nvim_buf_get_extmarks(bufA, state_mod.ns_diff, 0, -1, {})
+
+  assert_true(#marks_after > 0, "Pending diff successfully maintained across buffer switch")
+  assert_eq(#marks_after, #marks_before, "No duplicate extmarks created during re-attachment")
+
+  diff_mod.clear_diff(true)
+end
+
+-- -----------------------------------------------------------------------------
+-- TEST 13: Empty Lines & Whitespace-only Modifications
+-- -----------------------------------------------------------------------------
+print("\n[TEST 13] Empty Lines & Whitespace-only Modifications")
+do
+  -- Case A: Empty line replaced with code
+  local inlines_a, adds_a = diff_mod.compute_char_diff("", "local x = 10")
+  assert_eq(#inlines_a, 0, "No inline deletion for originally empty line")
+  assert_eq(#adds_a, 1, "Full addition detected for new line")
+
+  -- Case B: Code replaced with empty line
+  local inlines_b, adds_b = diff_mod.compute_char_diff("local x = 10", "")
+  assert_eq(#inlines_b, 1, "Inline deletion detected when line becomes empty")
+  assert_eq(#adds_b, 0, "No additions on empty line")
+end
+
+-- -----------------------------------------------------------------------------
 -- SUMMARY
 -- -----------------------------------------------------------------------------
 print("\n==================================================================")
