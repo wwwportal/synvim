@@ -33,21 +33,13 @@ local extract_task_info = nil
 local function setup_highlights()
   local is_dark = (vim.o.background == "dark")
   if is_dark then
-    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#85e89d", bg = "#143d22", ctermfg = 10, ctermbg = 22, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#85e89d", bold = true, ctermfg = 10, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#ff7b72", bg = "#490202", strikethrough = true, ctermfg = 9, ctermbg = 52, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#c9d1d9", bg = "#21262d", bold = true, ctermfg = 15, ctermbg = 236, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffFooter", { fg = "#8b949e", bg = "#161b22", bold = true, ctermfg = 244, ctermbg = 234, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#238636", bold = true, ctermfg = 15, ctermbg = 28, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#8b949e", bg = "#161b22", ctermfg = 244, ctermbg = 234, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#a6f3a6", bg = "#144620", ctermfg = 10, ctermbg = 22, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#22c55e", bold = true, ctermfg = 10, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#ff8585", bg = "#4a0e0e", strikethrough = true, ctermfg = 9, ctermbg = 52, default = false })
   else
-    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#166534", bg = "#c6f6d5", ctermfg = 28, ctermbg = 194, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#14532d", bg = "#bbf7d0", ctermfg = 28, ctermbg = 194, default = false })
     vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#16a34a", bold = true, ctermfg = 28, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#991b1b", bg = "#fed7d7", strikethrough = true, ctermfg = 160, ctermbg = 224, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#ffffff", bg = "#1e293b", bold = true, ctermfg = 15, ctermbg = 237, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffFooter", { fg = "#334155", bg = "#f1f5f9", bold = true, ctermfg = 238, ctermbg = 254, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#0969da", bold = true, ctermfg = 15, ctermbg = 25, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#24292f", bg = "#eaeef2", ctermfg = 235, ctermbg = 254, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#991b1b", bg = "#fecaca", strikethrough = true, ctermfg = 160, ctermbg = 224, default = false })
   end
   pcall(vim.api.nvim_set_hl, 0, "GitReviewAdd", { link = "AgentDiffAdd", default = false })
   pcall(vim.api.nvim_set_hl, 0, "GitReviewDelete", { link = "AgentDiffDelete", default = false })
@@ -769,24 +761,16 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
   local win_w = (origin_win and vim.api.nvim_win_is_valid(origin_win)) and vim.api.nvim_win_get_width(origin_win) or 80
   local max_w = math.max(35, win_w - 6)
 
-  local task_name = (review_meta and (review_meta.task_id or review_meta.id))
-    or (is_new_file and "New File" or "Task")
-  local header_label = string.format(" Git Review: %s ", task_name)
-  local bar_len = math.max(4, max_w - #header_label - 4)
-  local header_text = "┌──" .. header_label .. string.rep("─", bar_len) .. "┐"
-  if #header_text > max_w then
-    header_text = header_text:sub(1, max_w - 1) .. "┐"
+  -- Ensure editor window displays this buffer and sign column is enabled
+  if origin_win and vim.api.nvim_win_is_valid(origin_win) then
+    if vim.api.nvim_win_get_buf(origin_win) ~= bufnr then
+      vim.api.nvim_win_set_buf(origin_win, bufnr)
+    end
+    pcall(function() vim.wo[origin_win].signcolumn = "yes" end)
   end
 
-  local footer_text = "└── :Tasks accept (<M-a>) | :Tasks reject (<M-r>) | :Tasks revise (<M-w>) " .. string.rep("─", math.max(2, max_w - 75)) .. "┘"
-  if #footer_text > max_w then
-    footer_text = footer_text:sub(1, max_w - 1) .. "┘"
-  end
-
-  -- 1. Top virtual lines: Header + Red deleted lines (with word-wrapping)
+  -- 1. Red deleted lines displayed directly above as virtual lines
   local virt_lines_top = {}
-  table.insert(virt_lines_top, { { header_text, "AgentDiffHeader" } })
-
   for _, line in ipairs(deleted_lines) do
     local chunks = wrap_diff_line("- ", line, "AgentDiffDelete", max_w)
     for _, chunk in ipairs(chunks) do
@@ -794,13 +778,15 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     end
   end
 
-  pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, s_idx, 0, {
-    virt_lines = virt_lines_top,
-    virt_lines_above = true,
-    priority = 200,
-  })
+  if #virt_lines_top > 0 then
+    pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, s_idx, 0, {
+      virt_lines = virt_lines_top,
+      virt_lines_above = true,
+      priority = 250,
+    })
+  end
 
-  -- 2. Highlight additions IN-LINE directly on buffer lines in green, with '+' in sign column!
+  -- 2. Green added lines highlighted directly on buffer lines with '+' in sign column
   local num_added = math.max(1, #new_lines)
   for i = 0, num_added - 1 do
     local l_idx = s_idx + i
@@ -808,17 +794,9 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
       line_hl_group = "AgentDiffAdd",
       sign_text = "+",
       sign_hl_group = "AgentDiffAddSign",
-      priority = 200,
+      priority = 250,
     })
   end
-
-  -- 3. Bottom virtual line: Footer attached below the last added line
-  local last_idx = s_idx + num_added - 1
-  pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, last_idx, 0, {
-    virt_lines = { { { footer_text, "AgentDiffFooter" } } },
-    virt_lines_above = false,
-    priority = 200,
-  })
 
   -- Direct cursor to the exact start line of the diff and center on screen
   if origin_win and vim.api.nvim_win_is_valid(origin_win) then
@@ -3848,7 +3826,7 @@ function M.setup()
       M.clear_diff()
       vim.notify("Tasks: Execution stopped and diff previews cleared.", vim.log.levels.INFO)
     elseif subcmd == "review" then
-      M.list_reviews_qf()
+      M.review(rest)
     elseif subcmd == "accept" then
       M.accept(rest)
     elseif subcmd == "reject" then
