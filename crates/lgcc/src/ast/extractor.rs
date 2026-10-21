@@ -87,6 +87,7 @@ impl Extractor {
 
         match ext {
             "cpp" | "hpp" | "h" | "cc" | "cxx" => Self::extract_cpp(path, &content),
+            "lean" => Self::extract_lean(path, &content),
             "lua" => Self::extract_lua(path, &content),
             "py" => Self::extract_python(path, &content),
             "rs" => Self::extract_rust(path, &content),
@@ -446,6 +447,88 @@ impl Extractor {
                     fn_entry_brace = -1;
                 }
             }
+        }
+
+        mod_data
+    }
+
+    fn extract_lean(path: &Path, content: &str) -> ExtractedModule {
+        let mut mod_data = ExtractedModule {
+            filepath: path.to_path_buf(),
+            language: "lean".to_string(),
+            imports: Vec::new(),
+            symbols: Vec::new(),
+        };
+
+        let lines: Vec<&str> = content.lines().collect();
+        let imp_re = Regex::new(r#"^[ \t]*(?:public[ \t]+)?import[ \t]+([a-zA-Z0-9_\.]+)"#).unwrap();
+        let decl_re = Regex::new(r#"^[ \t]*(?:public[ \t]+|private[ \t]+|protected[ \t]+|unsafe[ \t]+|partial[ \t]+|noncomputable[ \t]+)*(def|theorem|lemma|inductive|structure|class|instance|axiom|opaque)[ \t]+([a-zA-Z0-9_\.]+)"#).unwrap();
+
+        let mut current_sym_idx: Option<usize> = None;
+
+        for (i, line) in lines.iter().enumerate() {
+            let line_num = i + 1;
+            let trimmed = line.trim();
+
+            if let Some(caps) = imp_re.captures(line) {
+                let mod_name = caps.get(1).unwrap().as_str();
+                mod_data.imports.push(Import {
+                    module: mod_name.to_string(),
+                    names: Vec::new(),
+                    line: line_num,
+                });
+            }
+
+            if let Some(caps) = decl_re.captures(line) {
+                if let Some(prev_idx) = current_sym_idx {
+                    mod_data.symbols[prev_idx].end_line = i;
+                    let sym_start = mod_data.symbols[prev_idx].line;
+                    let sym_name = mod_data.symbols[prev_idx].name.clone();
+                    Self::extract_calls_from_lines(
+                        &lines,
+                        sym_start,
+                        i,
+                        &sym_name,
+                        &mut mod_data.symbols[prev_idx].calls,
+                    );
+                }
+
+                let kind = caps.get(1).unwrap().as_str();
+                let name = caps.get(2).unwrap().as_str();
+                let sym_idx = mod_data.symbols.len();
+
+                mod_data.symbols.push(Symbol {
+                    name: name.to_string(),
+                    kind: match kind {
+                        "def" => "function",
+                        "theorem" | "lemma" => "theorem",
+                        "structure" | "class" | "inductive" => "type",
+                        _ => kind,
+                    }.to_string(),
+                    line: line_num,
+                    end_line: line_num,
+                    signature: trimmed.to_string(),
+                    docstring: String::new(),
+                    params: Vec::new(),
+                    return_type: String::new(),
+                    calls: Vec::new(),
+                    is_top: !line.starts_with(' ') && !line.starts_with('\t'),
+                });
+                current_sym_idx = Some(sym_idx);
+            }
+        }
+
+        if let Some(last_idx) = current_sym_idx {
+            mod_data.symbols[last_idx].end_line = lines.len();
+            let sym_start = mod_data.symbols[last_idx].line;
+            let sym_name = mod_data.symbols[last_idx].name.clone();
+            Self::extract_calls_from_lines(
+                &lines,
+                sym_start,
+                lines.len(),
+                &sym_name,
+                &mut mod_data.symbols[last_idx].calls,
+            );
         }
 
         mod_data

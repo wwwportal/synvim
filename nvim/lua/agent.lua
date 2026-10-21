@@ -806,6 +806,18 @@ jump_to_target = function(target, win)
   pcall(vim.api.nvim_win_set_cursor, target_win, { line, col })
   vim.cmd("normal! zz")
 
+  -- Visual flash on target line so user's focus is immediately drawn to the matched line
+  pcall(function()
+    local ns = vim.api.nvim_create_namespace("agent_jump_flash")
+    vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+    vim.api.nvim_buf_add_highlight(bufnr, ns, "IncSearch", line - 1, 0, -1)
+    vim.defer_fn(function()
+      if vim.api.nvim_buf_is_valid(bufnr) then
+        vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+      end
+    end, 1000)
+  end)
+
   -- If code implementation was suggested, display in-line green-red diff!
   if type(target.content) == "string" and vim.trim(target.content) ~= "" then
     local old_count = is_new and 0 or ((type(target.old_lines_count) == "number") and target.old_lines_count or ((target.action == "replace") and 1 or 0))
@@ -1687,9 +1699,34 @@ local function search_and_rank(query, root)
   local keywords = extract_search_keywords(query)
   if #keywords == 0 then return {} end
 
+  local candidates = {}
+  local seen_locs = {}
+
+  -- 1. Check for filename matches across repository
+  local find_cmd = { "git", "-C", root, "ls-files", "*" .. (keywords[1] or query) .. "*" }
+  local find_out = vim.fn.system(find_cmd)
+  if vim.v.shell_error == 0 and find_out ~= "" then
+    for line in find_out:gmatch("[^\r\n]+") do
+      if not line:match("%.olean$") and not line:match("%.jsonl$") and not line:match("%.log$") and not line:match("%.ipynb$") then
+        local loc_key = line .. ":1"
+        if not seen_locs[loc_key] then
+          seen_locs[loc_key] = true
+          table.insert(candidates, {
+            path = line,
+            line = 1,
+            col = 1,
+            action = "navigate",
+            description = "[FILE] " .. line,
+            score = 150,
+          })
+        end
+      end
+    end
+  end
+
   local grep_matches = {}
   local pattern = table.concat(keywords, "|")
-  local git_cmd = { "git", "-C", root, "grep", "-n", "-I", "-i", "-E", pattern, "--",
+  local git_cmd = { "git", "-C", root, "grep", "--untracked", "-n", "-I", "-i", "-E", pattern, "--",
     ":!*.jsonl", ":!*.log", ":!*.json", ":!*.ipynb", ":!*.olean", ":!specs/.lexlean/*", ":!logs/*", ":!target/*" }
   local git_out = vim.fn.system(git_cmd)
 
@@ -1712,76 +1749,117 @@ local function search_and_rank(query, root)
     end
   end
 
-  local candidates = {}
   for _, line in ipairs(grep_matches) do
     local fpath, lnum, txt = line:match("^([^:]+):(%d+):(.*)$")
     if fpath and lnum and txt then
       local lnum_num = tonumber(lnum) or 1
-      local txt_low = txt:lower()
-      local fpath_low = fpath:lower()
-      local score = 10
+      local loc_key = fpath .. ":" .. lnum_num
+      if not seen_locs[loc_key] then
+        seen_locs[loc_key] = true
+        local txt_low = txt:lower()
+        local fpath_low = fpath:lower()
+        local query_low = query:lower()
+        local score = 10
 
-      -- Definition keywords (+50)
-      if txt_low:find("%f[%a]struct%f[%A]")
-        or txt_low:find("%f[%a]class%f[%A]")
-        or txt_low:find("%f[%a]def%f[%A]")
-        or txt_low:find("%f[%a]fn%f[%A]")
-        or txt_low:find("%f[%a]theorem%f[%A]")
-        or txt_low:find("%f[%a]lemma%f[%A]")
-        or txt_low:find("%f[%a]axiom%f[%A]")
-        or txt_low:find("%f[%a]type%f[%A]")
-        or txt_low:find("%f[%a]typedef%f[%A]")
-        or txt_low:find("%f[%a]enum%f[%A]")
-        or txt_low:find("%f[%a]interface%f[%A]") then
-        score = score + 50
-      end
-
-      -- Explanatory comment (+35)
-      if txt_low:find("^%s*//") or txt_low:find("^%s*/%*") or txt_low:find("^%s*#") or txt_low:find("^%s*%-%-") then
-        score = score + 35
-      end
-
-      -- Keyword match in filename (+30)
-      for _, kw in ipairs(keywords) do
-        if fpath_low:find(vim.pesc(kw)) then
-          score = score + 30
-          break
+        -- Exact verbatim query match (+140)
+        if txt:find(query, 1, true) then
+          score = score + 140
+        elseif txt_low:find(query_low, 1, true) then
+          score = score + 90
         end
-      end
 
-      -- Penalize generated tex / documentation files or huge lines (-50)
-      if fpath_low:match("%.tex$") or fpath_low:match("%.md$") or fpath_low:match("%.txt$") or fpath_low:match("%.rst$") or #txt > 500 then
-        score = score - 50
-      end
+        -- Direct symbol definition match (+120)
+        for _, kw in ipairs(keywords) do
+          local pat1 = "fn%s+" .. kw
+          local pat2 = "def%s+" .. kw
+          local pat3 = "function%s+" .. kw
+          local pat4 = "function%s+[%a0-9_]*[:%.]" .. kw
+          local pat5 = "struct%s+" .. kw
+          local pat6 = "class%s+" .. kw
+          local pat7 = "theorem%s+" .. kw
+          local pat8 = "type%s+" .. kw
+          local pat9 = "let%s+" .. kw
+          local pat10 = kw .. "%s*="
+          if txt_low:find(pat1) or txt_low:find(pat2) or txt_low:find(pat3) or txt_low:find(pat4)
+            or txt_low:find(pat5) or txt_low:find(pat6) or txt_low:find(pat7) or txt_low:find(pat8)
+            or txt_low:find(pat9) or txt_low:find(pat10) then
+            score = score + 120
+            break
+          end
+        end
 
-      -- Boost code implementation files (+40)
-      if fpath_low:match("%.hpp$") or fpath_low:match("%.cpp$") or fpath_low:match("%.rs$") or fpath_low:match("%.c$") or fpath_low:match("%.h$") or fpath_low:match("%.lean$") or fpath_low:match("%.py$") or fpath_low:match("%.lua$") or fpath_low:match("%.go$") then
-        score = score + 40
-      end
+        -- Boost actual function/method implementation bodies (+60)
+        if txt_low:find("=%s*function") or txt_low:find("function%s*[%a0-9_]*%s*%(") or txt_low:find("fn%s+[%a0-9_]+%s*%(") or txt_low:find("def%s+[%a0-9_]+%s*%(") then
+          score = score + 60
+        end
 
-      -- Core source directories (+30)
-      if fpath_low:find("^src/") or fpath_low:find("^lib/") or fpath_low:find("^include/") then
-        score = score + 30
-      end
+        -- Penalize forward stubs / nil initializations (-50)
+        if txt_low:find("=%s*nil%s*$") or txt_low:find("=%s*none%s*$") or txt_low:find("=%s*null%s*$") then
+          score = score - 50
+        end
 
-      -- Penalize includes/imports (-25)
-      if txt_low:find("^%s*#include") or txt_low:find("^%s*import%s") or txt_low:find("^%s*from%s.*import") then
-        score = score - 25
-      end
+        -- Definition keywords (+50)
+        if txt_low:find("%f[%a]struct%f[%A]")
+          or txt_low:find("%f[%a]class%f[%A]")
+          or txt_low:find("%f[%a]def%f[%A]")
+          or txt_low:find("%f[%a]fn%f[%A]")
+          or txt_low:find("%f[%a]theorem%f[%A]")
+          or txt_low:find("%f[%a]lemma%f[%A]")
+          or txt_low:find("%f[%a]axiom%f[%A]")
+          or txt_low:find("%f[%a]type%f[%A]")
+          or txt_low:find("%f[%a]typedef%f[%A]")
+          or txt_low:find("%f[%a]enum%f[%A]")
+          or txt_low:find("%f[%a]interface%f[%A]") then
+          score = score + 50
+        end
 
-      -- Penalize tests if query is not asking for tests (-20)
-      if (fpath_low:find("test") or fpath_low:find("tests/")) and not query:lower():find("test") then
-        score = score - 20
-      end
+        -- Explanatory comment (+35)
+        if txt_low:find("^%s*//") or txt_low:find("^%s*/%*") or txt_low:find("^%s*#") or txt_low:find("^%s*%-%-") then
+          score = score + 35
+        end
 
-      table.insert(candidates, {
-        path = fpath,
-        line = lnum_num,
-        col = 1,
-        action = "navigate",
-        description = vim.trim(txt),
-        score = score,
-      })
+        -- Keyword match in filename (+40)
+        for _, kw in ipairs(keywords) do
+          if fpath_low:find(vim.pesc(kw)) then
+            score = score + 40
+            break
+          end
+        end
+
+        -- Penalize generated tex / documentation files or huge lines (-50)
+        if fpath_low:match("%.tex$") or fpath_low:match("%.md$") or fpath_low:match("%.txt$") or fpath_low:match("%.rst$") or #txt > 500 then
+          score = score - 50
+        end
+
+        -- Boost code implementation files (+40)
+        if fpath_low:match("%.hpp$") or fpath_low:match("%.cpp$") or fpath_low:match("%.rs$") or fpath_low:match("%.c$") or fpath_low:match("%.h$") or fpath_low:match("%.lean$") or fpath_low:match("%.py$") or fpath_low:match("%.lua$") or fpath_low:match("%.go$") then
+          score = score + 40
+        end
+
+        -- Core source directories (+30)
+        if fpath_low:find("^src/") or fpath_low:find("^lib/") or fpath_low:find("^include/") or fpath_low:find("^crates/") or fpath_low:find("^nvim/lua/") then
+          score = score + 30
+        end
+
+        -- Penalize includes/imports (-25)
+        if txt_low:find("^%s*#include") or txt_low:find("^%s*import%s") or txt_low:find("^%s*from%s.*import") then
+          score = score - 25
+        end
+
+        -- Penalize tests if query is not asking for tests (-20)
+        if (fpath_low:find("test") or fpath_low:find("tests/")) and not query:lower():find("test") then
+          score = score - 20
+        end
+
+        table.insert(candidates, {
+          path = fpath,
+          line = lnum_num,
+          col = 1,
+          action = "navigate",
+          description = vim.trim(txt),
+          score = score,
+        })
+      end
     end
   end
 
@@ -1803,6 +1881,58 @@ function M.find(query)
     return
   end
 
+  local root = get_root_dir()
+
+  -- 1. Direct file:line jump (e.g. :Find crates/lgcc/src/ast/extractor.rs:25 or :Find agent.lua:100)
+  local file_target, line_target = query:match("^([^:]+):(%d+)$")
+  if file_target and line_target then
+    local full_path = file_target:match("^/") and file_target or (root .. "/" .. file_target)
+    if vim.fn.filereadable(full_path) ~= 1 then
+      local find_f = vim.fn.systemlist({ "git", "-C", root, "ls-files", "*" .. file_target })
+      if #find_f > 0 and vim.fn.filereadable(root .. "/" .. find_f[1]) == 1 then
+        file_target = find_f[1]
+        full_path = root .. "/" .. file_target
+      end
+    end
+
+    if vim.fn.filereadable(full_path) == 1 then
+      local target = {
+        path = file_target,
+        line = tonumber(line_target),
+        col = 1,
+        action = "navigate",
+        description = file_target .. ":" .. line_target,
+      }
+      M.state.queue = { target }
+      M.state.queue_index = 1
+      jump_to_target(target)
+      update_queue_display(false)
+      vim.api.nvim_echo({
+        { "● [Direct Jump] ", "ModeMsg" },
+        { string.format("%s:%s", file_target, line_target), "Directory" },
+      }, false, {})
+      return
+    end
+  end
+
+  -- 2. Instant local ranked search (sub-millisecond ripgrep/git-grep)
+  local candidates = search_and_rank(query, root)
+  if #candidates > 0 then
+    local best = candidates[1]
+    M.state.queue = candidates
+    M.state.queue_index = 1
+    jump_to_target(best)
+    update_queue_display(#candidates > 1)
+    vim.api.nvim_echo({
+      { "● [Found] ", "ModeMsg" },
+      { string.format("%s:%d", best.path, best.line), "Directory" },
+      { string.format(" — %s (%d ranked match%s)", best.description, #candidates, #candidates > 1 and "es" or ""), "Normal" },
+    }, false, {})
+    return
+  end
+
+  -- 3. Fallback to background LLM search only if 0 direct local matches exist
+  vim.notify("No direct local matches for '" .. query .. "', querying agent...", vim.log.levels.INFO)
   local prompt = "where did we implement " .. query .. " (find definition, implementation, and references)"
   M.run(prompt, false, function(res)
     if res and res.active_target then
@@ -1812,21 +1942,7 @@ function M.find(query)
         { res.active_target.description and (" — " .. res.active_target.description) or "", "Comment" },
       }, false, {})
     else
-      -- Fallback to local search_and_rank if model was unavailable
-      local root = get_root_dir()
-      local candidates = search_and_rank(query, root)
-      if #candidates > 0 then
-        local best = candidates[1]
-        M.state.queue = candidates
-        M.state.queue_index = 1
-        jump_to_target(best)
-        update_queue_display(#candidates > 1)
-        vim.api.nvim_echo({
-          { "● [Agent Find (Local)] ", "ModeMsg" },
-          { string.format("%s:%d", best.path, best.line), "Directory" },
-          { string.format(" — %s (found %d matches)", best.description, #candidates), "Normal" },
-        }, false, {})
-      end
+      vim.notify("No matches found for '" .. query .. "'", vim.log.levels.WARN)
     end
   end)
 end
@@ -3197,13 +3313,14 @@ function M.setup()
     desc = "Reject and revert current file or all files (:Reject [all|file|reason])",
   })
 
-  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :reindex, :lgcc, :queue, :stop, :gitreview)
+  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :find, :reindex, :lgcc, :queue, :stop, :gitreview)
   pcall(vim.cmd, [[
     cnoreabbrev <expr> accept (getcmdtype() ==# ':' && getcmdline() ==# 'accept') ? 'Accept' : 'accept'
     cnoreabbrev <expr> reject (getcmdtype() ==# ':' && getcmdline() ==# 'reject') ? 'Reject' : 'reject'
     cnoreabbrev <expr> revise (getcmdtype() ==# ':' && getcmdline() ==# 'revise') ? 'Revise' : 'revise'
     cnoreabbrev <expr> do (getcmdtype() ==# ':' && getcmdline() ==# 'do') ? 'Do' : 'do'
     cnoreabbrev <expr> todo (getcmdtype() ==# ':' && getcmdline() ==# 'todo') ? 'Todo' : 'todo'
+    cnoreabbrev <expr> find (getcmdtype() ==# ':' && getcmdline() ==# 'find') ? 'Find' : 'find'
     cnoreabbrev <expr> reindex (getcmdtype() ==# ':' && getcmdline() ==# 'reindex') ? 'Reindex' : 'reindex'
     cnoreabbrev <expr> lgcc (getcmdtype() ==# ':' && getcmdline() ==# 'lgcc') ? 'Lgcc' : 'lgcc'
     cnoreabbrev <expr> queue (getcmdtype() ==# ':' && getcmdline() ==# 'queue') ? 'Queue' : 'queue'
@@ -3213,6 +3330,7 @@ function M.setup()
 
   M.get_root_dir = get_root_dir
   M.collect_context = collect_context
+  M.search_and_rank = search_and_rank
   M.find = M.find
   M.review = M.review
   M.git_review = M.review
@@ -3222,6 +3340,7 @@ end
 
 M.get_root_dir = get_root_dir
 M.collect_context = collect_context
+M.search_and_rank = search_and_rank
 M.find = M.find
 M.review = M.review
 M.git_review = M.review
