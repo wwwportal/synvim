@@ -257,6 +257,13 @@ function M.setup_agent_qf_keymaps(origin_win, qf_buf)
     local item = qf_list[idx]
     if not item then return end
 
+    -- Target editor split in current tab (never the quickfix window itself)
+    local qf_w = vim.api.nvim_get_current_win()
+    local editor_win = origin_win or state.origin_win
+    if not editor_win or not vim.api.nvim_win_is_valid(editor_win) or editor_win == qf_w or vim.bo[vim.api.nvim_win_get_buf(editor_win)].buftype == "quickfix" then
+      editor_win = ui.get_primary_editor_win()
+    end
+
     -- Check if this quickfix item represents a review
     local rev_id = item.text and item.text:match("ID:%s*([%w_%-]+)")
     if rev_id then
@@ -264,8 +271,14 @@ function M.setup_agent_qf_keymaps(origin_win, qf_buf)
       local all_reviews = rev_mod.get_reviews("all")
       for _, r in ipairs(all_reviews) do
         if r.id == rev_id then
-          if close_qf then vim.cmd("cclose") end
-          rev_mod.show_review(r)
+          if close_qf then
+            vim.cmd("cclose")
+          end
+          rev_mod.show_review(r, editor_win)
+          if not close_qf and vim.api.nvim_win_is_valid(qf_w) then
+            pcall(vim.api.nvim_set_current_win, qf_w)
+            pcall(vim.api.nvim_win_set_cursor, qf_w, { idx, 0 })
+          end
           return
         end
       end
@@ -287,20 +300,6 @@ function M.setup_agent_qf_keymaps(origin_win, qf_buf)
       action = "navigate",
     }
     state.queue_index = idx
-
-    -- Target editor split in current tab
-    local qf_w = vim.api.nvim_get_current_win()
-    local editor_win = origin_win
-    if not editor_win or not vim.api.nvim_win_is_valid(editor_win) or editor_win == qf_w or vim.bo[vim.api.nvim_win_get_buf(editor_win)].buftype == "quickfix" then
-      editor_win = nil
-      for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-        local b = vim.api.nvim_win_get_buf(w)
-        if vim.bo[b].buftype ~= "quickfix" then
-          editor_win = w
-          break
-        end
-      end
-    end
 
     if close_qf then
       vim.cmd("cclose")

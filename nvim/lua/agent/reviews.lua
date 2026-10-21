@@ -377,19 +377,27 @@ function M.list_reviews_qf()
 
   vim.fn.setqflist(qf_list, "r")
   vim.fn.setqflist({}, "a", { title = string.format("[Tasks Review: %d pending, %d total]", #unreviewed, #all_reviews) })
+
+  local calling_win = vim.api.nvim_get_current_win()
+  if vim.bo[vim.api.nvim_win_get_buf(calling_win)].buftype ~= "quickfix" then
+    state_mod.state.origin_win = calling_win
+  end
+
   vim.cmd("botright copen 6")
   local qf_win = vim.api.nvim_get_current_win()
-  local cur_w = ui.get_primary_editor_win()
-  if cur_w and vim.api.nvim_win_is_valid(cur_w) then
+  pcall(function() vim.wo[qf_win].winfixheight = true end)
+
+  local cur_w = state_mod.state.origin_win or ui.get_primary_editor_win()
+  if cur_w and vim.api.nvim_win_is_valid(cur_w) and cur_w ~= qf_win then
     local tasks_mod = require("agent.tasks")
     tasks_mod.setup_agent_qf_keymaps(cur_w, vim.api.nvim_win_get_buf(qf_win))
-    pcall(vim.api.nvim_set_current_win, cur_w)
+    pcall(vim.api.nvim_set_current_win, qf_win)
   end
   vim.notify(string.format("Tasks: %d pending review%s (:Tasks accept <id> | :Tasks reject <id>)", #unreviewed, #unreviewed == 1 and "" or "s"), vim.log.levels.INFO)
 end
 
 --- Display a specific review in-line
-function M.show_review(rev)
+function M.show_review(rev, target_win)
   if not rev then return end
   local root = ui.get_root_dir()
   local target_full = rev.abs_file or (rev.target_file:match("^/") and rev.target_file or (root .. "/" .. rev.target_file))
@@ -400,7 +408,10 @@ function M.show_review(rev)
 
   local bufnr = vim.fn.bufadd(target_full)
   vim.fn.bufload(bufnr)
-  local origin_win = ui.get_primary_editor_win()
+  local origin_win = target_win or state_mod.state.origin_win or ui.get_primary_editor_win()
+  if not origin_win or not vim.api.nvim_win_is_valid(origin_win) or vim.bo[vim.api.nvim_win_get_buf(origin_win)].buftype == "quickfix" then
+    origin_win = ui.get_primary_editor_win()
+  end
   vim.api.nvim_win_set_buf(origin_win, bufnr)
 
   local lnum = rev.start_line or 1

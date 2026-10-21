@@ -134,15 +134,28 @@ function M.get_root_dir()
   return candidate
 end
 
---- Get primary editor split window (never creating splits)
+--- Get primary editor split window (never returning a quickfix window)
 function M.get_primary_editor_win()
+  local state = state_mod.state
+  -- 1. Try state.origin_win if valid, non-floating, and not quickfix
+  if state.origin_win and vim.api.nvim_win_is_valid(state.origin_win) then
+    local obuf = vim.api.nvim_win_get_buf(state.origin_win)
+    local ocfg = vim.api.nvim_win_get_config(state.origin_win)
+    if ocfg.relative == "" and vim.bo[obuf].buftype ~= "quickfix" then
+      return state.origin_win
+    end
+  end
+
+  -- 2. Try current window if non-floating and not quickfix
   local cur = vim.api.nvim_get_current_win()
   local cur_cfg = vim.api.nvim_win_get_config(cur)
   local cur_buf = vim.api.nvim_win_get_buf(cur)
   if cur_cfg.relative == "" and vim.bo[cur_buf].buftype ~= "quickfix" then
     return cur
   end
-  for _, win in ipairs(vim.api.nvim_list_wins()) do
+
+  -- 3. Search current tabpage for normal editor windows (buftype == "")
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
     local c = vim.api.nvim_win_get_config(win)
     if c.relative == "" then
       local buf = vim.api.nvim_win_get_buf(win)
@@ -151,7 +164,26 @@ function M.get_primary_editor_win()
       end
     end
   end
-  return cur
+
+  -- 4. Search current tabpage for ANY non-quickfix window (including terminals)
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local c = vim.api.nvim_win_get_config(win)
+    if c.relative == "" then
+      local buf = vim.api.nvim_win_get_buf(win)
+      if vim.bo[buf].buftype ~= "quickfix" then
+        return win
+      end
+    end
+  end
+
+  -- 5. Fallback: navigate above quickfix or create a new split so quickfix is never overwritten
+  pcall(vim.cmd, "wincmd k")
+  local fallback_win = vim.api.nvim_get_current_win()
+  if vim.bo[vim.api.nvim_win_get_buf(fallback_win)].buftype == "quickfix" then
+    pcall(vim.cmd, "aboveleft new")
+    fallback_win = vim.api.nvim_get_current_win()
+  end
+  return fallback_win
 end
 
 --- Find existing tab displaying filepath, or open in a clean tab without disturbing splits
