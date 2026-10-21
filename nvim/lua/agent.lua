@@ -21,6 +21,8 @@ M.state = {
   last_terminal_win = nil,
   latest_focus_cwd = nil,
   latest_focus_type = nil,
+  -- Re-entrancy guard while re-attaching diffs during BufEnter.
+  _attaching = false,
 }
 
 local process_agent_response = nil
@@ -36,10 +38,15 @@ local function setup_highlights()
     vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#a6f3a6", bg = "#144620", ctermfg = 10, ctermbg = 22, default = false })
     vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#22c55e", bold = true, ctermfg = 10, default = false })
     vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#ff8585", bg = "#4a0e0e", strikethrough = true, ctermfg = 9, ctermbg = 52, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDeleteDim", { fg = "#7a6a6a", ctermfg = 8, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffUnchanged", { fg = "#9ca3af", bg = "#2b2b2b", ctermfg = 8, ctermbg = 236, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffChangeSign", { fg = "#eab308", bold = true, ctermfg = 11, default = false })
   else
     vim.api.nvim_set_hl(0, "AgentDiffAdd", { fg = "#14532d", bg = "#bbf7d0", ctermfg = 28, ctermbg = 194, default = false })
     vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#16a34a", bold = true, ctermfg = 28, default = false })
     vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#991b1b", bg = "#fecaca", strikethrough = true, ctermfg = 160, ctermbg = 224, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffDeleteDim", { fg = "#a1a1aa", ctermfg = 8, default = false })
+    vim.api.nvim_set_hl(0, "AgentDiffChangeSign", { fg = "#a16207", bold = true, ctermfg = 94, default = false })
   end
   pcall(vim.api.nvim_set_hl, 0, "GitReviewAdd", { link = "AgentDiffAdd", default = false })
   pcall(vim.api.nvim_set_hl, 0, "GitReviewDelete", { link = "AgentDiffDelete", default = false })
@@ -568,9 +575,7 @@ function M.revise_task(task_arg)
   local cur_buf = vim.api.nvim_get_current_buf()
   local root = get_root_dir()
 
-  -- If viewing a pending diff, dismiss the diff visualization and keep buffer modifiable
-  M.clear_diff(true)
-
+  -- Mark task as REVISE while keeping any visible diff intact
   local target_buf = cur_buf
   local target_line = nil
   local target_task_id = nil
@@ -709,6 +714,87 @@ local function wrap_diff_line(prefix, text, hl_group, max_w)
   return (#lines > 0) and lines or { { { full, hl_group } } }
 end
 
+--- Word-level token split (word + trailing whitespace as one token)
+local function split_word_toks(s)
+  local toks = {}
+  local pos = 1
+  while pos <= #s do
+    local ws_start, ws_end = s:find("%s+", pos)
+    if ws_start and ws_start == pos then
+      table.insert(toks, { text = s:sub(pos, ws_end), key = s:sub(pos, ws_end), is_ws = true, start = pos, stop = ws_end })
+      pos = ws_end + 1
+    else
+      local w_start, w_end = s:find("%S+", pos)
+      if not w_start then
+        table.insert(toks, { text = s:sub(pos), key = s:sub(pos), is_ws = true, start = pos, stop = #s })
+        break
+      end
+      table.insert(toks, { text = s:sub(w_start, w_end), key = s:sub(w_start, w_end), is_ws = false, start = w_start, stop = w_end })
+      pos = w_end + 1
+    end
+  end
+  return toks
+end
+
+--- Simple LCS over word keys; returns ops {kind="same"|"del"|"add", idx in a or b}
+local function word_lcs(a_toks, b_toks)
+  local n, m = #a_toks, #b_toks
+  local dp = {}
+  for i = 0, n do dp[i] = {}; dp[i][0] = 0; dp[i][m] = 0 end
+  for j = 0, m do dp[0][j] = 0; dp[n][j] = 0 end
+  for i = 1, n do
+    for j = 1, m do
+      if a_toks[i].key == b_toks[j].key then
+        dp[i][j] = dp[i-1][j-1] + 1
+      else
+        dp[i][j] = math.max(dp[i-1][j], dp[i][j-1])
+      end
+    end
+  end
+  local ops = {}
+  local i, j = n, m
+  while i > 0 and j > 0 do
+    if a_toks[i].key == b_toks[j].key then
+      table.insert(ops, 1, { kind = "same", a = i, b = j })
+      i, j = i - 1, j - 1
+    elseif dp[i-1][j] >= dp[i][j-1] then
+      table.insert(ops, 1, { kind = "del", a = i })
+      i = i - 1
+    else
+      table.insert(ops, 1, { kind = "add", b = j })
+      j = j - 1
+    end
+  end
+  while i > 0 do table.insert(ops, 1, { kind = "del", a = i }); i = i - 1 end
+  while j > 0 do table.insert(ops, 1, { kind = "add", b = j }); j = j - 1 end
+  return ops
+end
+
+--- Build chunk list for old line using ops (same/del segments + gaps).
+-- Returns a list where each entry is {text, hl_group}. Gaps between tokens use the
+-- appropriate neutral highlight so removed words get red AND surrounding context gets gray.
+local function build_virtual_chunks(old_line, ops, a_toks, is_dark)
+  local chunks = {}
+  local last_end = 0
+  for _, op in ipairs(ops) do
+    if op.kind == "same" or op.kind == "del" then
+      local t = a_toks[op.a]
+      local segment_text = t.start and old_line:sub(t.start, t.stop) or t.text
+      if t.start and t.start > last_end + 1 then
+        local gap = old_line:sub(last_end + 1, t.start - 1)
+        table.insert(chunks, { gap, is_dark and "AgentDiffUnchanged" or "AgentDiffDeleteDim" })
+      end
+      local hl = (op.kind == "del") and "AgentDiffDelete" or (is_dark and "AgentDiffUnchanged" or "AgentDiffDeleteDim")
+      table.insert(chunks, { segment_text, hl })
+      last_end = t.stop or (t.start + #t.text - 1)
+    end
+  end
+  if last_end < #old_line then
+    table.insert(chunks, { old_line:sub(last_end + 1), is_dark and "AgentDiffUnchanged" or "AgentDiffDeleteDim" })
+  end
+  return chunks
+end
+
 --- Show suggested code in-line with green-red diff colors.
 --- Deleted lines are shown in RED as virtual lines above.
 --- Added lines are highlighted IN-LINE directly on the buffer lines in GREEN.
@@ -769,40 +855,126 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     pcall(function() vim.wo[origin_win].signcolumn = "yes" end)
   end
 
-  -- 1. Red deleted lines displayed directly above as virtual lines
-  local virt_lines_top = {}
-  for _, line in ipairs(deleted_lines) do
-    local chunks = wrap_diff_line("- ", line, "AgentDiffDelete", max_w)
-    for _, chunk in ipairs(chunks) do
-      table.insert(virt_lines_top, chunk)
+  -- 1. Fine-grained diff: only changed/deleted/added parts shown (no unchanged lines duplicated)
+  local old_text = table.concat(deleted_lines, "\n")
+  local new_text = table.concat(new_lines, "\n")
+  local line_kind = {}
+  local paired_old = {}
+  for i = 1, #new_lines do line_kind[i] = "same" end
+  local virt_by_line = {}
+
+  local function add_virt(idx, vline)
+    -- vline is a chunk list: { {text, hl}, {text2, hl2}, ... }
+    virt_by_line[idx] = virt_by_line[idx] or {}
+    table.insert(virt_by_line[idx], vline)
+  end
+
+  -- Line-level diff via vim.diff (index format: sa/ca start_a/count_a, sb/cb start_b/count_b)
+  local hunks = {}
+  if type(old_text) == "string" and type(new_text) == "string" and (#deleted_lines > 0 or #new_lines > 0) then
+    local ok, res = pcall(vim.diff, old_text, new_text, { result_type = "indices" })
+    if ok and type(res) == "table" then hunks = res end
+  end
+
+  for _, h in ipairs(hunks) do
+    local sa, ca, sb, cb = h[1], h[2], h[3], h[4]
+    if ca == 0 and cb == 0 then goto continue end
+    if ca == 0 then
+      -- pure insertion: mark as added
+      for k = 1, (cb or 0) do line_kind[sb + k - 1] = "added" end
+    elseif cb == 0 then
+      -- pure deletion: red virtual line above the new line right after this region
+      local anchor = sb + math.min(ca, 1)
+      anchor = math.min(anchor, #new_lines)
+      anchor = math.max(anchor, 1)
+      for k = 1, ca do
+        add_virt(anchor, { "- " .. (deleted_lines[sa + k - 1] or ""), "AgentDiffDelete" })
+      end
+    else
+      -- mixed: pair min(ca,cb) as changed; rest pure del/add
+      local min_n = math.min(ca, cb)
+      for k = 1, min_n do
+        local old_i = sa + k - 1
+        local new_i = sb + k - 1
+        if deleted_lines[old_i] ~= new_lines[new_i] then
+          line_kind[new_i] = "changed"
+          paired_old[new_i] = old_i
+          local old_line = deleted_lines[old_i] or ""
+          add_virt(new_i, { "- " .. old_line, "AgentDiffDelete" })
+        else
+          -- identical lines skip virtual line entirely
+          line_kind[new_i] = "same"
+        end
+      end
+      -- extra insertions beyond pairs -> green
+      for k = min_n + 1, cb do line_kind[sb + k - 1] = "added" end
+      -- extra deletions beyond pairs -> red virtual above next new line
+      if min_n < ca then
+        local extra_del = ca - min_n
+        local after = sb + min_n
+        local anchor = math.min(after, #new_lines)
+        anchor = math.max(anchor, 1)
+        for k = min_n + 1, ca do
+          add_virt(anchor, { "- " .. (deleted_lines[sa + k - 1] or ""), "AgentDiffDelete" })
+        end
+      end
+    end
+    ::continue::
+  end
+
+  -- If no hunks but texts differ (shouldn't), line-by-line compare
+  if #hunks == 0 and old_text ~= new_text then
+    for i = 1, #new_lines do
+      if deleted_lines[i] and deleted_lines[i] ~= new_lines[i] then
+        line_kind[i] = "changed"
+        paired_old[i] = i
+        add_virt(i, { "- " .. (deleted_lines[i] or ""), "AgentDiffDelete" })
+      end
     end
   end
 
-  if #virt_lines_top > 0 then
-    pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, s_idx, 0, {
-      virt_lines = virt_lines_top,
-      virt_lines_above = true,
-      priority = 250,
-    })
+  -- Render virtual lines (red above changed/deleted lines; never duplicating unchanged lines)
+  for i = 1, #new_lines do
+    local vlines = virt_by_line[i]
+    if vlines and #vlines > 0 then
+      pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, s_idx + i - 1, 0, {
+        virt_lines = vlines,
+        virt_lines_above = true,
+        priority = 250,
+      })
+    end
   end
 
-  -- 2. Green added lines highlighted directly on buffer lines with '+' in sign column
-  local num_added = math.max(1, #new_lines)
-  for i = 0, num_added - 1 do
-    local l_idx = s_idx + i
-    pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, l_idx, 0, {
-      line_hl_group = "AgentDiffAdd",
-      sign_text = "+",
-      sign_hl_group = "AgentDiffAddSign",
-      priority = 250,
-    })
+  -- 2. Highlight only added (green + +) and changed (~ green + ~) lines; skip unchanged entirely
+  for i = 1, #new_lines do
+    local l_idx = s_idx + (i - 1)
+    if line_kind[i] == "added" then
+      pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, l_idx, 0, {
+        line_hl_group = "AgentDiffAdd",
+        sign_text = "+",
+        sign_hl_group = "AgentDiffAddSign",
+        priority = 250,
+      })
+    elseif line_kind[i] == "changed" then
+      pcall(vim.api.nvim_buf_set_extmark, bufnr, ns_diff, l_idx, 0, {
+        line_hl_group = "AgentDiffAdd",
+        sign_text = "~",
+        sign_hl_group = "AgentDiffAddSign",
+        priority = 250,
+      })
+    end
   end
 
-  -- Direct cursor to the exact start line of the diff and center on screen
-  if origin_win and vim.api.nvim_win_is_valid(origin_win) then
-    pcall(vim.api.nvim_win_set_cursor, origin_win, { target_line, 0 })
-    pcall(function() vim.cmd("normal! zz") end)
-  end
+  -- Jump to first changed line and refresh (explicit win search; ignore pcall failures silently)
+  vim.schedule(function()
+    local fw = vim.fn.win_findbuf(bufnr)
+    if fw and fw[1] and vim.api.nvim_win_is_valid(fw[1]) then
+      pcall(vim.api.nvim_set_current_win, fw[1])
+      pcall(vim.api.nvim_win_set_cursor, fw[1], { target_line, 0 })
+      pcall(function() vim.cmd("normal! zz") end)
+    end
+    vim.cmd("redraw")
+  end)
 
   -- Refresh gitsigns in the background
   local ok_gs, gs = pcall(require, "gitsigns")
@@ -831,10 +1003,6 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
   bind_buf_key("<M-a>", function() M.accept() end, "Accept diff (:Tasks accept)")
   bind_buf_key("<M-r>", function() M.reject() end, "Reject diff (:Tasks reject)")
   bind_buf_key("<M-w>", function() M.revise_task() end, "Revise diff (:Tasks revise)")
-  bind_buf_key("<Esc>", function()
-    M.clear_diff()
-    vim.notify("GitReview: Dismissed in-line diff preview", vim.log.levels.INFO)
-  end, "Dismiss diff")
   bind_buf_key("<Tab>", function()
     for _, w in ipairs(vim.api.nvim_list_wins()) do
       local b = vim.api.nvim_win_get_buf(w)
@@ -996,7 +1164,80 @@ jump_to_target = function(target, win)
   if type(target.content) == "string" and vim.trim(target.content) ~= "" then
     local old_count = is_new and 0 or ((type(target.old_lines_count) == "number") and target.old_lines_count or ((target.action == "replace") and 1 or 0))
     M.show_inline_diff(bufnr, line, target.content, old_count, is_new)
+  else
+    -- No inline payload on the jump target: re-attach any pending (unreviewed)
+    -- diff for this file so the preview is never silently missing.
+    M.attach_pending_diff(bufnr, target.task_id)
   end
+end
+
+--- Re-attach a pending (unreviewed) diff for a buffer.
+--- Keeps diffs permanently visible: whenever the user navigates to a file that
+--- has an outstanding review, the in-line green/red diff is rendered again.
+function M.attach_pending_diff(bufnr, task_id)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then return false end
+  if vim.bo[bufnr].buftype ~= "" then return false end
+
+  -- Don't clear/revert an existing active diff for another file.
+  if M.state.pending_diff and M.state.pending_diff.bufnr ~= bufnr then return false end
+
+  -- Already showing a diff for this buffer -> nothing to do
+  local p = M.state.pending_diff
+  if p and p.bufnr == bufnr then return true end
+
+  local name = vim.api.nvim_buf_get_name(bufnr)
+  if name == "" then return false end
+
+  local root = get_root_dir()
+  local rel = name:gsub("^" .. vim.pesc(root) .. "/", ""):gsub("^/+", "")
+
+  local unrev = M.get_reviews("unreviewed")
+  if #unrev == 0 then return false end
+
+  -- Prefer a review matching the requested task, fall back to a file match
+  local match = nil
+  if task_id and task_id ~= "" then
+    for _, r in ipairs(unrev) do
+      if r.task_id and r.task_id == task_id and M.review_matches_file(r, name, rel) then
+        match = r
+        break
+      end
+    end
+  end
+  if not match then
+    for _, r in ipairs(unrev) do
+      if M.review_matches_file(r, name, rel) then
+        match = r
+        break
+      end
+    end
+  end
+  if not match then return false end
+
+  local new_lines = match.new_lines
+  if type(new_lines) ~= "table" or #new_lines == 0 then return false end
+  local content = table.concat(new_lines, "\n")
+  if vim.trim(content) == "" then return false end
+
+  local line = tonumber(match.start_line) or 1
+  local old_count = tonumber(match.old_lines_count) or 0
+  M.show_inline_diff(bufnr, line, content, old_count, false, match.old_lines or {}, match)
+  return true
+end
+
+--- Does a review record target the given file?
+function M.review_matches_file(review, abs_path, rel_path)
+  if not review then return false end
+  if review.abs_file and review.abs_file == abs_path then return true end
+  local target = review.target_file or review.file
+  if not target or target == "" then return false end
+  if rel_path and rel_path == target then return true end
+  if abs_path and abs_path == target then return true end
+  if target:sub(1, 1) == "/" and abs_path and abs_path == target then return true end
+  -- Fallback: suffix match on the file name portion
+  local base = target:match("([^/]+)$") or target
+  local abs_base = abs_path and abs_path:match("([^/]+)$") or ""
+  return base ~= "" and base == abs_base
 end
 
 --- Route jumps from quickfix window directly into calling split without splitting
@@ -1522,13 +1763,13 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
     M.state.active_job = nil
   end
 
-  local agy_bin = vim.fn.exepath("agy")
   local opencode_bin = vim.fn.exepath("opencode")
+  local agy_bin = vim.fn.exepath("agy")
   local cmd = {}
-  if agy_bin ~= "" then
-    cmd = { agy_bin, "-p", system_prompt, "--model", "Gemini 3.8 Flash (Low)", "--print-timeout", "30s", "--dangerously-skip-permissions", "--disable-slash-commands" }
-  elseif opencode_bin ~= "" then
+  if opencode_bin ~= "" then
     cmd = { opencode_bin, "run", "--format", "json", system_prompt }
+  elseif agy_bin ~= "" then
+    cmd = { agy_bin, "-p", system_prompt, "--model", "Gemini 3.8 Flash (Low)", "--print-timeout", "30s", "--dangerously-skip-permissions", "--disable-slash-commands" }
   else
     M.state.is_busy = false
     vim.notify("Agent: Neither 'agy' nor 'opencode' found in PATH", vim.log.levels.ERROR)
@@ -2525,7 +2766,6 @@ function M.show_review(rev)
   vim.api.nvim_echo({
     { "● [Git Review: ", "ModeMsg" },
     { rev.id, "Directory" },
-    { "] " .. (rev.description or "") .. " — :accept to approve, :reject to revert", "Normal" },
   }, false, {})
 end
 
@@ -2590,19 +2830,8 @@ function M.review(subcmd, arg)
     end
   end
 
-  -- If exactly 1 unreviewed review exists, show it directly in the active split
-  if #unreviewed == 1 then
-    M.show_review(unreviewed[1])
-    return
-  end
-
-  -- Otherwise list in Quickfix and show the first unreviewed review in the split
+  -- Always open the review list so user can navigate; never auto-jump to file
   M.list_reviews_qf()
-  if #unreviewed > 0 then
-    M.show_review(unreviewed[1])
-  elseif #all_reviews > 0 then
-    M.show_review(all_reviews[#all_reviews])
-  end
 end
 
 local function is_todo_comment(line)
@@ -2990,6 +3219,15 @@ local function parse_solution_from_raw(raw)
     }
   end
 
+  -- 6. If we accumulated text fragments but never found a JSON wrapper, treat as direct content
+  -- (guard: don't write raw JSON-looking text into the buffer)
+  if full_text ~= "" and vim.trim(full_text):sub(1, 1) ~= "{" then
+    return {
+      content = full_text,
+      description = "Agent response",
+    }
+  end
+
   return nil
 end
 
@@ -3355,10 +3593,10 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
   local opencode_bin = vim.fn.exepath("opencode")
   local cmd = {}
 
-  if agy_bin ~= "" then
-    cmd = { agy_bin, "-p", prompt, "--model", "Gemini 3.8 Flash (Low)", "--dangerously-skip-permissions", "--disable-slash-commands" }
-  elseif opencode_bin ~= "" then
+  if opencode_bin ~= "" then
     cmd = { opencode_bin, "run", "--format", "json", prompt }
+  elseif agy_bin ~= "" then
+    cmd = { agy_bin, "-p", prompt, "--model", "Gemini 3.8 Flash (Low)", "--dangerously-skip-permissions", "--disable-slash-commands" }
   else
     vim.notify("Agent: Neither 'agy' nor 'opencode' found in PATH", vim.log.levels.ERROR)
     return
@@ -3406,7 +3644,28 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
     local start_lnum = tonumber(solution.start_line) or chosen_line
     local old_cnt = tonumber(solution.old_lines_count) or old_lines_count
     local new_content = solution.content
-    local new_lines = vim.split(new_content, "\n")
+    if type(new_content) == "table" then
+      -- Could be array of strings, array of arrays, or nested
+      local first = new_content[1]
+      if type(first) == "table" then
+        -- Array of arrays: flatten each sub-array and join with newline
+        local parts = {}
+        for _, sub in ipairs(new_content) do
+          if type(sub) == "table" then
+            table.insert(parts, table.concat(sub, ""))
+          else
+            table.insert(parts, tostring(sub))
+          end
+        end
+        new_content = table.concat(parts, "\n")
+      else
+        -- Array of strings
+        new_content = table.concat(new_content, "\n")
+      end
+    elseif type(new_content) ~= "string" then
+      new_content = tostring(new_content or "")
+    end
+    local new_lines = vim.split(new_content or "", "\n")
 
     -- Extract original lines before modification
     local total = vim.api.nvim_buf_line_count(bufnr)
@@ -3427,11 +3686,17 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
     M.state.current_review = rev
 
     M.show_inline_diff(bufnr, start_lnum, new_content, old_cnt, false, orig_slice, rev)
-    vim.api.nvim_echo({
-      { "● [Git Review Pending: ", "ModeMsg" },
-      { rev.id, "Directory" },
-      { "] Applied to " .. file_basename .. " — :accept to approve, :reject to revert", "Comment" },
-    }, false, {})
+    -- Focus, jump to first changed line, and refresh
+    vim.schedule(function()
+      local ok_win = pcall(vim.api.nvim_win_set_buf, 0, bufnr)
+      local fw = vim.fn.win_findbuf(bufnr)
+      if fw and fw[1] and vim.api.nvim_win_is_valid(fw[1]) then
+        vim.api.nvim_set_current_win(fw[1])
+        pcall(vim.api.nvim_win_set_cursor, fw[1], { start_lnum, 0 })
+        pcall(function() vim.cmd("normal! zz") end)
+      end
+      vim.cmd("redraw")
+    end)
   end))
 end
 
@@ -3480,7 +3745,6 @@ local function show_help()
     "  <M-a>                  Accept active review diff (:Tasks accept)",
     "  <M-r>                  Reject active review diff (:Tasks reject)",
     "  <M-w>                  Mark task for revision (:Tasks revise)",
-    "  <Esc>                  Dismiss diff view",
     "",
     "Voice Dictation",
     "  :Listen                Voice-to-text dictation into active buffer (<leader>v)",
@@ -3557,6 +3821,14 @@ function M.setup()
           if dir and dir ~= vim.fn.expand("~") and dir ~= "/" then
             M.state.latest_focus_cwd = dir
             M.state.latest_focus_type = "editor"
+          end
+          -- Keep pending diffs visible across buffer switches.
+          if not M.state._attaching then
+            M.state._attaching = true
+            pcall(function()
+              M.attach_pending_diff(buf)
+            end)
+            M.state._attaching = false
           end
         end
       end
