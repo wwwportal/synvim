@@ -629,6 +629,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     revert_lines = revert_lines,
     is_new_file = is_new_file or false,
     review = review_meta,
+    bound_keys = {},
   }
 
   -- Buffer-local shortcuts that allow normal scrolling and review:
@@ -1351,16 +1352,16 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
     M.state.active_job = nil
   end
 
-  local opencode_bin = vim.fn.exepath("opencode")
   local agy_bin = vim.fn.exepath("agy")
+  local opencode_bin = vim.fn.exepath("opencode")
   local cmd = {}
-  if opencode_bin ~= "" then
-    cmd = { opencode_bin, "run", "--format", "json", "--auto", system_prompt }
-  elseif agy_bin ~= "" then
-    cmd = { agy_bin, "-p", system_prompt, "--model", "gemini-3.8-flash-low", "--print-timeout", "30s", "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low", "--output-format", "json" }
+  if agy_bin ~= "" then
+    cmd = { agy_bin, "-p", system_prompt, "--model", "Gemini 3.8 Flash (Low)", "--print-timeout", "30s", "--dangerously-skip-permissions", "--disable-slash-commands" }
+  elseif opencode_bin ~= "" then
+    cmd = { opencode_bin, "run", "--format", "json", system_prompt }
   else
     M.state.is_busy = false
-    vim.notify("Agent: Neither 'opencode' nor 'agy' found in PATH", vim.log.levels.ERROR)
+    vim.notify("Agent: Neither 'agy' nor 'opencode' found in PATH", vim.log.levels.ERROR)
     if on_done then on_done(nil) end
     return
   end
@@ -2108,7 +2109,12 @@ function M.create_review(file_path, start_line, old_count, old_lines, new_lines,
   local rdir = get_reviews_dir(root)
   local ts = os.time()
   local rev_id = string.format("rev-%d-%04d", ts, math.random(1000, 9999))
-  local rel_file = vim.fn.fnamemodify(file_path, ":.")
+  local rel_file = file_path
+  if file_path:sub(1, #root) == root then
+    rel_file = file_path:sub(#root + 2)
+  else
+    rel_file = vim.fn.fnamemodify(file_path, ":.")
+  end
 
   -- Read current lines to build complete patch
   local all_lines = vim.fn.filereadable(file_path) == 1 and vim.fn.readfile(file_path) or {}
@@ -2187,7 +2193,7 @@ function M.revert_review(rev_id)
   end
 
   M.clear_diff(true)
-  local target_full = rev.target_file:match("^/") and rev.target_file or (root .. "/" .. rev.target_file)
+  local target_full = rev.abs_file or (rev.target_file:match("^/") and rev.target_file or (root .. "/" .. rev.target_file))
   local reverted = false
 
   -- 1. Try git apply -R
@@ -2322,7 +2328,7 @@ end
 function M.show_review(rev)
   if not rev then return end
   local root = get_root_dir()
-  local target_full = rev.target_file:match("^/") and rev.target_file or (root .. "/" .. rev.target_file)
+  local target_full = rev.abs_file or (rev.target_file:match("^/") and rev.target_file or (root .. "/" .. rev.target_file))
   if vim.fn.filereadable(target_full) ~= 1 then
     vim.notify("GitReview: Target file not found: " .. target_full, vim.log.levels.WARN)
     return
@@ -2739,6 +2745,106 @@ local function rank_tasks_by_query(tasks, query)
   return res
 end
 
+local function parse_solution_from_raw(raw)
+  if not raw or type(raw) ~= "string" or vim.trim(raw) == "" then
+    return nil
+  end
+
+  -- 1. Reassemble text parts from opencode / agy streaming JSON Lines
+  local full_text = ""
+  for line in raw:gmatch("[^\r\n]+") do
+    local ok, obj = pcall(vim.fn.json_decode, line)
+    if ok and type(obj) == "table" then
+      if obj.type == "text" and obj.part and obj.part.text then
+        full_text = full_text .. obj.part.text
+      elseif obj.response and type(obj.response) == "string" then
+        full_text = full_text .. obj.response
+      elseif obj.content then
+        return obj
+      end
+    end
+  end
+
+  if full_text == "" then
+    full_text = raw
+  end
+
+  -- 2. Direct JSON decode of full_text
+  local ok, data = pcall(vim.fn.json_decode, vim.trim(full_text))
+  if ok and type(data) == "table" and (data.content or data.code) then
+    if not data.content and data.code then data.content = data.code end
+    return data
+  end
+
+  -- 3. Check for ```json ... ``` code fence
+  local json_block = full_text:match("```[jJ][sS][oO][nN]%s*\n(.-)\n%s*```")
+  if json_block then
+    local jok, jdata = pcall(vim.fn.json_decode, vim.trim(json_block))
+    if jok and type(jdata) == "table" and (jdata.content or jdata.code) then
+      if not jdata.content and jdata.code then jdata.content = jdata.code end
+      return jdata
+    end
+  end
+
+  -- 4. Delimiter-depth JSON object parser (string-literal aware)
+  local s_idx = 1
+  while s_idx <= #full_text do
+    local b_start = full_text:find("{", s_idx, true)
+    if not b_start then break end
+
+    local depth = 0
+    local in_str = false
+    local escape = false
+    local b_end = nil
+
+    for i = b_start, #full_text do
+      local c = full_text:sub(i, i)
+      if escape then
+        escape = false
+      elseif c == "\\" then
+        escape = true
+      elseif c == '"' then
+        in_str = not in_str
+      elseif not in_str then
+        if c == "{" then
+          depth = depth + 1
+        elseif c == "}" then
+          depth = depth - 1
+          if depth == 0 then
+            b_end = i
+            break
+          end
+        end
+      end
+    end
+
+    if b_end then
+      local candidate = full_text:sub(b_start, b_end)
+      local cok, cdata = pcall(vim.fn.json_decode, candidate)
+      if cok and type(cdata) == "table" and (cdata.content or cdata.code) then
+        if not cdata.content and cdata.code then cdata.content = cdata.code end
+        return cdata
+      end
+      s_idx = b_start + 1
+    else
+      break
+    end
+  end
+
+  -- 5. Fallback: extract generic markdown code fence ```...``` if model wrote code directly
+  local code_block = full_text:match("```[%w%-_]*%s*\n(.-)\n%s*```")
+  if code_block and vim.trim(code_block) ~= "" then
+    return {
+      content = code_block,
+      description = "Implementation from agent",
+    }
+  end
+
+  return nil
+end
+
+M.parse_solution_from_raw = parse_solution_from_raw
+
 --- Find and execute in-line TODO/FIXME task in the current buffer or repository
 function M.run_todo(bufnr, target_arg)
   -- 1. If target_arg is a string query (e.g. :Todo normalize audio | :Todo list)
@@ -2996,14 +3102,20 @@ function M.run_todo(bufnr, target_arg)
 
   local rel_path = vim.fn.fnamemodify(filepath, ":.")
   local numbered_lines = {}
-  for idx, l in ipairs(lines) do
-    table.insert(numbered_lines, string.format("%d: %s", idx, l))
+  local total_lines = #lines
+  local context_start = 1
+  local context_end = total_lines
+  if total_lines > 120 then
+    context_start = math.max(1, chosen_line - 40)
+    context_end = math.min(total_lines, chosen_line + 60)
+  end
+  for idx = context_start, context_end do
+    table.insert(numbered_lines, string.format("%d: %s", idx, lines[idx]))
   end
   local code_section = table.concat(numbered_lines, "\n")
 
-  local prompt = string.format([[CRITICAL INSTRUCTION: You are the Autonomous Source-First Code Agent.
-Your task is to implement the following in-line task directly inside the target file.
-Source code is the single source of truth.
+  local prompt = string.format([[You are a direct code generator assistant. Do NOT call any tools, do NOT run bash commands or tests, and do NOT read other files.
+Generate the replacement code for the following in-line task directly and return strict JSON immediately.
 
 TARGET FILE: %s
 TASK: %s
@@ -3028,16 +3140,16 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
 ]], rel_path, raw_header, chosen_desc, chosen_line, chosen_line, chosen_line + old_lines_count - 1,
     code_section, chosen_line, old_lines_count)
 
-  local opencode_bin = vim.fn.exepath("opencode")
   local agy_bin = vim.fn.exepath("agy")
+  local opencode_bin = vim.fn.exepath("opencode")
   local cmd = {}
 
-  if opencode_bin ~= "" then
-    cmd = { opencode_bin, "run", "--format", "json", "--auto", prompt }
-  elseif agy_bin ~= "" then
-    cmd = { agy_bin, "-p", prompt, "--model", "gemini-3.8-flash-low", "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low", "--output-format", "json" }
+  if agy_bin ~= "" then
+    cmd = { agy_bin, "-p", prompt, "--model", "Gemini 3.8 Flash (Low)", "--dangerously-skip-permissions", "--disable-slash-commands" }
+  elseif opencode_bin ~= "" then
+    cmd = { opencode_bin, "run", "--format", "json", prompt }
   else
-    vim.notify("Agent: Neither 'opencode' nor 'agy' found in PATH", vim.log.levels.ERROR)
+    vim.notify("Agent: Neither 'agy' nor 'opencode' found in PATH", vim.log.levels.ERROR)
     return
   end
 
@@ -3073,59 +3185,7 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
     end
 
     local raw = table.concat(stdout_chunks, "")
-    local solution = nil
-
-    -- 1. Parse opencode JSON stream
-    for line in raw:gmatch("[^\r\n]+") do
-      local ok, obj = pcall(vim.fn.json_decode, line)
-      if ok and type(obj) == "table" then
-        if obj.type == "text" and obj.part and obj.part.text then
-          local ptext = obj.part.text
-          local sok, sdata = pcall(vim.fn.json_decode, ptext)
-          if sok and type(sdata) == "table" and sdata.content then
-            solution = sdata
-            break
-          end
-          local sub = ptext:match("(%b{})")
-          if sub then
-            local took, tdata = pcall(vim.fn.json_decode, sub)
-            if took and type(tdata) == "table" and tdata.content then
-              solution = tdata
-              break
-            end
-          end
-        elseif obj.content then
-          solution = obj
-          break
-        end
-      end
-    end
-
-    -- 2. Direct JSON fallback
-    if not solution then
-      local ok, obj = pcall(vim.fn.json_decode, raw)
-      if ok and type(obj) == "table" then
-        if obj.response and type(obj.response) == "string" then
-          local sok, sdata = pcall(vim.fn.json_decode, obj.response)
-          if sok and type(sdata) == "table" and sdata.content then
-            solution = sdata
-          end
-        elseif obj.content then
-          solution = obj
-        end
-      end
-    end
-
-    -- 3. Balanced JSON scan
-    if not solution then
-      for candidate in raw:gmatch("(%b{})") do
-        local ok, cobj = pcall(vim.fn.json_decode, candidate)
-        if ok and type(cobj) == "table" and cobj.content then
-          solution = cobj
-          break
-        end
-      end
-    end
+    local solution = parse_solution_from_raw(raw)
 
     if not solution or not solution.content then
       vim.notify("Agent: Could not parse implementation for task", vim.log.levels.WARN)
