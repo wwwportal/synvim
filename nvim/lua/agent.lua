@@ -2372,6 +2372,13 @@ function M.review(subcmd, arg)
     return
   end
 
+  -- If diffview is available, delegate directly to visual side-by-side Diffview
+  if vim.fn.exists(":DiffviewOpen") == 2 then
+    pcall(vim.cmd, "DiffviewOpen")
+    vim.notify("Review: Opened visual Diffview. Review file-by-file with :Accept or :Reject, or :Accept all to approve all.", vim.log.levels.INFO)
+    return
+  end
+
   local qf_list = {}
   for _, r in ipairs(unreviewed) do
     local full = r.target_file:match("^/") and r.target_file or (root .. "/" .. r.target_file)
@@ -2395,12 +2402,6 @@ function M.review(subcmd, arg)
 
   -- Show first unreviewed item
   M.show_review(unreviewed[1])
-
-  -- If diffview is available, open Diffview review tab alongside review queue
-  if vim.fn.exists(":DiffviewOpen") == 2 then
-    pcall(vim.cmd, "DiffviewOpen")
-    vim.notify("GitReview: Opened visual Diffview. Review file-by-file with :Accept/:Reject, or :Accept all to approve all.", vim.log.levels.INFO)
-  end
 end
 
 local function is_todo_comment(line)
