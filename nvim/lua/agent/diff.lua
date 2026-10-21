@@ -258,6 +258,7 @@ function M.clear_diff(keep_buffer)
         local new_cnt = (p.new_lines and #p.new_lines) or 0
         vim.bo[p.bufnr].modifiable = true
         vim.api.nvim_buf_set_lines(p.bufnr, s_idx, s_idx + new_cnt, false, p.revert_lines)
+        pcall(vim.api.nvim_buf_call, p.bufnr, function() vim.cmd("silent! write") end)
       end
 
       -- If it was an unsaved new file, wipe the buffer so no empty file is left on disk
@@ -282,6 +283,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
   local ns_diff = state_mod.ns_diff
 
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then return end
+  pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns_diff, 0, -1)
   local origin_win = ui.get_primary_editor_win()
   if origin_win and vim.api.nvim_win_is_valid(origin_win) then
     vim.api.nvim_set_current_win(origin_win)
@@ -350,6 +352,12 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     vim.api.nvim_buf_set_lines(bufnr, s_idx, e_idx, false, new_lines)
     vim.bo[bufnr].modifiable = was_mod
     vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write") end)
+  else
+    if review_meta and review_meta.old_lines and #review_meta.old_lines > 0 then
+      revert_lines = review_meta.old_lines
+    elseif #deleted_lines > 0 then
+      revert_lines = deleted_lines
+    end
   end
 
   local win_w = (origin_win and vim.api.nvim_win_is_valid(origin_win)) and vim.api.nvim_win_get_width(origin_win) or 80

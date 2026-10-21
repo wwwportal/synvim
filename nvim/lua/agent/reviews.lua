@@ -54,8 +54,10 @@ function M.get_reviews(status_filter)
   end
 
   table.sort(reviews, function(a, b)
-    if a.order and b.order and a.order ~= b.order then
-      return a.order < b.order
+    local oa = a.order or 999999
+    local ob = b.order or 999999
+    if oa ~= ob then
+      return oa < ob
     end
     if (a.created_at or "") ~= (b.created_at or "") then
       return (a.created_at or "") < (b.created_at or "")
