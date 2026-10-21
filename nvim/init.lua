@@ -10,6 +10,7 @@ vim.opt.mousescroll = "ver:1,hor:6"
 vim.opt.clipboard = "unnamedplus"
 vim.opt.splitright = true
 vim.opt.splitbelow = true
+vim.opt.termguicolors = true
 
 vim.g.mapleader = " "
 vim.g.maplocalleader = "\\"

@@ -4,9 +4,7 @@
 -- Structure is communicated through bold/italic weight, not color noise.
 -- ==============================================================================
 
-if vim.o.termguicolors then
-	vim.opt.termguicolors = true
-end
+vim.opt.termguicolors = true
 vim.o.background = "light"
 vim.cmd("highlight clear")
 if vim.g.syntax_on then
