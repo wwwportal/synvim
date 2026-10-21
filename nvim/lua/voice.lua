@@ -89,6 +89,67 @@ function M.start()
     end))
 end
 
+--- Record a single utterance via arecord and transcribe using faster-whisper
+function M.record_once(callback)
+    local arecord_bin = vim.fn.exepath("arecord")
+    if arecord_bin == "" then
+        vim.notify("Voice: 'arecord' audio utility not found", vim.log.levels.ERROR)
+        return
+    end
+
+    local wav_file = "/tmp/voice_input_" .. tostring(os.time()) .. ".wav"
+    pcall(vim.fn.delete, wav_file)
+
+    local job = vim.fn.jobstart({ arecord_bin, "-q", "-r", "16000", "-c", "1", "-f", "S16_LE", "-t", "wav", wav_file })
+    if job <= 0 then
+        vim.notify("Voice: Failed to start audio recording", vim.log.levels.ERROR)
+        return
+    end
+
+    vim.cmd("redraw")
+    local input = vim.fn.input({
+        prompt = "● [Voice Recording] Speak your request, then press <Enter> to send: ",
+        cancelreturn = "__CANCEL__",
+    })
+
+    pcall(vim.fn.jobstop, job)
+
+    if input == "__CANCEL__" then
+        pcall(vim.fn.delete, wav_file)
+        vim.notify("Voice: Recording cancelled", vim.log.levels.INFO)
+        return
+    end
+
+    vim.api.nvim_echo({ { "● Transcribing audio with faster-whisper...", "ModeMsg" } }, false, {})
+    vim.cmd("redraw")
+
+    local py_bin = vim.fn.expand("~/myenv/bin/python")
+    local root = vim.fs.root(0, { ".git" }) or vim.fn.getcwd()
+    local transcribe_script = root .. "/bin/agent_transcribe.py"
+    if vim.fn.filereadable(transcribe_script) ~= 1 then
+        transcribe_script = vim.fn.expand("~/.local/bin/agent_transcribe.py")
+    end
+
+    local cmd = { py_bin, transcribe_script, wav_file }
+    local out = vim.fn.system(cmd)
+    local text = vim.trim(out or "")
+    pcall(vim.fn.delete, wav_file)
+
+    if text == "" then
+        vim.notify("Voice: No speech detected", vim.log.levels.WARN)
+        return
+    end
+
+    vim.api.nvim_echo({
+        { "● [Voice Input] ", "Directory" },
+        { '"' .. text .. '"', "Normal" },
+    }, false, {})
+
+    if callback then
+        callback(text)
+    end
+end
+
 --- Toggle transcription state
 function M.toggle()
     if M.is_active() then

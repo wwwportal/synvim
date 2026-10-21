@@ -182,9 +182,6 @@ local function get_lgcc_bin()
     return exepath
   end
   local candidates = {
-    vim.fn.expand("~/code/synvim/bin/lgcc"),
-    vim.fn.expand("~/code/syn-nvim/bin/lgcc"),
-    vim.fn.expand("~/code/syntra-nvim/bin/lgcc"),
     vim.fn.expand("~/.local/bin/lgcc"),
     vim.fn.expand("~/.config/nvim/bin/lgcc"),
     "/usr/local/bin/lgcc",

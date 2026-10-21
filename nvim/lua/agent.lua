@@ -23,15 +23,6 @@ M.state = {
   latest_focus_type = nil,
 }
 
-local py_bin = vim.fn.expand("~/myenv/bin/python")
-local transcribe_script = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h:h") .. "/bin/agent_transcribe.py"
-if vim.fn.filereadable(transcribe_script) ~= 1 then
-  transcribe_script = vim.fn.expand("/home/yassine/code/synvim/bin/agent_transcribe.py")
-end
-if vim.fn.filereadable(transcribe_script) ~= 1 then
-  transcribe_script = vim.fn.expand("/home/yassine/code/syn-nvim/bin/agent_transcribe.py")
-end
-
 local process_agent_response = nil
 local update_queue_display = nil
 local jump_to_target = nil
@@ -40,24 +31,12 @@ local setup_agent_qf_keymaps = nil
 local function setup_highlights()
   local is_dark = (vim.o.background == "dark")
   if is_dark then
-    vim.api.nvim_set_hl(0, "AgentDiffAdd", { bg = "#163b22", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#85e89d", bold = true, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#ff7b72", bg = "#490202", strikethrough = true, ctermfg = "Red", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#c9d1d9", bg = "#21262d", bold = true, ctermfg = "White", ctermbg = "DarkGray", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffFooter", { fg = "#8b949e", bg = "#161b22", bold = true, ctermfg = "Gray", default = false })
     vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#238636", bold = true, ctermfg = "White", ctermbg = "DarkGreen", default = false })
     vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#8b949e", bg = "#161b22", ctermfg = "LightGray", ctermbg = "Black", default = false })
   else
-    vim.api.nvim_set_hl(0, "AgentDiffAdd", { bg = "#d4edda", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffAddSign", { fg = "#0e6b0e", bold = true, default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffDelete", { fg = "#b31d28", bg = "#f8d7da", strikethrough = true, ctermfg = "DarkRed", ctermbg = "LightRed", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffHeader", { fg = "#ffffff", bg = "#2d3748", bold = true, ctermfg = "White", ctermbg = "DarkGray", default = false })
-    vim.api.nvim_set_hl(0, "AgentDiffFooter", { fg = "#57606a", bg = "#f6f8fa", bold = true, default = false })
     vim.api.nvim_set_hl(0, "AgentDiffMenuSel", { fg = "#ffffff", bg = "#0969da", bold = true, ctermfg = "White", ctermbg = "Blue", default = false })
     vim.api.nvim_set_hl(0, "AgentDiffMenuBtn", { fg = "#24292f", bg = "#eaeef2", ctermfg = "Black", ctermbg = "LightGray", default = false })
   end
-  pcall(vim.api.nvim_set_hl, 0, "GitReviewAdd", { link = "AgentDiffAdd", default = true })
-  pcall(vim.api.nvim_set_hl, 0, "GitReviewDelete", { link = "AgentDiffDelete", default = true })
 end
 
 --- Resolve suggested target path cleanly without doubling base_dir
@@ -218,9 +197,9 @@ local function find_lgcc_bin()
   if exepath ~= "" and vim.fn.executable(exepath) == 1 then
     return exepath
   end
+  local root = get_root_dir()
   local candidates = {
-    vim.fn.expand("~/code/synvim/bin/lgcc"),
-    vim.fn.expand("~/code/syn-nvim/bin/lgcc"),
+    root .. "/bin/lgcc",
     vim.fn.expand("~/.local/bin/lgcc"),
     vim.fn.expand("~/.config/nvim/bin/lgcc"),
     "/usr/local/bin/lgcc",
@@ -605,49 +584,6 @@ function M.write_revision()
       M.run(input, true)
     end
   end
-end
-
---- Wrap virtual diff line into visual chunks not exceeding max_w
-local function wrap_diff_line(prefix, text, hl_group, max_w)
-  max_w = math.max(30, max_w or 80)
-  local full = prefix .. text
-  if #full <= max_w then
-    return { { { full, hl_group } } }
-  end
-
-  local lines = {}
-  local cont_prefix = string.rep(" ", #prefix)
-  local current = prefix
-
-  local words = vim.split(text, " ", { plain = true })
-  for _, word in ipairs(words) do
-    local sep = (current == prefix or current == cont_prefix) and "" or " "
-    if #(current .. sep .. word) <= max_w then
-      current = current .. sep .. word
-    else
-      if current ~= prefix and current ~= cont_prefix then
-        table.insert(lines, { { current, hl_group } })
-        current = cont_prefix
-      end
-
-      local avail = max_w - #current
-      local rem = word
-      while #rem > avail and avail > 4 do
-        local chunk = string.sub(rem, 1, avail)
-        table.insert(lines, { { current .. chunk, hl_group } })
-        current = cont_prefix
-        rem = string.sub(rem, avail + 1)
-        avail = max_w - #current
-      end
-      current = current .. rem
-    end
-  end
-
-  if current ~= "" and current ~= cont_prefix then
-    table.insert(lines, { { current, hl_group } })
-  end
-
-  return (#lines > 0) and lines or { { { full, hl_group } } }
 end
 
 --- Show suggested code in-line using standard gitsigns.nvim diff preview.
@@ -1282,67 +1218,9 @@ function M.accept(arg)
   end
 end
 
---- Record voice from microphone using arecord, stopping when user presses <CR>
+--- Record voice from microphone and transcribe using faster-whisper
 function M.record_voice(callback)
-  local arecord_bin = vim.fn.exepath("arecord")
-  if arecord_bin == "" then
-    vim.notify("Agent: 'arecord' audio utility not found", vim.log.levels.ERROR)
-    return
-  end
-
-  local wav_file = "/tmp/agent_audio.wav"
-  pcall(vim.fn.delete, wav_file)
-
-  -- Spawn background recording process
-  local job = vim.fn.jobstart({ arecord_bin, "-q", "-r", "16000", "-c", "1", "-f", "S16_LE", "-t", "wav", wav_file })
-  if job <= 0 then
-    vim.notify("Agent: Failed to start audio recording", vim.log.levels.ERROR)
-    return
-  end
-
-  -- Wait for user to press <CR>
-  vim.cmd("redraw")
-  local input = vim.fn.input({
-    prompt = "● [Agent Recording] Speak your request, then press <Enter> to send: ",
-    cancelreturn = "__CANCEL__",
-  })
-
-  -- Stop recording immediately
-  pcall(vim.fn.jobstop, job)
-  vim.wait(100, function() return false end)
-
-  if input == "__CANCEL__" then
-    pcall(vim.fn.delete, wav_file)
-    vim.notify("Agent: Voice capture cancelled", vim.log.levels.INFO)
-    return
-  end
-
-  if vim.fn.filereadable(wav_file) ~= 1 or vim.fn.getfsize(wav_file) <= 44 then
-    vim.notify("Agent: No audio data captured", vim.log.levels.WARN)
-    return
-  end
-
-  vim.api.nvim_echo({ { "● Transcribing voice with faster-whisper...", "ModeMsg" } }, false, {})
-  vim.cmd("redraw")
-
-  -- Run faster-whisper transcription
-  local cmd = { py_bin, transcribe_script, wav_file }
-  local out = vim.fn.system(cmd)
-  local text = vim.trim(out or "")
-
-  pcall(vim.fn.delete, wav_file)
-
-  if text == "" then
-    vim.notify("Agent: No speech detected", vim.log.levels.WARN)
-    return
-  end
-
-  vim.api.nvim_echo({
-    { "● [Voice Input] ", "Directory" },
-    { '"' .. text .. '"', "Normal" },
-  }, false, {})
-
-  callback(text)
+  require("voice").record_once(callback)
 end
 
 --- Execute prompt against LLM and process silent structured response
@@ -1766,246 +1644,7 @@ function M.reject(arg)
   M.run(arg, true)
 end
 
---- Run Code Graph logic analysis (:Lgcc [args]) with path finding and in-line diff suggestions
-function M.lgcc(parts, on_done)
-  M.state.origin_win = get_primary_editor_win()
-  local fargs = (parts and parts[1] == "lgcc") and vim.list_slice(parts, 2) or (parts or {})
-  local user_budget = nil
-  local spec_path = nil
-  local model_override = nil
-  local target_file = nil
-  local bundle = true
-  local i = 1
-
-  while i <= #fargs do
-    local arg = fargs[i]
-    if arg == "clear" or arg == "cancel" or arg == "stop" or arg == "kill" then
-      M.clear_diff()
-      M.close_dir_preview()
-      M.state.queue = {}
-      M.state.queue_index = 0
-      vim.cmd("cclose")
-      vim.notify("Lgcc: Cleared diagnostics, diffs, and queue", vim.log.levels.INFO)
-      if on_done then on_done(nil) end
-      return
-    elseif arg == "--flash" or arg == "flash" then
-      model_override = "gemini-3.8-flash-low"
-    elseif arg == "--sonnet" or arg == "sonnet" then
-      model_override = "claude-sonnet-5-5-low"
-    elseif arg == "--argon" or arg == "argon" then
-      model_override = "gemini-4-argon-medium"
-    elseif arg == "--model" or arg == "model" then
-      i = i + 1
-      model_override = fargs[i]
-    elseif arg == "--budget" or arg == "budget" then
-      i = i + 1
-      user_budget = tonumber(fargs[i])
-    elseif arg == "--spec" or arg == "spec" then
-      i = i + 1
-      spec_path = fargs[i]
-    elseif arg == "--no-bundle" or arg == "no-bundle" then
-      bundle = false
-    elseif not target_file and arg ~= "" and not arg:match("^-") then
-      target_file = arg
-    end
-    i = i + 1
-  end
-
-  local cur_win = get_primary_editor_win()
-  local cur_buf = vim.api.nvim_win_get_buf(cur_win)
-  if not target_file or target_file == "" then
-    target_file = vim.api.nvim_buf_get_name(cur_buf)
-  else
-    target_file = vim.fn.expand(target_file)
-  end
-
-  if target_file == "" or vim.uv.fs_stat(target_file) == nil then
-    vim.notify("Lgcc: Target file not found or buffer not saved: " .. (target_file ~= "" and target_file or "[unnamed]"), vim.log.levels.WARN)
-    if on_done then on_done(nil) end
-    return
-  end
-
-  local budget = user_budget or 4000
-  local code_section = ""
-  if bundle then
-    local lgcc_bin = find_lgcc_bin()
-    local git_root = vim.fs.root(target_file, { ".git" })
-    if lgcc_bin and git_root then
-      local ok, res = pcall(function()
-        return vim.system({ lgcc_bin, "--route", target_file, "--budget", tostring(budget), "--format", "ir" }, { text = true }):wait(3000)
-      end)
-      if ok and res and res.code == 0 and res.stdout and res.stdout ~= "" then
-        code_section = res.stdout
-      end
-    end
-  end
-
-  if code_section == "" then
-    local lines = vim.fn.readfile(target_file)
-    local numbered = {}
-    for idx, l in ipairs(lines) do
-      table.insert(numbered, string.format("%d: %s", idx, l))
-    end
-    code_section = string.format("--- SOURCE CODE (prefixed with line numbers) ---\nFile: %s\n%s", target_file, table.concat(numbered, "\n"))
-  end
-
-  local spec_section = ""
-  if spec_path and spec_path ~= "" then
-    local s_path = vim.fn.expand(spec_path)
-    if vim.fn.filereadable(s_path) == 1 then
-      spec_section = string.format("\n--- SPECIFICATION CONTRACT ---\n%s\n", table.concat(vim.fn.readfile(s_path), "\n"))
-    end
-  end
-
-  local system_prompt = [[
-You are the Logical Compiler (lgcc) and autonomous code agent for Neovim.
-CRITICAL INSTRUCTION: Do NOT call any tools or commands (do NOT run bash, grep, find, view_file, or any tools). All context is provided directly in this prompt.
-CRITICAL RULE: NEVER reply with conversational chat, apologies, or natural language prose.
-Output your verdict IMMEDIATELY in this turn as a single STRICT JSON object.
-
-Analyze the provided source code, Code Graph IR, and specifications for logical bugs, invariant violations, missing module implementations, or semantic flaws.
-
-If there are NO logical bugs or flaws, output STRICTLY:
-{"action": "clean"}
-
-If logical flaws, invariant violations, or missing implementations exist:
-- Provide the exact corrected code implementation to fix the flaw!
-- If a new file or directory is needed (e.g., missing module), use "action": "create_and_jump" or "propose_dir", with "dir_preview" proposing the path.
-- If modifying existing code, set "active_target" with:
-  "path": target file path,
-  "line": starting line number where fix should be applied,
-  "action": "replace" or "insert",
-  "old_lines_count": number of lines being deleted/replaced (0 if pure insertion),
-  "content": replacement/new code lines,
-  "description": concise description of the logical flaw and fix
-- If multiple flaws exist across files/locations, populate "queue" with all targets.
-
-Target File: ]] .. target_file .. [[
-
-]] .. spec_section .. [[
-
-]] .. code_section .. [[
-
-Output STRICT JSON matching schema:
-{
-  "action": "replace" | "insert" | "create_and_jump" | "propose_dir" | "clean",
-  "active_target": {
-    "path": "path/to/file",
-    "line": 1,
-    "col": 1,
-    "action": "replace" | "insert",
-    "old_lines_count": 1,
-    "content": "replacement code",
-    "description": "Fix logic bug"
-  },
-  "queue": [
-    {"path": "file1", "line": 10, "col": 1, "description": "Fix flaw A"}
-  ],
-  "dir_preview": {
-    "base_dir": "path/to/dir",
-    "entries": ["f1", "f2"],
-    "suggested": "f2"
-  }
-}
-Emit ONLY raw JSON. No markdown code blocks, no text before or after.
-]]
-
-  if M.state.active_job then
-    pcall(function() M.state.active_job:kill(9) end)
-    M.state.active_job = nil
-  end
-
-  M.state.is_busy = true
-  local file_basename = vim.fn.fnamemodify(target_file, ":t")
-  vim.api.nvim_echo({ { "● [Agent lgcc] Analyzing Code Graph IR for " .. file_basename .. "...", "ModeMsg" } }, false, {})
-  vim.cmd("redraw")
-
-  local agy_bin = vim.fn.exepath("agy")
-  local cmd = {}
-  local model = model_override or "gemini-3.8-flash-low"
-  if agy_bin ~= "" then
-    cmd = { agy_bin, "-p", system_prompt, "--model", model, "--print-timeout", "30s", "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low", "--output-format", "stream-json" }
-  else
-    local opencode_bin = vim.fn.exepath("opencode")
-    if opencode_bin ~= "" then
-      cmd = { opencode_bin, "run", "--auto", system_prompt }
-    else
-      M.state.is_busy = false
-      vim.notify("Agent lgcc: Neither 'agy' nor 'opencode' found in PATH", vim.log.levels.ERROR)
-      if on_done then on_done(nil) end
-      return
-    end
-  end
-
-  local job_timeout = vim.uv.new_timer()
-  job_timeout:start(30000, 0, vim.schedule_wrap(function()
-    if M.state.active_job then
-      vim.notify("Agent lgcc: Request timed out after 30s. Cancelled.", vim.log.levels.WARN)
-      pcall(function() M.state.active_job:kill(9) end)
-      M.state.active_job = nil
-      M.state.is_busy = false
-      if on_done then on_done(nil) end
-    end
-    if job_timeout then
-      pcall(function() job_timeout:stop(); job_timeout:close() end)
-      job_timeout = nil
-    end
-  end))
-
-  local stdout_chunks = {}
-  M.state.active_job = vim.system(cmd, {
-    text = true,
-    stdout = function(_, data)
-      if data then table.insert(stdout_chunks, data) end
-    end,
-  }, vim.schedule_wrap(function(res)
-    M.state.active_job = nil
-    if job_timeout then
-      pcall(function() job_timeout:stop(); job_timeout:close() end)
-      job_timeout = nil
-    end
-    local raw = table.concat(stdout_chunks, "")
-    local data = nil
-
-    for line in raw:gmatch("[^\r\n]+") do
-      if line:find('"event"%s*:%s*"result"') then
-        local ok, res_obj = pcall(vim.fn.json_decode, line)
-        if ok and res_obj and res_obj.result and res_obj.result.response then
-          local resp_str = res_obj.result.response
-          local rok, rdata = pcall(vim.fn.json_decode, resp_str)
-          if rok and type(rdata) == "table" then
-            data = rdata
-            break
-          end
-          local sub = resp_str:match("(%b{})")
-          if sub then
-            local sok, sdata = pcall(vim.fn.json_decode, sub)
-            if sok and type(sdata) == "table" then
-              data = sdata
-              break
-            end
-          end
-        end
-      end
-    end
-
-    if not data then
-      for candidate in raw:gmatch("(%b{})") do
-        local ok, cand_obj = pcall(vim.fn.json_decode, candidate)
-        if ok and type(cand_obj) == "table" then
-          if cand_obj.action or cand_obj.active_target or cand_obj.queue or cand_obj.dir_preview then
-            data = cand_obj
-            break
-          end
-        end
-      end
-    end
-
-    process_agent_response(data, on_done)
-  end))
-end
-
---- Stop any active background agent/lgcc job and clear all previews/diffs
+--- Stop any active background agent job and clear all previews/diffs
 function M.stop()
   if M.state.active_job then
     pcall(function() M.state.active_job:kill(9) end)
@@ -2190,190 +1829,6 @@ function M.find(query)
       end
     end
   end)
-end
-
---- Specialized Build & Logic Specification Navigator (:Compile [syntax|logic] [arg])
-function M.compile(kind, target_arg)
-  kind = (kind or ""):lower()
-  target_arg = vim.trim(target_arg or "")
-  local root = get_root_dir()
-
-  if kind == "syntax" or kind == "build" then
-    local candidates = {
-      "Makefile", "makefile", "GNUmakefile",
-      "Cargo.toml",
-      "build.sh", "scripts/build.sh", "compile.sh",
-      "CMakeLists.txt",
-      "lakefile.lean", "specs/lakefile.lean", "lakefile.toml",
-      "justfile",
-      "pyproject.toml",
-      "flake.nix",
-      "package.json",
-    }
-    local found = {}
-    for _, c in ipairs(candidates) do
-      local p = root .. "/" .. c
-      if vim.fn.filereadable(p) == 1 then
-        table.insert(found, { path = c, fullpath = p })
-      end
-    end
-
-    if #found == 0 then
-      vim.notify("Agent compile syntax: No build file found in " .. vim.fn.fnamemodify(root, ":."), vim.log.levels.WARN)
-      return
-    end
-
-    local primary = found[1]
-    local target_line = 1
-
-    if target_arg ~= "" then
-      local lines = vim.fn.readfile(primary.fullpath)
-      for lnum, line in ipairs(lines) do
-        if line:find("^%s*" .. vim.pesc(target_arg) .. "%s*:")
-          or line:find("%[" .. vim.pesc(target_arg) .. "%]")
-          or line:lower():find(vim.pesc(target_arg:lower())) then
-          target_line = lnum
-          break
-        end
-      end
-    end
-
-    local queue = {}
-    for i, item in ipairs(found) do
-      table.insert(queue, {
-        path = item.path,
-        line = (i == 1 and target_line or 1),
-        col = 1,
-        action = "navigate",
-        description = "Build configuration: " .. item.path,
-      })
-    end
-
-    M.state.queue = queue
-    M.state.queue_index = 1
-    update_queue_display(false)
-    jump_to_target(queue[1])
-
-    vim.api.nvim_echo({
-      { "● [Agent Compile Syntax] ", "ModeMsg" },
-      { string.format("%s:%d", primary.path, target_line), "Directory" },
-      { " (compilation entrypoint)", "Comment" },
-    }, false, {})
-
-  elseif kind == "logic" or kind == "spec" or kind == "specs" then
-    vim.notify("Use :Lgcc for logical compilation, and :Specs for specifications.", vim.log.levels.INFO)
-    if target_arg ~= "" then
-      M.lgcc({ target_arg })
-    end
-    return
-  else
-    vim.notify("Usage: :Compile [syntax|build] [target] (use :Lgcc for logic, :Specs for specs)", vim.log.levels.INFO)
-  end
-end
-
---- Specialized Task & Contract Search (deprecated: use :Todo or :Find)
-function M.search(subcmd, query)
-  local mode = (subcmd or ""):upper()
-  if mode == "TODO" or mode == "DONE" then
-    -- query is passed directly
-  else
-    query = vim.trim((subcmd or "") .. " " .. (query or ""))
-    mode = "ALL"
-  end
-  query = vim.trim(query or "")
-  local root = get_root_dir()
-
-  local results = {}
-  local is_todo = (mode == "TODO")
-  local is_done = (mode == "DONE")
-
-  if is_todo and query == "" and vim.fn.exists(":TodoQuickFix") == 2 then
-    pcall(vim.cmd, "TodoQuickFix keywords=TODO,FIXME,SPEC")
-    return
-  end
-
-  local pattern = ""
-  if is_todo then
-    pattern = "(#|//|--|/\\*).*\\b(TODO|FIXME|SPEC)\\b"
-  elseif is_done then
-    pattern = "verified|done|\\[x\\]|\\[X\\]|theorem.*verified"
-  else
-    pattern = query ~= "" and vim.pesc(query) or "(#|//|--|/\\*).*\\b(TODO|SPEC)\\b"
-  end
-
-  local grep_cmd = { "git", "-C", root, "grep", "-n", "-I", "-E", pattern, "--", ":!*.json*", ":!*.log", ":!*.ipynb", ":!*.olean", ":!specs/.lexlean/*", ":!logs/*" }
-  local grep_out = vim.fn.system(grep_cmd)
-
-  if vim.v.shell_error ~= 0 or grep_out == "" then
-    local rg_bin = vim.fn.exepath("rg")
-    if rg_bin ~= "" then
-      grep_cmd = { rg_bin, "-n", "--no-heading", "-e", pattern, "-g", "!*.json*", "-g", "!*.log", "-g", "!*.ipynb", "-g", "!*.olean", "-g", "!specs/.lexlean/*", "-g", "!logs/*", root }
-      grep_out = vim.fn.system(grep_cmd)
-    end
-  end
-
-  if grep_out and grep_out ~= "" then
-    for line in grep_out:gmatch("[^\r\n]+") do
-      local rel = line:gsub("^" .. vim.pesc(root) .. "/", "")
-      local fpath, lnum, txt = rel:match("^([^:]+):(%d+):(.*)$")
-      if fpath and lnum then
-        local match_ok = true
-        if query ~= "" then
-          local q_low = query:lower()
-          local line_low = (fpath .. " " .. txt):lower()
-          if not line_low:find(vim.pesc(q_low)) then
-            match_ok = false
-          end
-        end
-        if is_done and txt:find("TODO") then
-          match_ok = false
-        end
-
-        if match_ok and #results < 50 then
-          local tag = is_todo and "[TODO]" or (is_done and "[DONE]" or "[SEARCH]")
-          table.insert(results, {
-            path = fpath,
-            line = tonumber(lnum) or 1,
-            col = 1,
-            action = "navigate",
-            is_new_file = false,
-            description = tag .. " " .. vim.trim(txt),
-          })
-        end
-      end
-    end
-  end
-
-  if #results == 0 then
-    vim.notify(string.format("Agent search %s: No items found matching '%s'", mode, query), vim.log.levels.WARN)
-    return
-  end
-
-  M.state.queue = results
-  M.state.queue_index = 1
-  update_queue_display(#results > 1)
-
-  if query ~= "" then
-    jump_to_target(results[1])
-  else
-    local qf = {}
-    for _, r in ipairs(results) do
-      table.insert(qf, {
-        filename = root .. "/" .. r.path,
-        lnum = r.line,
-        col = r.col or 1,
-        text = r.description,
-      })
-    end
-    vim.fn.setqflist(qf, "r")
-    vim.fn.setqflist({}, "a", { title = string.format("[Agent Search %s: %d matches]", mode, #results) })
-    vim.cmd("botright copen 6")
-  end
-
-  vim.api.nvim_echo({
-    { string.format("● [Agent Search %s] ", mode), "ModeMsg" },
-    { string.format("Found %d matches (active: %s:%d)", #results, results[1].path, results[1].line), "Directory" },
-  }, false, {})
 end
 
 --- Get reviews directory in root and ensure .agent/ is ignored
@@ -3652,20 +3107,6 @@ function M.setup()
     desc = "Execute task contract (:Todo <task_id>)",
   })
 
-  -- :Lgcc [clear|flags]
-  vim.api.nvim_create_user_command("Lgcc", function(ctx)
-    M.state.origin_win = get_primary_editor_win()
-    local parts = vim.split(vim.trim(ctx.args or ""), "%s+", { trimempty = true })
-    M.lgcc(parts)
-  end, {
-    nargs = "*",
-    complete = function(arglead, cmdline)
-      local lgcc_flags = { "clear", "cancel", "stop", "--flash", "--sonnet", "--opencode", "--agy", "--argon", "-s", "--speak", "-b", "--bundle", "--no-bundle", "--budget", "--spec", "-l", "--local" }
-      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, lgcc_flags)
-    end,
-    desc = "Run native logical compiler pipeline (:Lgcc [clear|flags])",
-  })
-
   -- :Stop
   vim.api.nvim_create_user_command("Stop", function()
     M.stop()
@@ -3773,8 +3214,6 @@ function M.setup()
   M.get_root_dir = get_root_dir
   M.collect_context = collect_context
   M.find = M.find
-  M.compile = M.compile
-  M.search = M.search
   M.review = M.review
   M.git_review = M.review
   M.review_command = M.review
@@ -3784,8 +3223,6 @@ end
 M.get_root_dir = get_root_dir
 M.collect_context = collect_context
 M.find = M.find
-M.compile = M.compile
-M.search = M.search
 M.review = M.review
 M.git_review = M.review
 M.review_command = M.review

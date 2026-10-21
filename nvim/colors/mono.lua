@@ -1,0 +1,111 @@
+-- ==============================================================================
+-- mono.lua: High-contrast monochrome colorscheme
+-- Black on white, light grey for selection/highlights.
+-- Structure is communicated through bold/italic weight, not color noise.
+-- ==============================================================================
+
+if vim.o.termguicolors then
+	vim.opt.termguicolors = true
+end
+vim.o.background = "light"
+vim.cmd("highlight clear")
+if vim.g.syntax_on then
+	vim.cmd("syntax reset")
+end
+vim.g.colors_name = "mono"
+
+local hi = vim.api.nvim_set_hl
+
+-- Base editor chrome
+hi(0, "Normal", { fg = "#000000", bg = "#ffffff" })
+hi(0, "NormalNC", { fg = "#666666", bg = "#ffffff" })
+hi(0, "NonText", { fg = "#c8c8c8", bg = "#ffffff" })
+hi(0, "EndOfBuffer", { fg = "#ffffff", bg = "#ffffff" })
+hi(0, "LineNr", { fg = "#a8a8a8", bg = "#ffffff" })
+hi(0, "CursorLineNr", { fg = "#000000", bg = "#f0f0f0", bold = true })
+hi(0, "CursorLine", { bg = "#f0f0f0" })
+hi(0, "CursorColumn", { bg = "#f0f0f0" })
+hi(0, "ColorColumn", { bg = "#f0f0f0" })
+hi(0, "Visual", { bg = "#d9d9d9" })
+hi(0, "Search", { fg = "#000000", bg = "#d9d9d9", nocombine = true })
+hi(0, "IncSearch", { fg = "#ffffff", bg = "#000000" })
+hi(0, "MatchParen", { fg = "#000000", bg = "#d9d9d9", bold = true })
+hi(0, "Cursor", { fg = "#ffffff", bg = "#000000" })
+hi(0, "SignColumn", { fg = "#000000", bg = "#ffffff" })
+hi(0, "Folded", { fg = "#606060", bg = "#f0f0f0" })
+hi(0, "FoldColumn", { fg = "#a8a8a8", bg = "#ffffff" })
+hi(0, "StatusLine", { fg = "#ffffff", bg = "#000000", nocombine = true })
+hi(0, "StatusLineNC", { fg = "#000000", bg = "#e0e0e0", nocombine = true })
+hi(0, "VertSplit", { fg = "#c8c8c8", bg = "#ffffff" })
+hi(0, "WinSeparator", { fg = "#c8c8c8", bg = "#ffffff" })
+hi(0, "TabLine", { fg = "#000000", bg = "#e0e0e0", nocombine = true })
+hi(0, "TabLineSel", { fg = "#ffffff", bg = "#000000", bold = true })
+hi(0, "TabLineFill", { bg = "#e0e0e0" })
+hi(0, "Pmenu", { fg = "#000000", bg = "#f0f0f0" })
+hi(0, "PmenuSel", { fg = "#ffffff", bg = "#000000" })
+hi(0, "PmenuSbar", { bg = "#e0e0e0" })
+hi(0, "PmenuThumb", { bg = "#000000" })
+hi(0, "WildMenu", { fg = "#ffffff", bg = "#000000" })
+
+-- Syntax highlights: grayscale + weight attributes
+hi(0, "Comment", { fg = "#8a8a8a", italic = true })
+hi(0, "Constant", { fg = "#000000", nocombine = true })
+hi(0, "String", { fg = "#000000", italic = true })
+hi(0, "Character", { fg = "#000000" })
+hi(0, "Number", { fg = "#000000" })
+hi(0, "Boolean", { fg = "#000000" })
+hi(0, "Float", { fg = "#000000" })
+hi(0, "Identifier", { fg = "#000000", nocombine = true })
+hi(0, "Function", { fg = "#000000", bold = true })
+hi(0, "Statement", { fg = "#000000", bold = true })
+hi(0, "Conditional", { fg = "#000000", bold = true })
+hi(0, "Repeat", { fg = "#000000", bold = true })
+hi(0, "Label", { fg = "#000000", bold = true })
+hi(0, "Operator", { fg = "#000000" })
+hi(0, "Keyword", { fg = "#000000", bold = true })
+hi(0, "Exception", { fg = "#000000", bold = true })
+hi(0, "PreProc", { fg = "#000000", bold = true })
+hi(0, "Include", { fg = "#000000", bold = true })
+hi(0, "Define", { fg = "#000000", bold = true })
+hi(0, "Macro", { fg = "#000000", bold = true })
+hi(0, "Type", { fg = "#000000", bold = true })
+hi(0, "StorageClass", { fg = "#000000", bold = true })
+hi(0, "Structure", { fg = "#000000", bold = true })
+hi(0, "Typedef", { fg = "#000000", bold = true })
+hi(0, "Special", { fg = "#000000" })
+hi(0, "Delimiter", { fg = "#000000" })
+hi(0, "Underlined", { fg = "#000000", underline = true })
+hi(0, "Ignore", { fg = "#c8c8c8" })
+hi(0, "Todo", { fg = "#000000", bg = "#d9d9d9", bold = true })
+hi(0, "Error", { fg = "#ffffff", bg = "#000000" })
+hi(0, "WarningMsg", { fg = "#000000", bold = true })
+hi(0, "Title", { fg = "#000000", bold = true })
+hi(0, "Directory", { fg = "#000000", bold = true })
+
+-- Diffs & spell checking
+hi(0, "DiffAdd", { fg = "#000000", bg = "#e8e8e8" })
+hi(0, "DiffChange", { fg = "#000000", bg = "#eeeeee" })
+hi(0, "DiffDelete", { fg = "#a8a8a8", bg = "#f0f0f0" })
+hi(0, "DiffText", { fg = "#000000", bg = "#d9d9d9", bold = true })
+hi(0, "SpellBad", { fg = "#000000", underline = true })
+hi(0, "SpellCap", { fg = "#000000", underline = true })
+hi(0, "SpellRare", { fg = "#000000", underline = true })
+hi(0, "SpellLocal", { fg = "#000000", underline = true })
+
+-- LSP diagnostics: error=red, warn=amber; info/hint grayscale
+hi(0, "DiagnosticError", { fg = "#cc0000", bold = true, underline = true })
+hi(0, "DiagnosticWarn", { fg = "#b8860b", underline = true })
+hi(0, "DiagnosticInfo", { fg = "#606060", underline = true })
+hi(0, "DiagnosticHint", { fg = "#8a8a8a", underline = true })
+hi(0, "DiagnosticUnderlineError", { sp = "#cc0000", undercurl = true })
+hi(0, "DiagnosticUnderlineWarn", { sp = "#b8860b", undercurl = true })
+hi(0, "DiagnosticUnderlineInfo", { sp = "#606060", undercurl = true })
+hi(0, "DiagnosticUnderlineHint", { sp = "#8a8a8a", undercurl = true })
+hi(0, "DiagnosticVirtualTextError", { fg = "#cc0000", bg = "#f0f0f0", italic = true })
+hi(0, "DiagnosticVirtualTextWarn", { fg = "#b8860b", bg = "#f0f0f0", italic = true })
+hi(0, "DiagnosticVirtualTextInfo", { fg = "#606060", bg = "#f0f0f0", italic = true })
+hi(0, "DiagnosticVirtualTextHint", { fg = "#8a8a8a", bg = "#f0f0f0", italic = true })
+hi(0, "DiagnosticSignError", { fg = "#cc0000", bg = "#ffffff", bold = true })
+hi(0, "DiagnosticSignWarn", { fg = "#b8860b", bg = "#ffffff", bold = true })
+hi(0, "DiagnosticSignInfo", { fg = "#606060", bg = "#ffffff" })
+hi(0, "DiagnosticSignHint", { fg = "#8a8a8a", bg = "#ffffff" })

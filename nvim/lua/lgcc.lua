@@ -188,9 +188,6 @@ local function find_lgcc_bin()
     return exepath
   end
   local candidates = {
-    vim.fn.expand("~/code/synvim/bin/lgcc"),
-    vim.fn.expand("~/code/syn-nvim/bin/lgcc"),
-    vim.fn.expand("~/code/syntra-nvim/bin/lgcc"),
     vim.fn.expand("~/.local/bin/lgcc"),
     vim.fn.expand("~/.config/nvim/bin/lgcc"),
     "/usr/local/bin/lgcc",
@@ -603,6 +600,48 @@ end
 
 M.cancel = M.clear
 M.stop = M.clear
+
+--- Dispatch command arguments from user :Lgcc invocation
+function M.command(args_str)
+  local parts = vim.split(vim.trim(args_str or ""), "%s+", { trimempty = true })
+  local opts = {}
+  local i = 1
+  while i <= #parts do
+    local arg = parts[i]
+    if arg == "clear" or arg == "cancel" or arg == "stop" or arg == "kill" then
+      M.clear()
+      vim.notify("Lgcc: Cleared diagnostics and ticker", vim.log.levels.INFO)
+      return
+    elseif arg == "--flash" or arg == "flash" then
+      opts.engine = "agy"
+    elseif arg == "--sonnet" or arg == "sonnet" then
+      opts.engine = "opencode"
+    elseif arg == "--budget" or arg == "budget" then
+      i = i + 1
+      opts.budget = tonumber(parts[i])
+    elseif arg == "--no-bundle" or arg == "no-bundle" then
+      opts.bundle = false
+    elseif arg == "--speak" or arg == "-s" then
+      opts.speak = true
+    elseif not opts.file and arg ~= "" and not arg:match("^-") then
+      opts.file = arg
+    end
+    i = i + 1
+  end
+  M.lint(opts)
+end
+
+-- Register :Lgcc user command
+vim.api.nvim_create_user_command("Lgcc", function(ctx)
+  M.command(ctx.args)
+end, {
+  nargs = "*",
+  complete = function(arglead, cmdline)
+    local flags = { "clear", "cancel", "stop", "--flash", "--sonnet", "--budget", "--no-bundle", "--speak" }
+    return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, flags)
+  end,
+  desc = "Run native logical compiler and invariant verifier (:Lgcc [clear|flags])",
+})
 
 -- SPEC(lgcc-cli-router-hook | tier:B | status:APPROVED | blocks:[lgcc-compressed-ir]):
 --   action:    Integrate bundle_ir.py --route --budget into lgcc.lua with optional --budget argument for dynamic context allocation.

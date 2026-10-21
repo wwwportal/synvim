@@ -24,12 +24,6 @@ if [ -x "$SCRIPT_DIR/lgcc" ]; then
     LGCC_BIN="$SCRIPT_DIR/lgcc"
 elif command -v lgcc &>/dev/null; then
     LGCC_BIN="$(command -v lgcc)"
-elif [ -x "$HOME/code/synvim/bin/lgcc" ]; then
-    LGCC_BIN="$HOME/code/synvim/bin/lgcc"
-elif [ -x "$HOME/code/syn-nvim/bin/lgcc" ]; then
-    LGCC_BIN="$HOME/code/syn-nvim/bin/lgcc"
-elif [ -x "$HOME/code/syntra-nvim/bin/lgcc" ]; then
-    LGCC_BIN="$HOME/code/syntra-nvim/bin/lgcc"
 elif [ -x "$HOME/.local/bin/lgcc" ]; then
     LGCC_BIN="$HOME/.local/bin/lgcc"
 elif [ -x "$HOME/.config/nvim/bin/lgcc" ]; then

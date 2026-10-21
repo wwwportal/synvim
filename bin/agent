@@ -57,8 +57,8 @@ COMMENT_PREFIXES = {
 }
 
 STRUCTURED_TODO_RE = re.compile(
-    r'^[ \t]*(?:#|//|--)\s*(TODO|FIXME)\(([a-zA-Z0-9_\-]+)\s*\|\s*tier:([ABC])'
-    r'((?:\s*\|\s*(?:blocks|depends_on):\[[a-zA-Z0-9_\-,\s]*\])*)\):(?:\s*(.*))?$'
+    r'^[ \t]*(?:#|//|--)\s*(TODO|FIXME|SPEC)\(([a-zA-Z0-9_\-]+)\s*\|\s*tier:([ABC])'
+    r'((?:\s*\|\s*(?:blocks|depends_on|requires|ensures|invariant|modifies|status):[^|)]+)*)\):(?:\s*(.*))?$'
 )
 UNSTRUCTURED_TODO_RE = re.compile(
     r'^[ \t]*(?:#|//|--)\s*(TODO|FIXME)(?:\(([^)]+)\))?\s*[:\-]?\s*(.*)$',
@@ -79,12 +79,12 @@ def find_git_root(start_dir: Optional[Path] = None) -> Path:
 
 def find_lgcc_bin() -> Optional[str]:
     script_dir = Path(__file__).resolve().parent
+    root = find_git_root()
     candidates = [
         script_dir / "lgcc",
+        root / "bin" / "lgcc",
         Path.home() / ".local" / "bin" / "lgcc",
         Path.home() / ".config" / "nvim" / "bin" / "lgcc",
-        Path.home() / "code" / "synvim" / "bin" / "lgcc",
-        Path.home() / "code" / "syn-nvim" / "bin" / "lgcc",
     ]
     for c in candidates:
         if c.is_file() and os.access(c, os.X_OK):
@@ -135,15 +135,15 @@ def extract_tasks_from_file(file_path: Path) -> List[Dict[str, Any]]:
                 cont_line = lines[j].strip()
                 if cont_line.startswith(("#", "//", "--")):
                     cleaned = re.sub(r'^(?:#|//|--)\s*', '', cont_line)
-                    if cleaned.lower().startswith("description:"):
-                        extra_desc.append(cleaned[12:].strip())
-                        task_lines_count += 1
-                        j += 1
-                    elif cleaned.lower().startswith("criterion:"):
+                    if cleaned.lower().startswith(("action:", "description:")):
                         extra_desc.append(cleaned)
                         task_lines_count += 1
                         j += 1
-                    elif cleaned.startswith("- ") or cleaned.startswith("* "):
+                    elif cleaned.lower().startswith(("ensures:", "criterion:", "requires:", "invariant:", "modifies:", "status:")):
+                        extra_desc.append(cleaned)
+                        task_lines_count += 1
+                        j += 1
+                    elif cleaned.startswith(("[lean:spec]", "def ", "theorem ", "inductive ", "structure ", "| ", "- ", "* ")):
                         extra_desc.append(cleaned)
                         task_lines_count += 1
                         j += 1
