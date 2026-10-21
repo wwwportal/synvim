@@ -170,21 +170,29 @@ end
 function M.ensure_contract_preserved_as_done(orig_slice, new_lines)
   if not orig_slice or #orig_slice == 0 then return new_lines end
   local first = orig_slice[1]
-  if not (first:find("SPEC%(") or first:find("TODO%(") or first:find("FIXME%(")) then
+  if not (first:find("SPEC%(") or first:find("TODO%(") or first:find("FIXME%(") or first:find("^[ \t]*[#/%-]+%s*%[")) then
     return new_lines
   end
 
-  -- Check if new_lines already has the contract header
-  local new_first = new_lines[1] or ""
-  if new_first:find("SPEC%(") or new_first:find("TODO%(") or new_first:find("FIXME%(") then
-    for idx, nl in ipairs(new_lines) do
-      if nl:find("status:TODO") then
-        new_lines[idx] = nl:gsub("status:TODO", "status:DONE")
-      elseif nl:find("status:REVISE") then
-        new_lines[idx] = nl:gsub("status:REVISE", "status:DONE")
+  -- Extract task slug from first line (e.g. "gate-e8")
+  local task_slug = first:match("%(([a-zA-Z0-9_%-]+)") or first:match("%[([a-zA-Z0-9_%-]+)")
+
+  -- Check if new_lines already has the contract header or mentions task_slug
+  for idx, nl in ipairs(new_lines) do
+    if (task_slug and nl:find(task_slug, 1, true))
+      or nl:find("SPEC%(") or nl:find("TODO%(") or nl:find("FIXME%(")
+      or nl:find("^[ \t]*[#/%-]+%s*%[[%w_%-]+")
+    then
+      -- new_lines already has the contract header! Update status to DONE in-place
+      for j, l in ipairs(new_lines) do
+        if l:find("status:TODO") then
+          new_lines[j] = l:gsub("status:TODO", "status:DONE")
+        elseif l:find("status:REVISE") then
+          new_lines[j] = l:gsub("status:REVISE", "status:DONE")
+        end
       end
+      return new_lines
     end
-    return new_lines
   end
 
   -- Extract contract comment lines from orig_slice
