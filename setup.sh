@@ -19,6 +19,12 @@ echo "=========================================================="
 
 echo "==> [1/3] Deploying Neovim configuration and CLI binaries..."
 mkdir -p "$TARGET_DIR"
+
+# Clean up deprecated legacy modules and orphaned binaries if upgrading
+rm -f "$TARGET_DIR/lua/lgcc.lua" "$TARGET_DIR/lua/specs.lua" "$TARGET_DIR/lua/tasks.lua"
+rm -rf "$TARGET_DIR/scripts" "$TARGET_DIR/bin/lgcc" "$TARGET_DIR/bin/tasks" "$TARGET_DIR/bin/specs"
+rm -f "$LOCAL_BIN/lgcc" "$LOCAL_BIN/tasks" "$LOCAL_BIN/specs"
+
 cp -r "$SCRIPT_DIR/nvim/"* "$TARGET_DIR/"
 mkdir -p "$TARGET_DIR/bin"
 cp "$SCRIPT_DIR/bin/agent_transcribe.py" "$TARGET_DIR/bin/agent_transcribe.py"

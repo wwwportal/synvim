@@ -1489,7 +1489,7 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
   end))
 end
 
---- Shared processor for agent and lgcc JSON output:
+--- Shared processor for agent JSON output:
 --- - propose_dir / dir_preview: path-only floating preview modal
 --- - active_target: jump to file & line in primary editor split
 --- - content: in-line green-red diff (showing deleted lines in red, added in green)
@@ -1912,7 +1912,7 @@ function M.grep(query)
 
   local root = get_root_dir()
 
-  -- 1. Direct file:line jump (e.g. :Grep crates/lgcc/src/ast/extractor.rs:25 or :Grep agent.lua:100)
+  -- 1. Direct file:line jump (e.g. :Grep src/main.rs:25 or :Grep agent.lua:100)
   local file_target, line_target = query:match("^([^:]+):(%d+)$")
   if file_target and line_target then
     local full_path = file_target:match("^/") and file_target or (root .. "/" .. file_target)
@@ -3614,8 +3614,8 @@ function M.setup()
   vim.api.nvim_create_user_command("Stop", function()
     M.stop()
     M.clear_diff()
-    vim.notify("Agent / Lgcc execution stopped and diff previews cleared.", vim.log.levels.INFO)
-  end, { desc = "Stop active agent/lgcc background job and clear previews (:Stop)" })
+    vim.notify("Agent execution stopped and diff previews cleared.", vim.log.levels.INFO)
+  end, { desc = "Stop active agent background job and clear previews (:Stop)" })
 
   vim.api.nvim_create_user_command("Find", function(ctx)
     M.state.origin_win = vim.api.nvim_get_current_win()
