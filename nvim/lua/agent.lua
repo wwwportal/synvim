@@ -1917,34 +1917,62 @@ function M.find(query)
     end
   end
 
-  -- 2. Instant local ranked search (sub-millisecond ripgrep/git-grep)
-  local candidates = search_and_rank(query, root)
-  if #candidates > 0 then
-    local best = candidates[1]
-    M.state.queue = candidates
-    M.state.queue_index = 1
-    jump_to_target(best)
-    update_queue_display(#candidates > 1)
-    vim.api.nvim_echo({
-      { "● [Found] ", "ModeMsg" },
-      { string.format("%s:%d", best.path, best.line), "Directory" },
-      { string.format(" — %s (%d ranked match%s)", best.description, #candidates, #candidates > 1 and "es" or ""), "Normal" },
-    }, false, {})
-    return
+  -- 2. Exact single-word symbol fast path (e.g. :Find ExtractedModule or :Find jump_to_target)
+  local is_single_ident = query:match("^[%a_][%w_]*$") ~= nil
+  local is_conceptual = query:find("%s") ~= nil
+    or query:lower():match("^where")
+    or query:lower():match("^how")
+    or query:lower():match("^why")
+    or query:lower():match("^what")
+    or query:lower():match("^find%s")
+
+  if is_single_ident and not is_conceptual then
+    local candidates = search_and_rank(query, root)
+    if #candidates > 0 and candidates[1].score >= 300 then
+      local best = candidates[1]
+      M.state.queue = candidates
+      M.state.queue_index = 1
+      jump_to_target(best)
+      update_queue_display(#candidates > 1)
+      vim.api.nvim_echo({
+        { "● [Symbol Found] ", "ModeMsg" },
+        { string.format("%s:%d", best.path, best.line), "Directory" },
+        { string.format(" — %s (%d match%s)", best.description, #candidates, #candidates > 1 and "es" or ""), "Normal" },
+      }, false, {})
+      return
+    end
   end
 
-  -- 3. Fallback to background LLM search only if 0 direct local matches exist
-  vim.notify("No direct local matches for '" .. query .. "', querying agent...", vim.log.levels.INFO)
-  local prompt = "where did we implement " .. query .. " (find definition, implementation, and references)"
+  -- 3. Conceptual & Semantic Queries: Analyze with LLM to pinpoint exact implementation
+  vim.api.nvim_echo({ { "● [Semantic Search] ", "ModeMsg" }, { "Locating code with LLM...", "Comment" } }, false, {})
+  local prompt = "where did we implement " .. query .. " (locate the exact source file and line implementing this logic)"
   M.run(prompt, false, function(res)
-    if res and res.active_target then
+    if res and res.active_target and res.active_target.path then
+      local target = res.active_target
+      jump_to_target(target)
+      update_queue_display(M.state.queue and #M.state.queue > 1)
       vim.api.nvim_echo({
-        { "● [Agent Find] ", "ModeMsg" },
-        { string.format("%s:%d", res.active_target.path, res.active_target.line or 1), "Directory" },
-        { res.active_target.description and (" — " .. res.active_target.description) or "", "Comment" },
+        { "● [Found] ", "ModeMsg" },
+        { string.format("%s:%d", target.path, target.line or 1), "Directory" },
+        { target.description and (" — " .. target.description) or "", "Normal" },
       }, false, {})
     else
-      vim.notify("No matches found for '" .. query .. "'", vim.log.levels.WARN)
+      -- Fallback to ranked local search if model was offline or returned nothing
+      local candidates = search_and_rank(query, root)
+      if #candidates > 0 then
+        local best = candidates[1]
+        M.state.queue = candidates
+        M.state.queue_index = 1
+        jump_to_target(best)
+        update_queue_display(#candidates > 1)
+        vim.api.nvim_echo({
+          { "● [Found (Local)] ", "ModeMsg" },
+          { string.format("%s:%d", best.path, best.line), "Directory" },
+          { string.format(" — %s (%d match%s)", best.description, #candidates, #candidates > 1 and "es" or ""), "Normal" },
+        }, false, {})
+      else
+        vim.notify("No matches found for '" .. query .. "'", vim.log.levels.WARN)
+      end
     end
   end)
 end
