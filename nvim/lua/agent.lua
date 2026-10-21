@@ -2431,13 +2431,19 @@ function M.get_reviews(status_filter)
   end
 
   table.sort(reviews, function(a, b)
-    return (a.created_at or "") > (b.created_at or "")
+    if a.order and b.order and a.order ~= b.order then
+      return a.order < b.order
+    end
+    if (a.created_at or "") ~= (b.created_at or "") then
+      return (a.created_at or "") < (b.created_at or "")
+    end
+    return (a.id or "") < (b.id or "")
   end)
   return reviews
 end
 
 --- Create a review record and patch on disk
-function M.create_review(file_path, start_line, old_count, old_lines, new_lines, task_id, desc, status)
+function M.create_review(file_path, start_line, old_count, old_lines, new_lines, task_id, desc, status, order_idx, is_task_stub)
   status = status or "unreviewed"
   local root = get_root_dir()
   local rdir = get_reviews_dir(root)
@@ -2461,10 +2467,10 @@ function M.create_review(file_path, start_line, old_count, old_lines, new_lines,
     "+++ b/" .. rel_file,
     string.format("@@ -%d,%d +%d,%d @@", start_line, math.max(1, old_count), start_line, math.max(1, #new_lines)),
   }
-  for _, l in ipairs(old_lines) do
+  for _, l in ipairs(old_lines or {}) do
     table.insert(patch_lines, "-" .. l)
   end
-  for _, l in ipairs(new_lines) do
+  for _, l in ipairs(new_lines or {}) do
     table.insert(patch_lines, "+" .. l)
   end
 
@@ -2479,9 +2485,11 @@ function M.create_review(file_path, start_line, old_count, old_lines, new_lines,
     start_line = start_line,
     old_lines_count = old_count,
     new_lines_count = #new_lines,
-    old_lines = old_lines,
-    new_lines = new_lines,
+    old_lines = old_lines or {},
+    new_lines = new_lines or {},
     description = desc or "",
+    order = order_idx or 9999,
+    is_task_stub = is_task_stub or false,
     created_at = os.date("%Y-%m-%d %H:%M:%S"),
     status = status,
     patch_file = ".agent/reviews/" .. rev_id .. ".patch",
@@ -2567,6 +2575,16 @@ function M.revert_review(rev_id)
     reverted = true
   end
 
+  if rev.is_new_file and vim.fn.filereadable(target_full) == 1 then
+    local cur_content = vim.fn.readfile(target_full)
+    if #cur_content == 0 or (#cur_content == 1 and vim.trim(cur_content[1]) == "") then
+      pcall(vim.fn.delete, target_full)
+      if bufnr and bufnr ~= -1 and vim.api.nvim_buf_is_valid(bufnr) then
+        pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+      end
+    end
+  end
+
   -- Update review JSON
   rev.status = "rejected"
   rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
@@ -2624,7 +2642,9 @@ function M.accept_review(rev_id)
   end
 
   M.clear_diff(true)
-  promote_contract_to_approved(rev.filepath or rev.file, rev.task_id)
+  if not rev.is_task_stub then
+    promote_contract_to_approved(rev.filepath or rev.file or rev.abs_file or rev.target_file, rev.task_id)
+  end
   rev.status = "accepted"
   rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
   local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
@@ -2633,7 +2653,11 @@ function M.accept_review(rev_id)
   end
 
   M.state.current_review = nil
-  vim.notify(string.format("✓ Tasks: %s accepted and approved!", rev.id), vim.log.levels.INFO)
+  if rev.is_task_stub then
+    vim.notify(string.format("✓ Tasks: Task stub '%s' accepted! Ready to implement via :Tasks start %s", rev.task_id or rev.id, rev.task_id or rev.id), vim.log.levels.INFO)
+  else
+    vim.notify(string.format("✓ Tasks: %s accepted and approved!", rev.id), vim.log.levels.INFO)
+  end
 
   -- Check and notify if this task unblocks downstream tasks
   local accepted_id = rev.task_id
@@ -3232,6 +3256,63 @@ local function parse_solution_from_raw(raw)
 end
 
 M.parse_solution_from_raw = parse_solution_from_raw
+
+--- Robust JSON extractor for LLM responses (supports raw JSON, markdown code blocks, and bracket scanning)
+local function extract_json_object(raw)
+  if not raw or raw == "" then return nil end
+  -- 1. Try direct decode
+  local ok, data = pcall(vim.fn.json_decode, vim.trim(raw))
+  if ok and type(data) == "table" then return data end
+
+  -- 2. Try markdown code block
+  local block = raw:match("```json%s*\n(.-)\n%s*```") or raw:match("```%s*\n(.-)\n%s*```")
+  if block then
+    local ok_b, data_b = pcall(vim.fn.json_decode, vim.trim(block))
+    if ok_b and type(data_b) == "table" then return data_b end
+  end
+
+  -- 3. Bracket scanner
+  local s_idx = 1
+  while s_idx <= #raw do
+    local b_start = raw:find("{", s_idx, true)
+    if not b_start then break end
+    local depth = 0
+    local in_str = false
+    local escape = false
+    local b_end = nil
+    for i = b_start, #raw do
+      local c = raw:sub(i, i)
+      if escape then
+        escape = false
+      elseif c == "\\" then
+        escape = true
+      elseif c == '"' then
+        in_str = not in_str
+      elseif not in_str then
+        if c == "{" then
+          depth = depth + 1
+        elseif c == "}" then
+          depth = depth - 1
+          if depth == 0 then
+            b_end = i
+            break
+          end
+        end
+      end
+    end
+    if b_end then
+      local candidate = raw:sub(b_start, b_end)
+      local cok, cdata = pcall(vim.fn.json_decode, candidate)
+      if cok and type(cdata) == "table" then
+        return cdata
+      end
+      s_idx = b_start + 1
+    else
+      break
+    end
+  end
+  return nil
+end
 
 --- Find and execute in-line TODO/FIXME task in the current buffer or repository
 function M.run_todo(bufnr, target_arg)
@@ -3879,12 +3960,285 @@ function M.setup()
     end
   end
 
-  --- Add an in-line task at the cursor position in active buffer or specified target file
+  --- Insert a single task stub at specified file and line, registering it as a review
+  function M.insert_single_task_stub(file_arg, line_arg, desc_arg, win)
+    local root = get_root_dir()
+    local full_path = file_arg:match("^/") and file_arg or (root .. "/" .. file_arg)
+    local rel_file = vim.fn.fnamemodify(full_path, ":.")
+    local leader = get_comment_leader(rel_file)
+
+    local is_new_file = (vim.fn.filereadable(full_path) ~= 1)
+    vim.fn.mkdir(vim.fn.fnamemodify(full_path, ":h"), "p")
+    local bufnr = vim.fn.bufadd(full_path)
+    vim.fn.bufload(bufnr)
+    local total_lines = vim.api.nvim_buf_line_count(bufnr)
+    local is_empty = (total_lines <= 1 and (vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] or "") == "")
+    local insert_idx = is_empty and 0 or math.min(total_lines, math.max(0, (line_arg or 1) - 1))
+
+    local slug = desc_arg:lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 32):gsub("%-+$", "")
+    if slug == "" then slug = "task" end
+
+    local header = string.format("%s TODO(%s | tier:A | status:TODO): %s", leader, slug, desc_arg)
+    local stub_lines = { header }
+
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, insert_idx, is_empty and 1 or insert_idx, false, stub_lines)
+    vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write!") end)
+
+    local rev = M.create_review(full_path, insert_idx + 1, 0, {}, stub_lines, slug, desc_arg, "unreviewed", 1, true)
+    if rev then
+      rev.is_new_file = is_new_file
+      local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
+      if vim.fn.filereadable(meta_path) == 1 then
+        vim.fn.writefile({ vim.fn.json_encode(rev) }, meta_path)
+      end
+      M.list_reviews_qf()
+      M.show_review(rev)
+      vim.notify(string.format("● [Tasks] Task stub '%s' added to :Tasks review.", slug), vim.log.levels.INFO)
+    end
+  end
+
+  --- Decompose a high-level specification across the repository, write TODO stubs in each location,
+  --- and register them in :Tasks review in their logical topological order.
+  function M.decompose_and_add_tasks(specification, win)
+    specification = vim.trim(specification or "")
+    if specification == "" then return end
+
+    local root = get_root_dir()
+    pcall(vim.fn.chdir, root)
+
+    -- Collect repository files
+    local files_out = vim.fn.system({ "git", "-C", root, "ls-files" })
+    local file_list = {}
+    if vim.v.shell_error == 0 and files_out ~= "" then
+      for line in files_out:gmatch("[^\r\n]+") do
+        local low = line:lower()
+        if not low:match("%.olean$") and not low:match("%.tex$") and not low:match("%.jsonl$")
+           and not low:match("%.log$") and not low:match("%.min%.js$") and not low:match("%.lock$")
+           and not low:match("%.png$") and not low:match("%.svg$") and not low:match("^%.git/") then
+          if #file_list < 150 then
+            table.insert(file_list, line)
+          end
+        end
+      end
+    end
+
+    if #file_list == 0 then
+      local find_out = vim.fn.system({ "find", root, "-maxdepth", "3", "-not", "-path", "*/.*", "-not", "-path", "*/target/*", "-not", "-path", "*/node_modules/*", "-type", "f" })
+      if vim.v.shell_error == 0 and find_out ~= "" then
+        for line in find_out:gmatch("[^\r\n]+") do
+          local rel = line:gsub("^" .. vim.pesc(root) .. "/?", "")
+          if rel ~= "" and not rel:match("%.olean$") and not rel:match("%.tex$") and #file_list < 150 then
+            table.insert(file_list, rel)
+          end
+        end
+      end
+    end
+
+    -- Collect existing tasks to give architecture context
+    local all_tasks = scan_repository_tasks()
+    local existing_tasks_list = {}
+    for _, t in ipairs(all_tasks) do
+      if #existing_tasks_list < 30 then
+        local id_str = (t.task_id and t.task_id ~= "task") and t.task_id or ""
+        table.insert(existing_tasks_list, string.format("- [%s] %s in %s:%d (%s)", t.status or "TODO", id_str, t.file, t.line, t.description or ""))
+      end
+    end
+
+    -- Optional active editor context hint
+    local active_hint = ""
+    local cur_buf = win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win)
+    if cur_buf and vim.bo[cur_buf].buftype == "" then
+      local cur_name = vim.api.nvim_buf_get_name(cur_buf)
+      if cur_name ~= "" and vim.fn.filereadable(cur_name) == 1 then
+        local rel = vim.fn.fnamemodify(cur_name, ":.")
+        local lnum = vim.api.nvim_win_get_cursor(win)[1]
+        active_hint = string.format("Active editor buffer: %s (around line %d)", rel, lnum)
+      end
+    end
+
+    local prompt = string.format([[
+You are an expert software architect.
+A developer requested the following specification to be planned and split into in-tree tasks across the repository:
+
+SPECIFICATION:
+"%s"
+
+%s
+
+REPOSITORY ROOT: %s
+KEY FILES IN REPOSITORY:
+%s
+
+EXISTING REPOSITORY TASKS:
+%s
+
+GOAL:
+Analyze the repository structure, code conventions, and file hierarchy. Split this specification into discrete, actionable TODO task stubs placed across the appropriate files in the codebase.
+
+REQUIREMENTS:
+1. Decompose the specification into 1 to 5 concrete subtasks/parts.
+2. For each part, specify:
+   - "task_id": concise unique kebab-case slug identifier (e.g. "auth-jwt-store", "auth-token-endpoint").
+   - "file": repository-relative path where this stub should be inserted (use an existing file if suitable, or a standard new file path matching codebase conventions).
+   - "line": 1-based line number where the stub should be inserted (e.g. 1 at top of file, or after imports, or near relevant struct/function).
+   - "tier": "A" (foundational/prerequisite), "B" (core implementation), or "C" (integration/tests).
+   - "depends_on": array of task_id strings that must be completed before this part.
+   - "blocks": array of task_id strings that depend on this part.
+   - "action": precise 1-2 sentence description of what this part must implement.
+   - "criteria": concise verification criterion.
+3. Order the "parts" array in STRICT LOGICAL TOPOLOGICAL ORDER:
+   Prerequisites and foundational parts MUST appear before parts that depend on them.
+4. Output STRICT JSON ONLY matching this schema:
+{
+  "summary": "<one-sentence summary of decomposition>",
+  "parts": [
+    {
+      "task_id": "slug-id",
+      "file": "path/to/file.ext",
+      "line": 1,
+      "tier": "A",
+      "depends_on": [],
+      "blocks": ["downstream-slug"],
+      "action": "Description of action",
+      "criteria": "Acceptance criteria"
+    }
+  ]
+}
+Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
+]], specification, active_hint, root, table.concat(file_list, "\n"), table.concat(existing_tasks_list, "\n"))
+
+    local opencode_bin = vim.fn.exepath("opencode")
+    local agy_bin = vim.fn.exepath("agy")
+    local cmd = {}
+    if opencode_bin ~= "" then
+      cmd = { opencode_bin, "run", "--format", "json", prompt }
+    elseif agy_bin ~= "" then
+      cmd = { agy_bin, "-p", prompt, "--model", "Gemini 3.8 Flash (Low)", "--dangerously-skip-permissions", "--disable-slash-commands" }
+    else
+      vim.notify("Tasks: Neither 'opencode' nor 'agy' found in PATH", vim.log.levels.ERROR)
+      return
+    end
+
+    M.state.is_busy = true
+    if M.state.active_job then
+      pcall(function() M.state.active_job:kill(9) end)
+      M.state.active_job = nil
+    end
+
+    vim.api.nvim_echo({ { string.format("● [Tasks] Planning and splitting '%s' across repository...", specification), "ModeMsg" } }, false, {})
+    vim.cmd("redraw")
+
+    local stdout_chunks = {}
+    local job_timeout = vim.uv.new_timer()
+    job_timeout:start(45000, 0, vim.schedule_wrap(function()
+      if M.state.active_job then
+        vim.notify("Tasks: Task decomposition timed out after 45s. Cancelled.", vim.log.levels.WARN)
+        pcall(function() M.state.active_job:kill(9) end)
+        M.state.active_job = nil
+        M.state.is_busy = false
+      end
+      if job_timeout then
+        pcall(function() job_timeout:stop(); job_timeout:close() end)
+        job_timeout = nil
+      end
+    end))
+
+    M.state.active_job = vim.system(cmd, { text = true, stdout = function(_, data)
+      if data then table.insert(stdout_chunks, data) end
+    end }, vim.schedule_wrap(function(res)
+      M.state.active_job = nil
+      M.state.is_busy = false
+      if job_timeout then
+        pcall(function() job_timeout:stop(); job_timeout:close() end)
+        job_timeout = nil
+      end
+
+      local raw = table.concat(stdout_chunks, "")
+      local data = extract_json_object(raw)
+      local parts = data and data.parts
+
+      if not parts or #parts == 0 then
+        -- Fallback: create a single task with the specification
+        local fallback_file = "TODO.md"
+        if cur_buf and vim.api.nvim_buf_is_valid(cur_buf) and vim.bo[cur_buf].buftype == "" then
+          local cur_name = vim.api.nvim_buf_get_name(cur_buf)
+          if cur_name ~= "" then fallback_file = vim.fn.fnamemodify(cur_name, ":.") end
+        end
+        local slug = specification:lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 28):gsub("%-+$", "")
+        if slug == "" then slug = "task" end
+        parts = {
+          {
+            task_id = slug,
+            file = fallback_file,
+            line = 1,
+            tier = "A",
+            depends_on = {},
+            blocks = {},
+            action = specification,
+          }
+        }
+      end
+
+      local created_reviews = {}
+      for idx, part in ipairs(parts) do
+        local rel_file = (part.file or "TODO.md"):gsub("^/+", "")
+        local full_path = root .. "/" .. rel_file
+        local leader = get_comment_leader(rel_file)
+
+        local dep_str = ""
+        if part.depends_on and #part.depends_on > 0 then
+          dep_str = string.format(" | depends_on:[%s]", table.concat(part.depends_on, ", "))
+        end
+        local blk_str = ""
+        if part.blocks and #part.blocks > 0 then
+          blk_str = string.format(" | blocks:[%s]", table.concat(part.blocks, ", "))
+        end
+        local tier_str = string.format(" | tier:%s", part.tier or "A")
+        local header = string.format("%s TODO(%s%s%s | status:TODO): %s", leader, part.task_id or "task", tier_str, dep_str .. blk_str, part.action or specification)
+        local stub_lines = { header }
+        if part.criteria and vim.trim(part.criteria) ~= "" then
+          table.insert(stub_lines, string.format("%s   Criterion: %s", leader, vim.trim(part.criteria)))
+        end
+
+        local is_new_file = (vim.fn.filereadable(full_path) ~= 1)
+        vim.fn.mkdir(vim.fn.fnamemodify(full_path, ":h"), "p")
+        local bufnr = vim.fn.bufadd(full_path)
+        vim.fn.bufload(bufnr)
+        local total_lines = vim.api.nvim_buf_line_count(bufnr)
+        local is_empty = (total_lines <= 1 and (vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] or "") == "")
+        local req_line = tonumber(part.line) or 1
+        local insert_idx = is_empty and 0 or math.min(total_lines, math.max(0, req_line - 1))
+
+        vim.bo[bufnr].modifiable = true
+        vim.api.nvim_buf_set_lines(bufnr, insert_idx, is_empty and 1 or insert_idx, false, stub_lines)
+        vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write!") end)
+
+        local rev = M.create_review(full_path, insert_idx + 1, 0, {}, stub_lines, part.task_id or "task", part.action or specification, "unreviewed", idx, true)
+        if rev then
+          rev.is_new_file = is_new_file
+          local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
+          if vim.fn.filereadable(meta_path) == 1 then
+            vim.fn.writefile({ vim.fn.json_encode(rev) }, meta_path)
+          end
+          table.insert(created_reviews, rev)
+        end
+      end
+
+      if #created_reviews > 0 then
+        M.list_reviews_qf()
+        M.show_review(created_reviews[1])
+        vim.notify(string.format("● [Tasks] Specification split into %d tasks across repository in logical order. Use :Tasks review to inspect, :Tasks accept <id> to approve.", #created_reviews), vim.log.levels.INFO)
+      end
+    end))
+  end
+
+  --- Add an in-line task or split a specification across the repository
   function M.add_task(arg_str, win)
     win = win or get_primary_editor_win()
     arg_str = vim.trim(arg_str or "")
     if arg_str == "" then
-      vim.ui.input({ prompt = "Task description: " }, function(input)
+      vim.ui.input({ prompt = "Specification to split into tasks across repo: " }, function(input)
         if input and vim.trim(input) ~= "" then
           M.add_task(input, win)
         end
@@ -3892,85 +4246,19 @@ function M.setup()
       return
     end
 
-    local bufnr = vim.api.nvim_win_get_buf(win)
-    local filepath = vim.api.nvim_buf_get_name(bufnr)
-    local cur_line = vim.api.nvim_win_get_cursor(win)[1]
+    -- Clean surrounding quotes if passed as "specification" or 'specification'
+    arg_str = arg_str:gsub('^["\']', ''):gsub('["\']$', '')
 
-    -- Check if user specified a file:line in arg (e.g. :Task add src/main.rs:10 description)
+    -- Check if user explicitly provided a file:line syntax (e.g. src/auth.rs:42 do something)
     local file_arg, line_arg, desc_arg = arg_str:match("^([^%s:]+):(%d+)%s+(.*)$")
     if file_arg and line_arg and desc_arg then
-      local root = get_root_dir()
-      local full = file_arg:match("^/") and file_arg or (root .. "/" .. file_arg)
-      local tbuf = vim.fn.bufadd(full)
-      vim.fn.bufload(tbuf)
-      bufnr = tbuf
-      filepath = full
-      cur_line = tonumber(line_arg) or 1
-      arg_str = desc_arg
-    else
-      local f_arg, d_arg = arg_str:match("^([^%s]+%.[%w]+)%s+(.*)$")
-      if f_arg and d_arg then
-        local root = get_root_dir()
-        local full = f_arg:match("^/") and f_arg or (root .. "/" .. f_arg)
-        local tbuf = vim.fn.bufadd(full)
-        vim.fn.bufload(tbuf)
-        bufnr = tbuf
-        filepath = full
-        cur_line = 1
-        arg_str = d_arg
-      end
-    end
-
-    if not filepath or filepath == "" or vim.bo[bufnr].buftype ~= "" then
-      vim.notify("Error: No active editable file. Specify a file path: :Add <file> <description>", vim.log.levels.ERROR)
+      M.insert_single_task_stub(file_arg, tonumber(line_arg), desc_arg, win)
       return
     end
 
-    local leader = get_comment_leader(filepath)
-    local indent = ""
-    local total_lines = vim.api.nvim_buf_line_count(bufnr)
-    if cur_line <= total_lines and cur_line > 0 then
-      local line_content = vim.api.nvim_buf_get_lines(bufnr, cur_line - 1, cur_line, false)[1] or ""
-      indent = line_content:match("^(%s*)") or ""
-    end
-
-    local slug = arg_str:lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 32):gsub("%-+$", "")
-    if slug == "" then slug = "task" end
-
-    local task_line_str = string.format("%s%s TODO(%s): %s", indent, leader, slug, arg_str)
-    local insert_idx = math.max(0, cur_line - 1)
-    vim.bo[bufnr].modifiable = true
-    vim.api.nvim_buf_set_lines(bufnr, insert_idx, insert_idx, false, { task_line_str })
-    vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write") end)
-
-    local new_line_num = insert_idx + 1
-    if win and vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_set_buf(win, bufnr)
-      pcall(vim.api.nvim_win_set_cursor, win, { new_line_num, #indent })
-      vim.api.nvim_win_call(win, function() vim.cmd("normal! zz") end)
-      local ns = vim.api.nvim_create_namespace("agent_jump_flash")
-      vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
-      vim.api.nvim_buf_add_highlight(bufnr, ns, "IncSearch", new_line_num - 1, 0, -1)
-      vim.defer_fn(function()
-        if vim.api.nvim_buf_is_valid(bufnr) then
-          vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
-        end
-      end, 1000)
-    end
-
-    local rel_path = vim.fn.fnamemodify(filepath, ":.")
-    local root = get_root_dir()
-    local dup_notice = ""
-    local dup_candidates = search_and_rank(arg_str, root)
-    if #dup_candidates > 0 and dup_candidates[1].score >= 260 then
-      dup_notice = string.format(" [Note: '%s' exists in %s:%d]", dup_candidates[1].description, dup_candidates[1].path, dup_candidates[1].line)
-    end
-
-    vim.api.nvim_echo({
-      { "● [Task Added] ", "ModeMsg" },
-      { string.format("%s:%d", rel_path, new_line_num), "Directory" },
-      { string.format(" — %s%s (Run :Tasks start to implement)", task_line_str:gsub("^%s*", ""), dup_notice), "Normal" },
-    }, false, {})
+    -- Otherwise, find out how to split this task into parts across the repo,
+    -- write a TODO stub in each location in logical order, and add to :Tasks review
+    M.decompose_and_add_tasks(arg_str, win)
   end
 
   function M.start_task(raw)
@@ -4264,6 +4552,8 @@ function M.setup()
   M.tasks = M.show_tasks
   M.show_tasks = M.show_tasks
   M.scan_repository_tasks = scan_repository_tasks
+  M.decompose_and_add_tasks = M.decompose_and_add_tasks
+  M.insert_single_task_stub = M.insert_single_task_stub
 end
 
 M.get_root_dir = get_root_dir
@@ -4272,6 +4562,8 @@ M.search_and_rank = search_and_rank
 M.find = M.find
 M.ask = M.ask
 M.add_task = M.add_task
+M.decompose_and_add_tasks = M.decompose_and_add_tasks
+M.insert_single_task_stub = M.insert_single_task_stub
 M.review = M.review
 M.git_review = M.review
 M.review_command = M.review
