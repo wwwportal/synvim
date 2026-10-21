@@ -3177,6 +3177,81 @@ function M.run_file(file_arg)
   M.run_todo(bufnr, 1)
 end
 
+--- Display a centered, minimalist floating window showing all synvim commands and keybindings
+local function show_help()
+  local lines = {
+    "synvim - commands & usage",
+    "─────────────────────────────────────────────────────────────────────────────",
+    "",
+    "Search & Navigation",
+    "  :Grep <pattern>        Fast local regex search with quickfix results",
+    "  :Find <concept>        Semantic LLM search jumping directly to relevant code",
+    "  :Ask <question>        Navigate to code and insert an in-line explanation diff",
+    "",
+    "Task Management",
+    "  :Add <desc>            Insert standard // TODO(slug): desc comment at cursor",
+    "  :Task add <desc>       Alias for :Add",
+    "  :Do                    Implement nearest task visible in the active window",
+    "  :Do <id|prompt>        Implement specified task contract or instruction",
+    "  :Stop                  Abort running background LLM job and clear diffs",
+    "  :Queue                 Toggle bottom task and search result queue",
+    "  :Reindex               Reindex all repository task contracts sequentially",
+    "",
+    "Review & Git",
+    "  :Review                Open side-by-side Diffview for pending changes",
+    "  :Accept [file|all]     Stage file or commit all changes (Approved-by)",
+    "  :Reject [file|all]     Discard pending changes and revert files",
+    "  :Revise <prompt>       Request revisions to current diff in natural language",
+    "",
+    "Specs & Code Graph",
+    "  :Specs (or :Tasks)     In-tree task and specification agenda",
+    "  :Specs graph           Interactive DAG dependency visualization",
+    "  :Lgcc                  Run logic compiler AST router on active buffer",
+    "",
+    "Window & Split Keybindings",
+    "  Alt + Arrows           Navigate focus across splits",
+    "  Alt + h/j/k/l          Swap active split with neighbor",
+    "  Alt + z                Toggle maximize / zoom active split",
+    "  Alt + q / Alt + w      Close active split",
+    "  Alt + + / Alt + _      Split right / split down with a new terminal",
+    "",
+    "─────────────────────────────────────────────────────────────────────────────",
+    "Press 'q' or <Esc> to close",
+  }
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].filetype = "synvim-help"
+
+  local width = 77
+  local height = #lines
+  local ui = vim.api.nvim_list_uis()[1]
+  local total_w = ui and ui.width or vim.o.columns
+  local total_h = ui and ui.height or vim.o.lines
+  local row = math.max(1, math.floor((total_h - height) / 2))
+  local col = math.max(1, math.floor((total_w - width) / 2))
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    row = row,
+    col = col,
+    width = width,
+    height = height,
+    style = "minimal",
+    border = "rounded",
+  })
+
+  local close_fn = function()
+    pcall(vim.api.nvim_win_close, win, true)
+  end
+
+  vim.keymap.set("n", "q", close_fn, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<Esc>", close_fn, { buffer = buf, silent = true, nowait = true })
+end
+
 function M.setup()
   setup_highlights()
 
@@ -3591,7 +3666,22 @@ function M.setup()
     desc = "Reject and revert current file or all files (:Reject [all|file|reason])",
   })
 
-  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :find, :grep, :ask, :add, :task, :reindex, :lgcc, :queue, :stop, :gitreview)
+  vim.api.nvim_create_user_command("Synvim", function(ctx)
+    local arg = vim.trim(ctx.args or ""):lower()
+    if arg == "help" or arg == "" then
+      show_help()
+    else
+      vim.notify("synvim: Unknown argument '" .. ctx.args .. "'. Run :Synvim help for usage.", vim.log.levels.WARN)
+    end
+  end, {
+    nargs = "?",
+    complete = function(arglead, cmdline)
+      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "help" })
+    end,
+    desc = "Show synvim commands and usage (:Synvim help)",
+  })
+
+  -- Enable native lowercase commands (:accept, :reject, :revise, :do, :todo, :find, :grep, :ask, :add, :task, :reindex, :lgcc, :queue, :stop, :gitreview, :synvim)
   pcall(vim.cmd, [[
     cnoreabbrev <expr> accept (getcmdtype() ==# ':' && getcmdline() ==# 'accept') ? 'Accept' : 'accept'
     cnoreabbrev <expr> reject (getcmdtype() ==# ':' && getcmdline() ==# 'reject') ? 'Reject' : 'reject'
@@ -3609,6 +3699,7 @@ function M.setup()
     cnoreabbrev <expr> stop (getcmdtype() ==# ':' && getcmdline() ==# 'stop') ? 'Stop' : 'stop'
     cnoreabbrev <expr> review (getcmdtype() ==# ':' && getcmdline() ==# 'review') ? 'Review' : 'review'
     cnoreabbrev <expr> gitreview (getcmdtype() ==# ':' && getcmdline() ==# 'gitreview') ? 'GitReview' : 'gitreview'
+    cnoreabbrev <expr> synvim (getcmdtype() ==# ':' && getcmdline() ==# 'synvim') ? 'Synvim' : 'synvim'
   ]])
 
   M.get_root_dir = get_root_dir
@@ -3622,6 +3713,8 @@ function M.setup()
   M.git_review = M.review
   M.review_command = M.review
   M.reindex = M.reindex_tasks
+  M.show_help = show_help
+  M.help = show_help
 end
 
 M.get_root_dir = get_root_dir
@@ -3636,5 +3729,7 @@ M.git_review = M.review
 M.review_command = M.review
 M.reindex = M.reindex_tasks
 M.scaffold_and_run_task = M.scaffold_and_run_task
+M.show_help = show_help
+M.help = show_help
 
 return M
