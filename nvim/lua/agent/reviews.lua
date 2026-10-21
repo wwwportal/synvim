@@ -335,30 +335,34 @@ function M.accept_review(rev_id)
   return true
 end
 
---- List all reviews in quickfix (:Tasks review)
-function M.list_reviews_qf()
+--- List reviews in quickfix (:Tasks review)
+function M.list_reviews_qf(filter)
+  filter = filter or "unreviewed"
   local root = ui.get_root_dir()
-  local all_reviews = M.get_reviews("all")
-  local unreviewed = M.get_reviews("unreviewed")
+  local reviews = M.get_reviews(filter)
+  local unreviewed = (filter == "unreviewed") and reviews or M.get_reviews("unreviewed")
 
-  if #all_reviews == 0 then
-    local git_status = vim.trim(vim.fn.system({ "git", "-C", root, "status", "--porcelain" }))
-    if git_status ~= "" then
-      vim.notify("Tasks: No review records, but uncommitted Git changes exist.", vim.log.levels.INFO)
+  if #reviews == 0 then
+    if filter == "unreviewed" then
+      local all_revs = M.get_reviews("all")
+      if #all_revs > 0 then
+        vim.notify("Tasks: All tasks have been reviewed! Run :Tasks review all to view past history.", vim.log.levels.INFO)
+      else
+        vim.notify("Tasks: No review changes recorded. Run :Tasks start to generate implementations.", vim.log.levels.INFO)
+      end
     else
-      vim.notify("Tasks: No review changes recorded. Run :Tasks start to generate implementations.", vim.log.levels.INFO)
+      vim.notify("Tasks: No review history found.", vim.log.levels.INFO)
     end
     vim.cmd("cclose")
     return
   end
 
   local qf_list = {}
-  for idx, r in ipairs(all_reviews) do
+  for idx, r in ipairs(reviews) do
     local f = r.target_file or r.file or r.filepath or ""
     local full = (f:match("^/") and f) or (root .. "/" .. f)
     local rel_f = f:gsub("^" .. vim.pesc(root) .. "/", ""):gsub("^/+", "")
     local status_label = (r.status == "accepted") and "[APPROVED]" or ((r.status == "rejected") and "[REJECTED]" or "[PENDING]")
-    local item_type = (r.status == "accepted") and "I" or ((r.status == "rejected") and "E" or "W")
     local d = vim.trim(r.description or "")
     if #d > 35 then d = d:sub(1, 32) .. "..." end
     local text = string.format("#%d %s ID: %s (%s)", idx, status_label, r.id or "unknown", r.task_id or "task")
@@ -371,12 +375,15 @@ function M.list_reviews_qf()
       filename = rel_f,
       lnum = r.start_line or 1,
       text = text,
-      type = item_type,
+      type = "", -- Blank so quickfix never displays the misleading red 'error' badge
     })
   end
 
   vim.fn.setqflist(qf_list, "r")
-  vim.fn.setqflist({}, "a", { title = string.format("[Tasks Review: %d pending, %d total]", #unreviewed, #all_reviews) })
+  local title_str = (filter == "unreviewed")
+    and string.format("[Tasks Review: %d pending]", #reviews)
+    or string.format("[Tasks Review History: %d total]", #reviews)
+  vim.fn.setqflist({}, "a", { title = title_str })
 
   local calling_win = vim.api.nvim_get_current_win()
   if vim.bo[vim.api.nvim_win_get_buf(calling_win)].buftype ~= "quickfix" then
@@ -465,6 +472,11 @@ function M.review(subcmd, arg)
   if #all_reviews == 0 then
     vim.notify("Tasks: No reviews recorded. Run :Tasks start to generate implementations.", vim.log.levels.INFO)
     vim.cmd("cclose")
+    return
+  end
+
+  if subcmd == "all" or subcmd == "history" then
+    M.list_reviews_qf("all")
     return
   end
 
