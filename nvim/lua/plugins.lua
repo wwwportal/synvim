@@ -33,11 +33,23 @@ return {
       signs = {
         add          = { text = "│" },
         change       = { text = "│" },
-        delete       = { text = "_" },
+        delete       = { text = "-" },
         topdelete    = { text = "‾" },
         changedelete = { text = "~" },
         untracked    = { text = "┆" },
       },
+      diff_opts = {
+        internal = true,
+        linematch = 60,
+      },
+      word_diff = true,
+      on_attach = function(bufnr)
+        local ok, gs = pcall(require, "gitsigns")
+        if ok and gs then
+          pcall(gs.toggle_deleted, true)
+          pcall(gs.toggle_word_diff, true)
+        end
+      end,
     },
   },
   {

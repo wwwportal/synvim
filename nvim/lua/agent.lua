@@ -55,6 +55,14 @@ local function setup_highlights()
   end
   pcall(vim.api.nvim_set_hl, 0, "GitReviewAdd", { link = "AgentDiffAdd", default = false })
   pcall(vim.api.nvim_set_hl, 0, "GitReviewDelete", { link = "AgentDiffDelete", default = false })
+  pcall(vim.api.nvim_set_hl, 0, "GitSignsDeleteVirtLn", { link = "AgentDiffDelete", default = false })
+  pcall(vim.api.nvim_set_hl, 0, "GitSignsDeleteVirtLnInLine", { link = "AgentDiffDeleteWord", default = false })
+  pcall(vim.api.nvim_set_hl, 0, "GitSignsDeleteInline", { link = "AgentDiffDeleteWord", default = false })
+  pcall(vim.api.nvim_set_hl, 0, "GitSignsDeleteLnInline", { link = "AgentDiffDeleteWord", default = false })
+  pcall(vim.api.nvim_set_hl, 0, "GitSignsAddInline", { link = "AgentDiffAddWord", default = false })
+  pcall(vim.api.nvim_set_hl, 0, "GitSignsAddLnInline", { link = "AgentDiffAddWord", default = false })
+  pcall(vim.api.nvim_set_hl, 0, "GitSignsChangeInline", { link = "AgentDiffAddWord", default = false })
+  pcall(vim.api.nvim_set_hl, 0, "GitSignsChangeLnInline", { link = "AgentDiffAddWord", default = false })
 end
 
 --- Resolve suggested target path cleanly without doubling base_dir
@@ -3916,6 +3924,9 @@ end
 
 function M.setup()
   setup_highlights()
+  vim.api.nvim_create_autocmd("ColorScheme", {
+    callback = setup_highlights,
+  })
 
   vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter", "TermEnter", "TermOpen" }, {
     callback = function(args)
