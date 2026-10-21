@@ -1,7 +1,7 @@
 -- ==============================================================================
 -- specs.lua: Source-First Specification & DAG Navigator
 -- Provides the unified :Specs (and :Tasks) command for Neovim.
--- Displays in-tree source specifications (syn-prover / syn-nvim) or Taskwarrior tasks in a jumpable split.
+-- Displays in-tree source specifications (syn-prover / synvim) or Taskwarrior tasks in a jumpable split.
 --
 -- SPECIFICATION ARCHITECTURE:
 -- In Syntra, each Task Graph node acts as a formal, machine-checked interpretation
@@ -198,18 +198,18 @@ end
 --- Find repository root for Task Graph linting in active split, buffer, terminal cwd, git root, or known repositories
 --- @param target? string
 local function find_lint_tasks(target)
+  local default_prover = vim.fn.expand("~/code/r4-prover")
   local default_syn_prover = vim.fn.expand("~/code/syn-prover")
-  local default_prover = vim.fn.expand("~/code/prover")
   local default_synvim = vim.fn.expand("~/code/synvim")
   local default_syn = vim.fn.expand("~/code/syn-nvim")
   local default_syntra = vim.fn.expand("~/code/syntra-nvim")
 
-  local prover_path = vim.uv.fs_stat(default_syn_prover) and default_syn_prover or default_prover
+  local prover_path = vim.uv.fs_stat(default_prover) and default_prover or default_syn_prover
   local syn_path = vim.uv.fs_stat(default_synvim) and default_synvim or (vim.uv.fs_stat(default_syn) and default_syn or default_syntra)
 
-  if target == "prover" and vim.uv.fs_stat(prover_path) then
+  if (target == "prover" or target == "r4-prover") and vim.uv.fs_stat(prover_path) then
     return prover_path
-  elseif (target == "syntra" or target == "syntra-nvim" or target == "syn" or target == "syn-nvim" or target == "synvim") and vim.uv.fs_stat(syn_path) then
+  elseif (target == "synvim" or target == "syn" or target == "syn-nvim" or target == "syntra") and vim.uv.fs_stat(syn_path) then
     return syn_path
   end
 
@@ -220,10 +220,10 @@ local function find_lint_tasks(target)
     if git_root then
       return git_root
     end
-    if dir:match("/prover") and vim.uv.fs_stat(prover_path) then
+    if (dir:match("/prover") or dir:match("/r4%-prover")) and vim.uv.fs_stat(prover_path) then
       return prover_path
     end
-    if (dir:match("/syn%-nvim") or dir:match("/syntra")) and vim.uv.fs_stat(syn_path) then
+    if (dir:match("/synvim") or dir:match("/syn%-nvim") or dir:match("/syntra")) and vim.uv.fs_stat(syn_path) then
       return syn_path
     end
   end
@@ -1322,7 +1322,7 @@ function M.fix_tasks(origin_win)
 end
 
 --- Main entry point for :Specs (and :Tasks) command
---- @param args? string "prover" | "syn" | "syn-nvim" | "graph" | "add ..." | "fix" | nil
+--- @param args? string "prover" | "synvim" | "syn" | "graph" | "add ..." | "fix" | nil
 function M.tasks(args)
   local origin_win = vim.api.nvim_get_current_win()
   args = args and vim.trim(args) or ""
@@ -1376,14 +1376,14 @@ end
 
 local function task_complete(arglead, cmdline)
   local parts = vim.split(vim.trim(cmdline), "%s+")
-  local subcmds = { "graph", "dag", "tree", "add", "fix", "reindex", "prover", "syn", "synvim", "syn-nvim" }
+  local subcmds = { "graph", "dag", "tree", "add", "fix", "reindex", "prover", "synvim", "syn" }
   if #parts == 2 and not cmdline:match("%s$") then
     return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
   elseif (#parts == 2 and cmdline:match("%s$") and parts[2] == "add") or (#parts == 3 and parts[2] == "add") then
     local add_prefixes = { "TODO:", "FIXME:", "SPEC:", "spec" }
     return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, add_prefixes)
   elseif (#parts >= 2 and (parts[2] == "graph" or parts[2] == "dag" or parts[2] == "tree")) then
-    local graph_opts = { "--reverse", "--all", "prover", "syn", "synvim", "syn-nvim" }
+    local graph_opts = { "--reverse", "--all", "prover", "synvim", "syn" }
     return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, graph_opts)
   end
   return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, subcmds)
