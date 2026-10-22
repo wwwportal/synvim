@@ -18,6 +18,7 @@ local function get_comment_leader(filepath)
     return "//"
   end
 end
+M.get_comment_leader = get_comment_leader
 
 function M.is_todo_comment(line)
   if not line or type(line) ~= "string" then return false end

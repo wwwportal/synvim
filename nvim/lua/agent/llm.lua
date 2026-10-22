@@ -404,6 +404,13 @@ function M.process_agent_response(data, on_done)
     end
   end
 
+  if on_done then
+    state.is_busy = false
+    vim.cmd("redraw")
+    on_done(data)
+    return
+  end
+
   if #queue > 0 then
     state.queue = queue
     state.queue_index = 1
@@ -421,7 +428,6 @@ function M.process_agent_response(data, on_done)
 
   state.is_busy = false
   vim.cmd("redraw")
-  if on_done then on_done(data) end
 end
 
 --- Execute prompt against LLM and process silent structured response
@@ -479,6 +485,7 @@ User Instruction:
 Navigation rules:
 - For navigation and general code questions ("where did we implement X", "where is X", "find X", "show X", "how does X work", "why is Y done"):
   - Set "action": "navigate"
+  - RELEVANCE GUARD: DO NOT place "active_target" in "Current file" unless "Current file" genuinely contains the code answering the user's question! If the question refers to concepts implemented elsewhere in the repository (inspect Available repository files and Search matches), you MUST set "active_target.path" to that relevant file and line. NEVER blindly comment on the opened file if it is not relevant!
   - Pinpoint the exact implementation file and line as "active_target"
   - In "active_target.content", if the code benefits from clarification, provide a crisp, professional in-line comment (using the language's native comment syntax: // or -- or #) to be inserted directly above the target line that indirectly answers the question by making the code self-documenting.
   - NEVER output conversational text or answers in chat. The code and in-line comment ARE the answer.
