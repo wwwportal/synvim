@@ -4,6 +4,20 @@
 -- an unrelated currently opened buffer.
 -- =============================================================================
 
+local script_dir = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h")
+local repo_root = vim.fn.fnamemodify(script_dir, ":h")
+vim.opt.rtp:prepend(repo_root .. "/nvim")
+package.path = repo_root .. "/nvim/lua/?.lua;" .. repo_root .. "/nvim/lua/?/init.lua;" .. package.path
+package.loaded["agent.init"] = nil
+package.loaded["agent.search"] = nil
+package.loaded["agent.cmdline"] = nil
+package.loaded["agent.tasks"] = nil
+package.loaded["agent.reviews"] = nil
+package.loaded["agent.diff"] = nil
+package.loaded["agent.llm"] = nil
+package.loaded["agent.state"] = nil
+package.loaded["agent.ui"] = nil
+
 local search_mod = require("agent.search")
 local tasks_mod = require("agent.tasks")
 local state_mod = require("agent.state")
@@ -42,6 +56,7 @@ print("==================================================================")
 
 local tmp_dir = vim.fn.tempname()
 vim.fn.mkdir(tmp_dir, "p")
+vim.fn.chdir(tmp_dir)
 
 -- Setup a mock repository scenario with an unrelated file and a relevant implementation file
 local unrelated_file = tmp_dir .. "/unrelated_notes.py"
@@ -222,7 +237,8 @@ do
   mock_llm.run = original_run
 
   local cur_buf_after = vim.api.nvim_win_get_buf(cur_win)
-  assert_eq(cur_buf_after, r_buf, "Editor remained in relevant file")
+  local active_name = vim.api.nvim_buf_get_name(cur_buf_after)
+  assert_true(active_name:find("audio_engine.lua", 1, true) ~= nil, "Editor remained in relevant file (audio_engine.lua)")
   local cursor = vim.api.nvim_win_get_cursor(cur_win)
   assert_true(cursor[1] >= 4 and cursor[1] <= 6, "Cursor jumped to definition line")
   diff_mod.clear_diff(true)

@@ -27,7 +27,14 @@ Run `:Synvim help` inside Neovim at any time to view this list.
 | `:Tasks reject <id>` | Reject and revert specific review by ID |
 | `:Tasks stop` | Abort running background synthesis job and clear preview diffs |
 | `:Find <concept>` | Semantic LLM search; jumps directly to relevant code |
-| `:Ask <question>` | Jump to relevant code and insert an in-line explanatory comment |
+| `:Ask <question>` | Jump to relevant code and insert an in-line explanatory comment (supports multi-line visual preview, multi-question queue navigation, and visual range selection) |
+
+## Multi-Line & Multi-Question Entry
+
+When typing `:Ask` or `:Tasks add` in the command line (`:`):
+- **Live Visual Line Break Preview**: A non-focusable floating window dynamically appears flush directly above the command entry line as you type. It visually renders discrete questions (`[Q1]`, `[Q2]`) or tasks (`[T1]`, `[T2]`) with syntax highlighting and automatic word wrapping.
+- **`<C-j>` / `<S-CR>` Shortcut**: Press `<C-j>` or `<S-CR>` while typing in the command line to insert an explicit newline break (`\n`).
+- **Multi-Question Queue**: When multiple questions are asked, the agent locates the answer to Question 1 and queues subsequent questions into the agent agenda. Navigate through all answered locations using `<C-n>` and `<C-p>` (or `:Tasks next` and `:Tasks prev`).
 
 ## Split & Terminal Keybindings
 

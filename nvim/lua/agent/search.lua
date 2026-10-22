@@ -115,6 +115,18 @@ function M.split_questions(input)
     end
   end
 
+  -- 5. Explicit line breaks (raw newlines or \n)
+  local raw_lines = {}
+  for line in str:gmatch("[^\r\n]+") do
+    local t = vim.trim(line)
+    if t ~= "" then
+      table.insert(raw_lines, t)
+    end
+  end
+  if #raw_lines >= 2 then
+    return raw_lines
+  end
+
   return { vim.trim(str:gsub("[\r\n]+", " ")) }
 end
 

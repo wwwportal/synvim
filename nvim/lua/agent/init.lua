@@ -7,6 +7,7 @@ local reviews = require("agent.reviews")
 local llm = require("agent.llm")
 local search = require("agent.search")
 local tasks = require("agent.tasks")
+local cmdline = require("agent.cmdline")
 
 M.state = state_mod.state
 M.ns_diff = state_mod.ns_diff
@@ -222,6 +223,8 @@ function M.setup()
     cnoreabbrev <expr> find (getcmdtype() ==# ':' && getcmdline() ==# 'find') ? 'Find' : 'find'
     cnoreabbrev <expr> synvim (getcmdtype() ==# ':' && getcmdline() ==# 'synvim') ? 'Synvim' : 'synvim'
   ]])
+
+  cmdline.setup()
 end
 
 return M
