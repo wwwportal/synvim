@@ -3,11 +3,17 @@ local state_mod = require("agent.state")
 local ui = require("agent.ui")
 
 local function get_comment_leader(filepath)
+  local base = vim.fn.fnamemodify(filepath, ":t"):lower()
+  if base == "makefile" or base == "dockerfile" or base:match("^dockerfile%.") then
+    return "#"
+  end
   local ext = vim.fn.fnamemodify(filepath, ":e"):lower()
-  if ext == "py" or ext == "sh" or ext == "bash" or ext == "yaml" or ext == "yml" or ext == "toml" or ext == "rb" then
+  if ext == "py" or ext == "sh" or ext == "bash" or ext == "zsh" or ext == "yaml" or ext == "yml" or ext == "toml" or ext == "rb" or ext == "pl" then
     return "#"
   elseif ext == "lua" or ext == "lean" or ext == "hs" or ext == "sql" then
     return "--"
+  elseif ext == "md" or ext == "markdown" then
+    return "- [ ]"
   else
     return "//"
   end
@@ -1235,7 +1241,7 @@ function M.insert_single_task_stub(file_arg, line_arg, desc_arg, win)
   local is_empty = (total_lines <= 1 and (vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] or "") == "")
   local insert_idx = is_empty and 0 or math.min(total_lines, math.max(0, (line_arg or 1) - 1))
 
-  local slug = desc_arg:lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 32):gsub("%-+$", "")
+  local slug = desc_arg:lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 48):gsub("%-+$", "")
   if slug == "" then slug = "task" end
 
   local header = string.format("%s TODO(%s | tier:A | status:TODO): %s", leader, slug, desc_arg)
@@ -1249,10 +1255,7 @@ function M.insert_single_task_stub(file_arg, line_arg, desc_arg, win)
   local rev = rev_mod.create_review(full_path, insert_idx + 1, 0, {}, stub_lines, slug, desc_arg, "unreviewed", 1, true)
   if rev then
     rev.is_new_file = is_new_file
-    local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
-    if vim.fn.filereadable(meta_path) == 1 then
-      vim.fn.writefile({ vim.fn.json_encode(rev) }, meta_path)
-    end
+    rev_mod.save_review_meta(rev)
     rev_mod.list_reviews_qf()
     rev_mod.show_review(rev)
     vim.notify(string.format("● [Tasks] Task stub '%s' added to :Tasks review.", slug), vim.log.levels.INFO)
@@ -1448,7 +1451,7 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
         if cur_name ~= "" then fallback_file = vim.fn.fnamemodify(cur_name, ":.") end
       end
 
-      local slug = specification:lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 28):gsub("%-+$", "")
+      local slug = specification:lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 48):gsub("%-+$", "")
       if slug == "" then slug = "task" end
       parts = {
         {
@@ -1469,13 +1472,28 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
       local full_path = root .. "/" .. rel_file
       local leader = get_comment_leader(rel_file)
 
+      -- Normalize depends_on and blocks if LLM gave string instead of table
+      local dep_list = {}
+      if type(part.depends_on) == "table" then
+        dep_list = part.depends_on
+      elseif type(part.depends_on) == "string" and vim.trim(part.depends_on) ~= "" then
+        dep_list = { vim.trim(part.depends_on) }
+      end
+
+      local blk_list = {}
+      if type(part.blocks) == "table" then
+        blk_list = part.blocks
+      elseif type(part.blocks) == "string" and vim.trim(part.blocks) ~= "" then
+        blk_list = { vim.trim(part.blocks) }
+      end
+
       local dep_str = ""
-      if part.depends_on and #part.depends_on > 0 then
-        dep_str = string.format(" | depends_on:[%s]", table.concat(part.depends_on, ", "))
+      if #dep_list > 0 then
+        dep_str = string.format(" | depends_on:[%s]", table.concat(dep_list, ", "))
       end
       local blk_str = ""
-      if part.blocks and #part.blocks > 0 then
-        blk_str = string.format(" | blocks:[%s]", table.concat(part.blocks, ", "))
+      if #blk_list > 0 then
+        blk_str = string.format(" | blocks:[%s]", table.concat(blk_list, ", "))
       end
       local tier_str = string.format(" | tier:%s", part.tier or "A")
       local header = string.format("%s TODO(%s%s%s | status:TODO): %s", leader, part.task_id or "task", tier_str, dep_str .. blk_str, part.action or specification)
@@ -1500,10 +1518,7 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
       local rev = rev_mod.create_review(full_path, insert_idx + 1, 0, {}, stub_lines, part.task_id or "task", part.action or specification, "unreviewed", idx, true)
       if rev then
         rev.is_new_file = is_new_file
-        local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
-        if vim.fn.filereadable(meta_path) == 1 then
-          vim.fn.writefile({ vim.fn.json_encode(rev) }, meta_path)
-        end
+        rev_mod.save_review_meta(rev)
         table.insert(created_reviews, rev)
       end
     end

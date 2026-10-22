@@ -150,6 +150,10 @@ end
 function M.create_review(file_path, start_line, old_count, old_lines, new_lines, task_id, desc, status, order_idx, is_task_stub)
   status = status or "unreviewed"
   local root = ui.get_root_dir()
+  local file_root = vim.fs.root(file_path, { ".git", "Cargo.toml", "Makefile", "pyproject.toml", "package.json" })
+  if file_root then
+    root = file_root
+  end
   local rdir = M.get_reviews_dir(root)
   local ts = os.time()
   local rev_id = string.format("rev-%d-%04d", ts, math.random(1000, 9999))
@@ -195,6 +199,7 @@ function M.create_review(file_path, start_line, old_count, old_lines, new_lines,
   }
 
   local meta_file = rdir .. "/" .. rev_id .. ".json"
+  meta._json_path = meta_file
   vim.fn.writefile({ vim.fn.json_encode(meta) }, meta_file)
   return meta
 end

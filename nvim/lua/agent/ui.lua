@@ -66,8 +66,6 @@ function M.get_root_dir()
       local root = vim.fs.root(name, { ".git", "Cargo.toml", "Makefile", "pyproject.toml", "package.json" })
       if root and root ~= vim.fn.expand("~") and root ~= "/" then
         candidate = root
-      else
-        candidate = vim.fn.fnamemodify(name, ":p:h")
       end
     end
   end
