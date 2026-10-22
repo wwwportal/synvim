@@ -28,6 +28,74 @@ function M.extract_search_keywords(query)
   return keywords
 end
 
+--- Parse and split multiple questions from a user query (numbered lists, multiple ?, conjunctions)
+function M.split_questions(input)
+  if not input or type(input) ~= "string" then return {} end
+  local str = vim.trim(input)
+  if str == "" then return {} end
+
+  local questions = {}
+
+  -- 1. Numbered questions: "1. ... 2. ..." or "1) ... 2) ..."
+  if str:match("^%s*[0-9]+[%.)]") or str:match("%s+[0-9]+[%.)]%s+") then
+    for part in str:gmatch("[%s\r\n]*[0-9]+[%.)]%s*([^0-9%.)\r\n]+)") do
+      local q = vim.trim(part)
+      if #q >= 3 then
+        table.insert(questions, q)
+      end
+    end
+    if #questions >= 2 then return questions end
+  end
+
+  -- 2. Bullet points: "- ...\n- ..." or "* ...\n* ..."
+  if str:match("[\r\n]%s*[-*]%s+") or str:match("^%s*[-*]%s+") then
+    for line in str:gmatch("[^\r\n]+") do
+      local q = line:gsub("^%s*[-*]%s+", "")
+      q = vim.trim(q)
+      if #q >= 3 then
+        table.insert(questions, q)
+      end
+    end
+    if #questions >= 2 then return questions end
+  end
+
+  -- 3. Multiple question marks: "Where is X? Where is Y?"
+  local q_count = 0
+  for _ in str:gmatch("%?") do q_count = q_count + 1 end
+  if q_count >= 2 then
+    for part in str:gmatch("([^%?]+%?)") do
+      local q = vim.trim(part)
+      q = q:gsub("^[%s,;]+", ""):gsub("^[aA]nd%s+", ""):gsub("^[aA]lso%s*,?%s*", "")
+      if #q >= 5 then
+        table.insert(questions, q)
+      end
+    end
+    local tail = str:match("%?[^%?]+$")
+    if tail then
+      local t = vim.trim(tail:sub(2))
+      t = t:gsub("^[%s,;]+", ""):gsub("^[aA]nd%s+", ""):gsub("^[aA]lso%s*,?%s*", "")
+      if #t >= 8 and (t:lower():find("where") or t:lower():find("how") or t:lower():find("what") or t:lower():find("which")) then
+        table.insert(questions, t)
+      end
+    end
+    if #questions >= 2 then return questions end
+  end
+
+  -- 4. Compound questions with conjunctions ("and where", "and how", "and what", "also where")
+  for _, sep in ipairs({ ", and where", " and where", ", and how", " and how", ", and what", " and what", ", also where", "; where", "; how" }) do
+    local s = str:lower():find(sep, 1, true)
+    if s then
+      local q1 = vim.trim(str:sub(1, s - 1))
+      local q2 = vim.trim(str:sub(s + #sep - 5))
+      if #q1 >= 5 and #q2 >= 5 then
+        return { q1, q2 }
+      end
+    end
+  end
+
+  return { str }
+end
+
 --- Search codebase and rank matches by definition confidence
 function M.search_and_rank(query, root)
   root = root or ui.get_root_dir()
@@ -320,7 +388,25 @@ function M.ask(question, root_override, callback)
     rel_cur_file = vim.fn.fnamemodify(cur_file, ":.")
   end
 
-  local candidates = M.search_and_rank(question, root)
+  local sub_questions = M.split_questions(question)
+  local is_multi = (#sub_questions > 1)
+
+  local candidates = {}
+  local sub_candidates = {}
+
+  if is_multi then
+    for idx, sub_q in ipairs(sub_questions) do
+      local cands = M.search_and_rank(sub_q, root)
+      sub_candidates[idx] = cands
+      for _, c in ipairs(cands) do
+        table.insert(candidates, c)
+      end
+    end
+  else
+    candidates = M.search_and_rank(question, root)
+    sub_candidates[1] = candidates
+  end
+
   local cur_file_is_relevant = false
   for idx = 1, math.min(3, #candidates) do
     if candidates[idx].path == rel_cur_file then
@@ -334,75 +420,167 @@ function M.ask(question, root_override, callback)
     local c = candidates[i]
     table.insert(cand_lines, string.format("- %s:%d: %s", c.path, c.line, vim.trim(c.description or "")))
   end
-  local cand_str = #cand_lines > 0 and ("\nRanked repository code matches for this question:\n" .. table.concat(cand_lines, "\n")) or ""
+  local cand_str = #cand_lines > 0 and ("\nRanked repository code matches:\n" .. table.concat(cand_lines, "\n")) or ""
 
   local anti_blind_comment_rule = ""
   if rel_cur_file ~= "" and not cur_file_is_relevant then
     anti_blind_comment_rule = string.format(
-      "\nCRITICAL: Currently open file is '%s', which is UNRELATED to the question. Do NOT place active_target or comments in '%s'! Target the relevant file (e.g. '%s').\n",
+      "\nCRITICAL: Currently open file is '%s', which is UNRELATED to the question(s). Do NOT place active_target or comments in '%s'! Target the relevant file(s) (e.g. '%s').\n",
       rel_cur_file, rel_cur_file, candidates[1] and candidates[1].path or "the matching file"
     )
   end
 
-  local prompt = string.format(
-    [[Code question: '%s'.%s%s
+  local prompt
+  if is_multi then
+    local q_list = {}
+    for i, sq in ipairs(sub_questions) do
+      table.insert(q_list, string.format("Question %d: '%s'", i, sq))
+    end
+    prompt = string.format(
+      [[The developer asked MULTIPLE questions about the codebase:
+%s%s%s
+
+INSTRUCTIONS FOR MULTIPLE QUESTIONS:
+1. active_target MUST pinpoint the exact file and line answering Question 1, with an in-line clarifying comment (e.g. // NOTE: ... or # NOTE: ... or -- NOTE: ...) in active_target.content.
+2. In 'queue', provide an entry for EACH subsequent question (Question 2, Question 3, etc.) containing:
+   - "path": repository-relative path to the file answering that question.
+   - "line": line number answering that question.
+   - "description": "[Q%%d] Summary of answer to Question %%d",
+   - "content": concise in-line clarifying comment for that question.
+3. Output STRICT JSON with "action": "navigate", "active_target": {...}, "queue": [...] ]],
+      table.concat(q_list, "\n"), cand_str, anti_blind_comment_rule
+    )
+  else
+    prompt = string.format(
+      [[Code question: '%s'.%s%s
 
 INSTRUCTIONS:
 1. Pinpoint the exact source file and line answering this question.
 2. In active_target.content, produce a concise, professional in-line comment (using the target language's native comment prefix, e.g. // NOTE: ... or # NOTE: ... or -- NOTE: ...) placed directly above the target line that makes the code self-documenting and clarifies the answer.
 3. Output STRICT JSON with "action": "navigate", "active_target": {"path": "<file>", "line": <line>, "content": "<comment + target line>"}]],
-    question, cand_str, anti_blind_comment_rule
-  )
+      question, cand_str, anti_blind_comment_rule
+    )
+  end
 
-  vim.api.nvim_echo({ { "● [Navigating to Code] ", "ModeMsg" }, { "Locating line & preparing in-line clarification...", "Comment" } }, false, {})
+  vim.api.nvim_echo({ { "● [Navigating to Code] ", "ModeMsg" }, { is_multi and string.format("Locating answers for %d questions...", #sub_questions) or "Locating line & preparing in-line clarification...", "Comment" } }, false, {})
 
   llm_mod.run(prompt, false, function(res)
     local target = res and res.active_target
-    local target_path = target and target.path and vim.trim(target.path) or ""
-    if target_path:sub(1, #root) == root then
-      target_path = target_path:sub(#root + 1):gsub("^/+", "")
-    end
-    target_path = target_path:gsub("^/+", ""):gsub("^%./", "")
+    local function sanitize_item(it, default_best, label)
+      if not it or not it.path or it.path == "" then
+        if default_best then
+          return {
+            path = default_best.path,
+            line = default_best.line,
+            col = default_best.col or 1,
+            action = "navigate",
+            description = (label and ("[" .. label .. "] ") or "") .. default_best.description,
+            content = nil,
+          }
+        end
+        return nil
+      end
+      local t_path = vim.trim(it.path)
+      if t_path:sub(1, #root) == root then
+        t_path = t_path:sub(#root + 1):gsub("^/+", "")
+      end
+      t_path = t_path:gsub("^/+", ""):gsub("^%./", "")
 
-    local full_target = target_path:match("^/") and target_path or (root .. "/" .. target_path)
-    local full_cur = cur_file ~= "" and (cur_file:match("^/") and cur_file or (root .. "/" .. cur_file)) or ""
+      local full_t = t_path:match("^/") and t_path or (root .. "/" .. t_path)
+      local full_c = cur_file ~= "" and (cur_file:match("^/") and cur_file or (root .. "/" .. cur_file)) or ""
+      local is_blind = (full_t == full_c or t_path == rel_cur_file) and not cur_file_is_relevant
+      local exists = (vim.fn.filereadable(full_t) == 1)
 
-    -- Guard against blindly targeting or commenting on an unrelated open buffer
-    local is_blind_open_file = (full_target == full_cur or target_path == rel_cur_file) and not cur_file_is_relevant
-    local target_exists = (vim.fn.filereadable(full_target) == 1)
-
-    if (not target or target_path == "" or not target_exists or is_blind_open_file) and #candidates > 0 then
-      local best = candidates[1]
-      local clean_content = nil
-      if target and type(target.content) == "string" and not is_blind_open_file then
-        clean_content = target.content
-      elseif target and type(target.content) == "string" and is_blind_open_file then
-        local comment_text = target.content:match("NOTE:%s*(.*)") or target.content:match("[#/%-]+%s*(.*)") or target.content
-        local leader = tasks_mod.get_comment_leader(best.path)
-        clean_content = string.format("%s NOTE: %s", leader, vim.trim(comment_text))
+      if (not exists or is_blind) and default_best then
+        local leader = tasks_mod.get_comment_leader(default_best.path)
+        local comment_text = it.content and (it.content:match("NOTE:%s*(.*)") or it.content:match("[#/%-]+%s*(.*)") or it.content)
+        local clean_content = comment_text and string.format("%s NOTE: %s", leader, vim.trim(comment_text)) or nil
+        return {
+          path = default_best.path,
+          line = default_best.line,
+          col = default_best.col or 1,
+          action = "navigate",
+          description = (label and ("[" .. label .. "] ") or "") .. default_best.description,
+          content = clean_content,
+        }
       end
 
-      target = {
-        path = best.path,
-        line = best.line,
-        col = best.col or 1,
+      return {
+        path = t_path,
+        line = tonumber(it.line) or 1,
+        col = tonumber(it.col) or 1,
         action = "navigate",
-        description = best.description,
-        content = clean_content,
+        description = (label and ("[" .. label .. "] ") or "") .. (it.description or t_path),
+        content = it.content,
       }
     end
 
+    local q1_best = (sub_candidates[1] and sub_candidates[1][1]) or candidates[1]
+    target = sanitize_item(target, q1_best, is_multi and "Q1" or nil)
+
+    local full_queue = {}
+    if target then table.insert(full_queue, target) end
+
+    if is_multi then
+      if res and res.queue and #res.queue > 0 then
+        for q_idx, q_item in ipairs(res.queue) do
+          local sub_best = (sub_candidates[q_idx + 1] and sub_candidates[q_idx + 1][1]) or candidates[q_idx + 1]
+          local clean_q = sanitize_item(q_item, sub_best, string.format("Q%d", q_idx + 1))
+          if clean_q then table.insert(full_queue, clean_q) end
+        end
+      end
+
+      if #full_queue < #sub_questions then
+        for q_idx = #full_queue + 1, #sub_questions do
+          local sub_c = sub_candidates[q_idx]
+          if sub_c and #sub_c > 0 then
+            local best_c = sub_c[1]
+            local leader = tasks_mod.get_comment_leader(best_c.path)
+            local clean_q = {
+              path = best_c.path,
+              line = best_c.line,
+              col = best_c.col or 1,
+              action = "navigate",
+              description = string.format("[Q%d] %s", q_idx, best_c.description),
+              content = string.format("%s NOTE: [Q%d] Answering: %s", leader, q_idx, sub_questions[q_idx]),
+            }
+            table.insert(full_queue, clean_q)
+          end
+        end
+      end
+    elseif res and res.queue and #res.queue > 0 then
+      for _, q_item in ipairs(res.queue) do
+        local clean_q = sanitize_item(q_item, nil, nil)
+        if clean_q and (clean_q.path ~= target.path or clean_q.line ~= target.line) then
+          table.insert(full_queue, clean_q)
+        end
+      end
+    end
+
+    if #full_queue == 0 and #candidates > 0 then
+      full_queue = candidates
+      target = candidates[1]
+    end
+
     if target and target.path and (vim.fn.filereadable(root .. "/" .. target.path) == 1 or target.path:match("^/")) then
-      state.queue = (res and res.queue) or candidates
+      state.queue = full_queue
       state.queue_index = 1
       tasks_mod.jump_to_target(target, cur_win)
-      tasks_mod.update_queue_display(state.queue and #state.queue > 1)
-      vim.api.nvim_echo({
-        { "● [Code Located] ", "ModeMsg" },
-        { string.format("%s:%d", target.path, target.line or 1), "Directory" },
-        { target.description and (" — " .. target.description) or " (clarification previewed in-line)", "Normal" },
-      }, false, {})
-      if callback then callback(target) end
+      tasks_mod.update_queue_display(#full_queue > 1)
+      if is_multi then
+        vim.api.nvim_echo({
+          { string.format("● [Code Located: %d Questions Answered] ", #full_queue), "ModeMsg" },
+          { string.format("[Q1] %s:%d", target.path, target.line or 1), "Directory" },
+          { " — Use <C-n> / :Tasks next to navigate all answers", "Normal" },
+        }, false, {})
+      else
+        vim.api.nvim_echo({
+          { "● [Code Located] ", "ModeMsg" },
+          { string.format("%s:%d", target.path, target.line or 1), "Directory" },
+          { target.description and (" — " .. target.description) or " (clarification previewed in-line)", "Normal" },
+        }, false, {})
+      end
+      if callback then callback(target, full_queue) end
     elseif #candidates > 0 then
       local best = candidates[1]
       state.queue = candidates
@@ -414,10 +592,10 @@ INSTRUCTIONS:
         { string.format("%s:%d", best.path, best.line), "Directory" },
         { string.format(" — %s", best.description), "Normal" },
       }, false, {})
-      if callback then callback(best) end
+      if callback then callback(best, candidates) end
     else
       vim.notify("Could not locate code answering: '" .. question .. "'", vim.log.levels.WARN)
-      if callback then callback(nil) end
+      if callback then callback(nil, {}) end
     end
   end)
 end

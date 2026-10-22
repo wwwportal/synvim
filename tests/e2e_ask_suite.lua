@@ -253,6 +253,103 @@ do
   assert_eq(#u_marks, 0, "No diff extmarks applied")
 end
 
+-- -----------------------------------------------------------------------------
+-- SCENARIO 6: Multi-Question Splitting Parser
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 6] Multi-Question Splitting Parser")
+do
+  -- 1. Numbered questions
+  local q_num = "1. Where is audio volume set? 2. Where is speech transcription handled?"
+  local parts_num = search_mod.split_questions(q_num)
+  assert_eq(#parts_num, 2, "Numbered questions split into 2 parts")
+  assert_true(parts_num[1]:find("audio volume", 1, true) ~= nil, "Part 1 contains audio question")
+  assert_true(parts_num[2]:find("speech transcription", 1, true) ~= nil, "Part 2 contains speech question")
+
+  -- 2. Multiple question marks
+  local q_qm = "Where is the jwt token generated? And where is the user session stored?"
+  local parts_qm = search_mod.split_questions(q_qm)
+  assert_eq(#parts_qm, 2, "Double question-mark query split into 2 parts")
+
+  -- 3. Conjunction split
+  local q_conj = "Where is the router configured, and where are endpoints registered?"
+  local parts_conj = search_mod.split_questions(q_conj)
+  assert_eq(#parts_conj, 2, "Conjunction 'and where' query split into 2 parts")
+end
+
+-- -----------------------------------------------------------------------------
+-- SCENARIO 7: Multi-Question End-to-End Navigation & Queue Population
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 7] Multi-Question End-to-End Navigation & Queue Population")
+do
+  local speech_file = tmp_dir .. "/speech_transcriber.rs"
+  local speech_code = {
+    "pub struct SpeechTranscriber;",
+    "",
+    "impl SpeechTranscriber {",
+    "    pub fn process_whisper_audio() {",
+    "        println!(\"transcribing\");",
+    "    }",
+    "}",
+  }
+  vim.fn.writefile(speech_code, speech_file)
+
+  local u_buf = vim.fn.bufadd(unrelated_file)
+  local cur_win = ui.get_primary_editor_win()
+  vim.api.nvim_win_set_buf(cur_win, u_buf)
+
+  local multi_query = "1. Where is set_microphone_volume defined? 2. Where is process_whisper_audio implemented?"
+
+  local original_run = mock_llm.run
+  mock_llm.run = function(prompt, is_rejection, on_done)
+    -- LLM answers both questions in structured format
+    on_done({
+      action = "navigate",
+      active_target = {
+        path = relevant_file,
+        line = 4,
+        description = "[Q1] set_microphone_volume definition",
+        content = "-- NOTE: Volume control implementation",
+      },
+      queue = {
+        {
+          path = speech_file,
+          line = 4,
+          description = "[Q2] process_whisper_audio implementation",
+          content = "// NOTE: Speech transcription processor",
+        }
+      }
+    })
+  end
+
+  local returned_target = nil
+  local returned_queue = nil
+  search_mod.ask(multi_query, tmp_dir, function(tgt, q)
+    returned_target = tgt
+    returned_queue = q
+  end)
+
+  mock_llm.run = original_run
+
+  assert_true(returned_queue ~= nil and #returned_queue >= 2, "Task queue populated with answers for both questions")
+
+  -- 1. Active window starts at Question 1 (audio_engine.lua)
+  local b1 = vim.api.nvim_win_get_buf(cur_win)
+  assert_true(vim.api.nvim_buf_get_name(b1):find("audio_engine.lua", 1, true) ~= nil, "Active window navigated to Q1 target (audio_engine.lua)")
+
+  -- 2. Advance to Question 2 using tasks_mod.next()
+  tasks_mod.next()
+
+  local b2 = vim.api.nvim_win_get_buf(cur_win)
+  assert_true(vim.api.nvim_buf_get_name(b2):find("speech_transcriber.rs", 1, true) ~= nil, "Advancing queue navigates to Q2 target (speech_transcriber.rs)")
+  local c2 = vim.api.nvim_win_get_cursor(cur_win)
+  assert_true(c2[1] >= 4 and c2[1] <= 6, "Cursor positioned at Q2 definition line")
+
+  -- 3. Verify unrelated file remains 100% clean
+  local u_lines = vim.fn.readfile(unrelated_file)
+  assert_eq(#u_lines, #unrelated_code, "Unrelated open file was NOT modified by either question")
+  diff_mod.clear_diff(true)
+end
+
 -- Clean up
 pcall(vim.fn.delete, tmp_dir, "rf")
 
