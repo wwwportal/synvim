@@ -1229,8 +1229,16 @@ end
 
 function M.insert_single_task_stub(file_arg, line_arg, desc_arg, win)
   local root = ui.get_root_dir()
-  local full_path = file_arg:match("^/") and file_arg or (root .. "/" .. file_arg)
-  local rel_file = vim.fn.fnamemodify(full_path, ":.")
+  local clean_desc = vim.trim(desc_arg or ""):gsub("[\r\n]+", " ")
+  local raw_file = vim.trim(file_arg or "TODO.md")
+  if raw_file:sub(1, #root) == root then
+    raw_file = raw_file:sub(#root + 1)
+  end
+  local rel_file = raw_file:gsub("^/+", ""):gsub("^%./", "")
+  if rel_file:match("%.%./") or rel_file:match("%.%.$") or rel_file == "" then
+    rel_file = "TODO.md"
+  end
+  local full_path = root .. "/" .. rel_file
   local leader = get_comment_leader(rel_file)
 
   local is_new_file = (vim.fn.filereadable(full_path) ~= 1)
@@ -1241,10 +1249,30 @@ function M.insert_single_task_stub(file_arg, line_arg, desc_arg, win)
   local is_empty = (total_lines <= 1 and (vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] or "") == "")
   local insert_idx = is_empty and 0 or math.min(total_lines, math.max(0, (line_arg or 1) - 1))
 
-  local slug = desc_arg:lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 48):gsub("%-+$", "")
-  if slug == "" then slug = "task" end
+  local indent = ""
+  if not is_empty and insert_idx < total_lines then
+    local target_line_text = vim.api.nvim_buf_get_lines(bufnr, insert_idx, insert_idx + 1, false)[1] or ""
+    indent = target_line_text:match("^(%s*)") or ""
+  end
 
-  local header = string.format("%s TODO(%s | tier:A | status:TODO): %s", leader, slug, desc_arg)
+  local base_slug = clean_desc:lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 48):gsub("%-+$", "")
+  if base_slug == "" then base_slug = "task" end
+
+  local all_tasks = M.scan_repository_tasks()
+  local existing_slugs = {}
+  for _, t in ipairs(all_tasks) do
+    local s = (t.task_id or ""):match("%(([%w_%-]+)") or (t.task_id or ""):match("%[([%w_%-]+)") or t.task_id
+    if s and s ~= "" then existing_slugs[s:lower()] = true end
+  end
+
+  local slug = base_slug
+  local counter = 2
+  while existing_slugs[slug:lower()] do
+    slug = base_slug .. "-" .. counter
+    counter = counter + 1
+  end
+
+  local header = string.format("%s%s TODO(%s | tier:A | status:TODO): %s", indent, leader, slug, clean_desc)
   local stub_lines = { header }
 
   vim.bo[bufnr].modifiable = true
@@ -1252,7 +1280,7 @@ function M.insert_single_task_stub(file_arg, line_arg, desc_arg, win)
   vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write!") end)
 
   local rev_mod = require("agent.reviews")
-  local rev = rev_mod.create_review(full_path, insert_idx + 1, 0, {}, stub_lines, slug, desc_arg, "unreviewed", 1, true)
+  local rev = rev_mod.create_review(full_path, insert_idx + 1, 0, {}, stub_lines, slug, clean_desc, "unreviewed", 1, true)
   if rev then
     rev.is_new_file = is_new_file
     rev_mod.save_review_meta(rev)
@@ -1422,7 +1450,7 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
 
     local raw = table.concat(stdout_chunks, "")
     local data = llm_mod.extract_json_object(raw)
-    local parts = data and data.parts
+    local parts = data and (data.parts or data.tasks or data.subtasks)
 
     if not parts or #parts == 0 then
       local fallback_file = "TODO.md"
@@ -1466,11 +1494,43 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
       }
     end
 
+    local existing_slug_map = {}
+    for _, t in ipairs(all_tasks) do
+      local s = (t.task_id or ""):match("%(([%w_%-]+)") or (t.task_id or ""):match("%[([%w_%-]+)") or t.task_id
+      if s and s ~= "" then existing_slug_map[s:lower()] = true end
+    end
+    local seen_slugs = {}
+    local file_line_offsets = {}
+
     local created_reviews = {}
     for idx, part in ipairs(parts) do
-      local rel_file = (part.file or "TODO.md"):gsub("^/+", "")
+      local raw_file = vim.trim(part.file or part.filepath or part.path or "TODO.md")
+      if raw_file:sub(1, #root) == root then
+        raw_file = raw_file:sub(#root + 1)
+      end
+      local rel_file = raw_file:gsub("^/+", ""):gsub("^%./", "")
+      if rel_file:match("%.%./") or rel_file:match("%.%.$") or rel_file == "" then
+        rel_file = "TODO.md"
+      end
       local full_path = root .. "/" .. rel_file
       local leader = get_comment_leader(rel_file)
+
+      -- Disambiguate task_id / slug
+      local raw_id = part.task_id or part.slug or part.id or part.name
+      local clean_action = vim.trim(part.action or part.description or part.title or specification or ""):gsub("[\r\n]+", " ")
+      local base_slug = raw_id and tostring(raw_id):lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 48):gsub("%-+$", "") or ""
+      if base_slug == "" then
+        base_slug = clean_action:lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 48):gsub("%-+$", "")
+      end
+      if base_slug == "" then base_slug = "task" end
+
+      local slug = base_slug
+      local counter = 2
+      while seen_slugs[slug:lower()] or existing_slug_map[slug:lower()] do
+        slug = base_slug .. "-" .. counter
+        counter = counter + 1
+      end
+      seen_slugs[slug:lower()] = true
 
       -- Normalize depends_on and blocks if LLM gave string instead of table
       local dep_list = {}
@@ -1496,11 +1556,6 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
         blk_str = string.format(" | blocks:[%s]", table.concat(blk_list, ", "))
       end
       local tier_str = string.format(" | tier:%s", part.tier or "A")
-      local header = string.format("%s TODO(%s%s%s | status:TODO): %s", leader, part.task_id or "task", tier_str, dep_str .. blk_str, part.action or specification)
-      local stub_lines = { header }
-      if part.criteria and vim.trim(part.criteria) ~= "" then
-        table.insert(stub_lines, string.format("%s   Criterion: %s", leader, vim.trim(part.criteria)))
-      end
 
       local is_new_file = (vim.fn.filereadable(full_path) ~= 1)
       vim.fn.mkdir(vim.fn.fnamemodify(full_path, ":h"), "p")
@@ -1508,14 +1563,41 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
       vim.fn.bufload(bufnr)
       local total_lines = vim.api.nvim_buf_line_count(bufnr)
       local is_empty = (total_lines <= 1 and (vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] or "") == "")
-      local req_line = tonumber(part.line) or 1
+
+      local parsed_line = tonumber(tostring(part.line or "1"):match("%d+")) or 1
+      local offset = file_line_offsets[full_path] or 0
+      local req_line = parsed_line + offset
       local insert_idx = is_empty and 0 or math.min(total_lines, math.max(0, req_line - 1))
+
+      local indent = ""
+      if not is_empty and insert_idx < total_lines then
+        local target_line_text = vim.api.nvim_buf_get_lines(bufnr, insert_idx, insert_idx + 1, false)[1] or ""
+        indent = target_line_text:match("^(%s*)") or ""
+      end
+
+      local header = string.format("%s%s TODO(%s%s%s | status:TODO): %s", indent, leader, slug, tier_str, dep_str .. blk_str, clean_action)
+      local stub_lines = { header }
+      if part.criteria and vim.trim(part.criteria) ~= "" then
+        local crit_lines = vim.split(vim.trim(part.criteria), "[\r\n]+")
+        for c_idx, cl in ipairs(crit_lines) do
+          local c_trimmed = vim.trim(cl)
+          if c_trimmed ~= "" then
+            if c_idx == 1 then
+              table.insert(stub_lines, string.format("%s%s   Criterion: %s", indent, leader, c_trimmed))
+            else
+              table.insert(stub_lines, string.format("%s%s              %s", indent, leader, c_trimmed))
+            end
+          end
+        end
+      end
 
       vim.bo[bufnr].modifiable = true
       vim.api.nvim_buf_set_lines(bufnr, insert_idx, is_empty and 1 or insert_idx, false, stub_lines)
       vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write!") end)
 
-      local rev = rev_mod.create_review(full_path, insert_idx + 1, 0, {}, stub_lines, part.task_id or "task", part.action or specification, "unreviewed", idx, true)
+      file_line_offsets[full_path] = offset + #stub_lines
+
+      local rev = rev_mod.create_review(full_path, insert_idx + 1, 0, {}, stub_lines, slug, clean_action, "unreviewed", idx, true)
       if rev then
         rev.is_new_file = is_new_file
         rev_mod.save_review_meta(rev)

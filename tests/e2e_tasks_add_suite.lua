@@ -230,6 +230,82 @@ do
   assert_eq(new_lines[6], "    return 'beta'", "Existing beta function body preserved")
 end
 
+-- -----------------------------------------------------------------------------
+-- SCENARIO 8: Multi-line Description and Embedded Newlines
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 8] Multi-line Description and Embedded Newlines")
+do
+  local test_file = tmp_dir .. "/multiline_desc.py"
+  vim.fn.writefile({ "def placeholder():", "    pass" }, test_file)
+
+  -- Pass a description with newlines
+  tasks_mod.add_task(string.format("%s:2 First step\nSecond step\nThird step", test_file))
+  local lines = vim.fn.readfile(test_file)
+
+  -- The header should be cleanly collapsed on a single commented line
+  assert_true(lines[2]:find("# TODO", 1, true) ~= nil, "Stub line 2 starts with comment leader")
+  assert_true(lines[2]:find("First step Second step Third step", 1, true) ~= nil, "Newlines collapsed into single comment line without broken raw code")
+  assert_eq(lines[3], "    pass", "Existing code following stub is intact")
+end
+
+-- -----------------------------------------------------------------------------
+-- SCENARIO 9: Path Traversal and Relative Path Sanitization
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 9] Path Traversal and Relative Path Sanitization")
+do
+  -- Pass ./ prefix
+  local rel_dot = "./tests/dummy_dot_test.py"
+  tasks_mod.add_task(string.format("%s:1 Test dot slash prefix", rel_dot))
+  local full_rel = vim.fn.fnamemodify(rel_dot, ":p")
+  assert_true(vim.fn.filereadable(full_rel) == 1, "File with ./ prefix created and written correctly")
+  pcall(vim.fn.delete, full_rel)
+
+  -- Pass ../ path traversal attempting to escape project root
+  local bad_path = "../../../outside_escape.py"
+  tasks_mod.add_task(string.format("%s:1 Escaped file attempt", bad_path))
+  local root = require("agent.ui").get_root_dir()
+  assert_true(vim.fn.filereadable("/outside_escape.py") ~= 1, "Traversal path was not allowed to escape outside project root")
+  -- Fell back safely to TODO.md
+  assert_true(vim.fn.filereadable(root .. "/TODO.md") == 1, "Fell back safely to project TODO.md")
+  pcall(vim.fn.delete, root .. "/TODO.md")
+end
+
+-- -----------------------------------------------------------------------------
+-- SCENARIO 10: Slug Collision Disambiguation
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 10] Slug Collision Disambiguation")
+do
+  local test_file = tmp_dir .. "/collision.py"
+  vim.fn.writefile({ "x = 1" }, test_file)
+
+  tasks_mod.add_task(string.format("%s:1 Unique Token Auth", test_file))
+  tasks_mod.add_task(string.format("%s:1 Unique Token Auth", test_file))
+
+  local lines = vim.fn.readfile(test_file)
+  assert_true(lines[1]:find("unique-token-auth-2", 1, true) ~= nil or lines[2]:find("unique-token-auth-2", 1, true) ~= nil, "Duplicate slug disambiguated with -2 suffix")
+end
+
+-- -----------------------------------------------------------------------------
+-- SCENARIO 11: Indentation Inheritance
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 11] Indentation Inheritance")
+do
+  local test_file = tmp_dir .. "/indented.py"
+  local code = {
+    "class MyHandler:",
+    "    def handle(self):",
+    "        return 42",
+  }
+  vim.fn.writefile(code, test_file)
+
+  -- Insert inside handle at line 3 (indentation is 8 spaces)
+  tasks_mod.add_task(string.format("%s:3 Validate input parameters", test_file))
+  local lines = vim.fn.readfile(test_file)
+
+  assert_true(lines[3]:match("^%s%s%s%s%s%s%s%s# TODO") ~= nil, "Injected stub inherited 8-space indentation from target scope")
+  assert_eq(lines[4], "        return 42", "Subsequent indented line preserved")
+end
+
 -- Clean up temporary directory
 pcall(vim.fn.delete, tmp_dir, "rf")
 
