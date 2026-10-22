@@ -139,9 +139,18 @@ function M.promote_contract_to_approved(filepath, task_id)
   if not filepath or filepath == "" then return end
   local root = ui.get_root_dir()
   local full_path = filepath:match("^/") and filepath or (root .. "/" .. filepath)
-  if vim.fn.filereadable(full_path) ~= 1 then return end
 
-  local lines = vim.fn.readfile(full_path)
+  local b = vim.fn.bufnr(full_path)
+  local is_loaded = (b ~= -1 and vim.api.nvim_buf_is_loaded(b))
+
+  local lines
+  if is_loaded then
+    lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+  else
+    if vim.fn.filereadable(full_path) ~= 1 then return end
+    lines = vim.fn.readfile(full_path)
+  end
+
   local changed = false
   for i, line in ipairs(lines) do
     if line:find("SPEC%(") or line:find("TODO%(") or line:find("FIXME%(") then
@@ -164,10 +173,11 @@ function M.promote_contract_to_approved(filepath, task_id)
   end
 
   if changed then
-    vim.fn.writefile(lines, full_path)
-    local b = vim.fn.bufnr(full_path)
-    if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
-      vim.api.nvim_buf_call(b, function() vim.cmd("checktime") end)
+    if is_loaded then
+      vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
+      vim.api.nvim_buf_call(b, function() vim.cmd("silent! write!") end)
+    else
+      vim.fn.writefile(lines, full_path)
     end
   end
 end

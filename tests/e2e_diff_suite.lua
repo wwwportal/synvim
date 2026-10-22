@@ -484,6 +484,7 @@ do
   assert_true(lines_after[1]:find("status:APPROVED") ~= nil, "Contract header promoted to status:APPROVED")
 
   vim.fn.delete(test_file)
+  vim.fn.delete(reviews_mod.get_reviews_dir() .. "/rev-accept-lifecycle.json")
 end
 
 -- -----------------------------------------------------------------------------

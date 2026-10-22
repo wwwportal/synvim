@@ -226,8 +226,13 @@ function M.revert_review(rev_id)
     return false
   end
 
-  local rev = M.find_review(rev_id, true)
-  if not rev and state.current_review and (state.current_review.id == rev_id or rev_id == "") then
+  local rev
+  if state.current_review and (not rev_id or rev_id == "" or state.current_review.id == rev_id) then
+    rev = state.current_review
+  else
+    rev = M.find_review(rev_id, true)
+  end
+  if not rev and state.current_review then
     rev = state.current_review
   end
 
@@ -328,8 +333,13 @@ function M.accept_review(rev_id)
     return false
   end
 
-  local rev = M.find_review(rev_id, true)
-  if not rev and state.current_review and (state.current_review.id == rev_id or rev_id == "") then
+  local rev
+  if state.current_review and (not rev_id or rev_id == "" or state.current_review.id == rev_id) then
+    rev = state.current_review
+  else
+    rev = M.find_review(rev_id, true)
+  end
+  if not rev and state.current_review then
     rev = state.current_review
   end
 
