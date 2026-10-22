@@ -11,6 +11,7 @@ package.loaded["agent.reviews"] = nil
 package.loaded["agent.tasks"] = nil
 package.loaded["agent.state"] = nil
 package.loaded["agent.ui"] = nil
+package.loaded["agent.llm"] = nil
 
 local diff_mod = require("agent.diff")
 local reviews_mod = require("agent.reviews")
@@ -483,6 +484,153 @@ do
   assert_true(lines_after[1]:find("status:APPROVED") ~= nil, "Contract header promoted to status:APPROVED")
 
   vim.fn.delete(test_file)
+end
+
+-- -----------------------------------------------------------------------------
+-- TEST 18: Review Lookup Precision (Index, Slug, Suffix, Exact ID)
+-- -----------------------------------------------------------------------------
+print("\n[TEST 18] Review Lookup Precision (Index, Slug, Suffix, Exact ID)")
+do
+  local rdir = reviews_mod.get_reviews_dir()
+  local dummy_rev_id = "rev-9999999999-4321"
+  local dummy_meta = {
+    id = dummy_rev_id,
+    task_id = "# SPEC(precision-lookup-slug | tier:A | blocks:[downstream]): Test slug lookup",
+    target_file = "tests/dummy.py",
+    status = "unreviewed",
+    created_at = "2026-10-21 20:00:00",
+    order = 1,
+    old_lines = { "pass" },
+    new_lines = { "return True" },
+  }
+  local json_path = rdir .. "/" .. dummy_rev_id .. ".json"
+  vim.fn.writefile({ vim.fn.json_encode(dummy_meta) }, json_path)
+
+  -- 1. Exact ID
+  local found_exact = reviews_mod.find_review(dummy_rev_id, true)
+  assert_true(found_exact ~= nil and found_exact.id == dummy_rev_id, "Find by exact review ID succeeds")
+
+  -- 2. Slug match from inside complex header
+  local found_slug = reviews_mod.find_review("precision-lookup-slug", true)
+  assert_true(found_slug ~= nil and found_slug.id == dummy_rev_id, "Find by extracted task slug succeeds")
+
+  -- 3. 4-digit suffix match
+  local found_suffix = reviews_mod.find_review("4321", true)
+  assert_true(found_suffix ~= nil and found_suffix.id == dummy_rev_id, "Find by 4-digit ID suffix succeeds")
+
+  -- 4. Numeric index #1 of unreviewed
+  local found_idx = reviews_mod.find_review("1", true)
+  assert_true(found_idx ~= nil, "Find by numeric index 1 resolves to unreviewed queue item")
+
+  vim.fn.delete(json_path)
+end
+
+-- -----------------------------------------------------------------------------
+-- TEST 19: :Tasks accept <id> Clears Task from Review Queue
+-- -----------------------------------------------------------------------------
+print("\n[TEST 19] :Tasks accept <id> Clears Task from Review Queue")
+do
+  local rdir = reviews_mod.get_reviews_dir()
+  local test_rev_id = "rev-9999999999-8765"
+  local target_file = vim.fn.tempname() .. ".py"
+  vim.fn.writefile({ "# TODO(queue-removal | tier:A | status:DONE): Test" }, target_file)
+
+  local meta = {
+    id = test_rev_id,
+    task_id = "# TODO(queue-removal | tier:A | status:DONE): Test",
+    target_file = target_file,
+    abs_file = target_file,
+    status = "unreviewed",
+    created_at = "2026-10-21 20:10:00",
+    order = 1,
+    old_lines = { "# TODO(queue-removal | tier:A | status:DONE): Test" },
+    new_lines = { "# TODO(queue-removal | tier:A | status:APPROVED): Test" },
+  }
+  local json_path = rdir .. "/" .. test_rev_id .. ".json"
+  vim.fn.writefile({ vim.fn.json_encode(meta) }, json_path)
+
+  -- Verify it appears in unreviewed reviews
+  local unrev_before = reviews_mod.get_reviews("unreviewed")
+  local found_before = false
+  for _, r in ipairs(unrev_before) do
+    if r.id == test_rev_id then found_before = true; break end
+  end
+  assert_true(found_before, "Task is initially in unreviewed review list")
+
+  -- Accept by task slug: :Tasks accept queue-removal
+  reviews_mod.accept("queue-removal")
+
+  -- Verify it was removed from unreviewed list
+  local unrev_after = reviews_mod.get_reviews("unreviewed")
+  local found_after = false
+  for _, r in ipairs(unrev_after) do
+    if r.id == test_rev_id then found_after = true; break end
+  end
+  assert_true(not found_after, "Task is REMOVED from unreviewed review list after :Tasks accept <id>")
+
+  -- Verify file on disk has updated status: accepted
+  local disk_meta = vim.fn.json_decode(table.concat(vim.fn.readfile(json_path), "\n"))
+  assert_eq(disk_meta.status, "accepted", "JSON metadata on disk updated to status: accepted")
+
+  vim.fn.delete(json_path)
+  vim.fn.delete(target_file)
+end
+
+-- -----------------------------------------------------------------------------
+-- TEST 20: NDJSON Stream Reassembly from LLM CLI
+-- -----------------------------------------------------------------------------
+print("\n[TEST 20] NDJSON Stream Reassembly from LLM CLI")
+do
+  local llm_mod = require("agent.llm")
+  local payload = vim.fn.json_encode({
+    parts = {
+      { task_id = "auth-gate", file = "src/auth.py", line = 10 }
+    }
+  })
+  local ndjson = table.concat({
+    vim.fn.json_encode({ type = "step_start", timestamp = 1000, part = { type = "step-start" } }),
+    vim.fn.json_encode({ type = "text", part = { text = payload } }),
+    vim.fn.json_encode({ type = "step_finish", timestamp = 2000 }),
+  }, "\n")
+
+  local parsed = llm_mod.extract_json_object(ndjson)
+  assert_true(parsed ~= nil, "NDJSON stream successfully parsed")
+  assert_true(parsed.parts ~= nil and #parsed.parts == 1, "Parts array preserved from inside NDJSON text event")
+  assert_eq(parsed.parts[1].task_id, "auth-gate", "task_id accurately extracted")
+  assert_eq(parsed.parts[1].file, "src/auth.py", "Architectural target file accurately extracted")
+end
+
+-- -----------------------------------------------------------------------------
+-- TEST 21: Task Add Heuristic Scoring (Does NOT Dump in Active Buffer)
+-- -----------------------------------------------------------------------------
+print("\n[TEST 21] Task Add Heuristic Scoring (Does NOT Dump in Active Buffer)")
+do
+  local file_list = {
+    "src/search/macro_decider.cpp",
+    "src/auth/jwt_provider.py",
+    "tests/geometric_falsification/test_tier_a_gatekeepers.py"
+  }
+  local spec = "Implement jwt token authentication provider"
+  local spec_low = spec:lower()
+  local best_score = 0
+  local best_file = nil
+
+  for _, f in ipairs(file_list) do
+    local f_low = f:lower()
+    local score = 0
+    for word in spec_low:gmatch("[%a%d_-]+") do
+      if #word >= 4 and f_low:find(word, 1, true) then
+        score = score + 2
+      end
+    end
+    if score > best_score then
+      best_score = score
+      best_file = f
+    end
+  end
+
+  assert_eq(best_file, "src/auth/jwt_provider.py", "Correctly selected auth file matching specification keywords")
+  assert_true(best_file ~= "tests/geometric_falsification/test_tier_a_gatekeepers.py", "Did not dump into unrelated file")
 end
 
 -- -----------------------------------------------------------------------------

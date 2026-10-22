@@ -232,9 +232,26 @@ function M.parse_solution_from_raw(raw)
   return nil
 end
 
---- Robust JSON extractor for LLM responses (supports raw JSON, markdown code blocks, and bracket scanning)
+--- Robust JSON extractor for LLM responses (supports raw JSON, NDJSON streaming from opencode/agy, markdown code blocks, and bracket scanning)
 function M.extract_json_object(raw)
   if not raw or raw == "" then return nil end
+
+  -- 0. Reassemble text parts from opencode / agy streaming JSON Lines if present
+  local full_text = ""
+  for line in raw:gmatch("[^\r\n]+") do
+    local ok, obj = pcall(vim.fn.json_decode, line)
+    if ok and type(obj) == "table" then
+      if obj.type == "text" and obj.part and obj.part.text then
+        full_text = full_text .. obj.part.text
+      elseif obj.response and type(obj.response) == "string" then
+        full_text = full_text .. obj.response
+      end
+    end
+  end
+  if full_text ~= "" then
+    raw = full_text
+  end
+
   -- 1. Try direct decode
   local ok, data = pcall(vim.fn.json_decode, vim.trim(raw))
   if ok and type(data) == "table" then return data end
@@ -246,7 +263,8 @@ function M.extract_json_object(raw)
     if ok_b and type(data_b) == "table" then return data_b end
   end
 
-  -- 3. Bracket scanner
+  -- 3. Bracket scanner (favor objects with meaningful keys)
+  local first_valid = nil
   local s_idx = 1
   while s_idx <= #raw do
     local b_start = raw:find("{", s_idx, true)
@@ -279,14 +297,17 @@ function M.extract_json_object(raw)
       local candidate = raw:sub(b_start, b_end)
       local cok, cdata = pcall(vim.fn.json_decode, candidate)
       if cok and type(cdata) == "table" then
-        return cdata
+        if cdata.parts or cdata.content or cdata.code or cdata.summary or cdata.task_id or cdata.action then
+          return cdata
+        end
+        first_valid = first_valid or cdata
       end
       s_idx = b_start + 1
     else
       break
     end
   end
-  return nil
+  return first_valid
 end
 
 --- Shared processor for agent JSON output

@@ -46,6 +46,7 @@ function M.get_reviews(status_filter)
     if ok and content then
       local j_ok, obj = pcall(vim.fn.json_decode, table.concat(content, "\n"))
       if j_ok and type(obj) == "table" and obj.id then
+        obj._json_path = f
         if status_filter == "all" or obj.status == status_filter then
           table.insert(reviews, obj)
         end
@@ -65,6 +66,84 @@ function M.get_reviews(status_filter)
     return (a.id or "") < (b.id or "")
   end)
   return reviews
+end
+
+--- Robust review lookup supporting: numeric index, task slug, full id, partial id/suffix
+function M.find_review(arg, prefer_unreviewed)
+  if not arg or vim.trim(arg) == "" then return nil end
+  arg = vim.trim(arg)
+  if prefer_unreviewed == nil then prefer_unreviewed = true end
+
+  local num = tonumber(arg:match("^#?(%d+)$"))
+  local unrev = M.get_reviews("unreviewed")
+  local all_revs = M.get_reviews("all")
+
+  -- 1. Numeric index (e.g. "1" or "#1")
+  if num then
+    if prefer_unreviewed and unrev[num] then
+      return unrev[num]
+    end
+    if all_revs[num] then
+      return all_revs[num]
+    end
+  end
+
+  local function match_in_list(list)
+    -- Exact ID
+    for _, r in ipairs(list) do
+      if r.id and r.id:lower() == arg:lower() then return r end
+    end
+    -- Task slug extraction (e.g. "precommit-lang-gates" from "# SPEC(precommit-lang-gates | ...)")
+    for _, r in ipairs(list) do
+      local slug = (r.task_id or ""):match("%(([%w_%-]+)") or (r.task_id or ""):match("%[([%w_%-]+)") or r.task_id or ""
+      if slug ~= "" and slug:lower() == arg:lower() then return r end
+    end
+    -- Task ID full or substring match
+    for _, r in ipairs(list) do
+      if r.task_id and r.task_id:lower():find(arg:lower(), 1, true) then return r end
+    end
+    -- ID suffix or substring (e.g. 4-digit or 6-digit random hash)
+    for _, r in ipairs(list) do
+      if r.id and (r.id:sub(-#arg) == arg or r.id:lower():find(arg:lower(), 1, true)) then
+        return r
+      end
+    end
+    return nil
+  end
+
+  if prefer_unreviewed then
+    local m = match_in_list(unrev)
+    if m then return m end
+  end
+  return match_in_list(all_revs)
+end
+
+--- Save review metadata to disk
+function M.save_review_meta(rev)
+  if not rev then return false end
+  local root = ui.get_root_dir()
+  local rdir = M.get_reviews_dir(root)
+  local json_file = rev._json_path
+  if not json_file or vim.fn.filereadable(json_file) ~= 1 then
+    if rev.patch_file and root then
+      local candidate = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
+      if vim.fn.filereadable(candidate) == 1 then json_file = candidate end
+    end
+  end
+  if not json_file or vim.fn.filereadable(json_file) ~= 1 then
+    if rev.id then
+      local candidate = rdir .. "/" .. rev.id .. ".json"
+      json_file = candidate
+    end
+  end
+  if json_file then
+    local save_obj = vim.deepcopy(rev)
+    save_obj._json_path = nil
+    save_obj._filepath = nil
+    vim.fn.writefile({ vim.fn.json_encode(save_obj) }, json_file)
+    return true
+  end
+  return false
 end
 
 --- Create a review record and patch on disk
@@ -125,7 +204,6 @@ function M.revert_review(rev_id)
   local root = ui.get_root_dir()
   local state = state_mod.state
   local diff_mod = require("agent.diff")
-  local reviews = M.get_reviews("all")
 
   if not rev_id or rev_id == "" then
     if state.current_review and state.current_review.id then
@@ -143,12 +221,9 @@ function M.revert_review(rev_id)
     return false
   end
 
-  local rev = nil
-  for _, r in ipairs(reviews) do
-    if r.id == rev_id or (r.id and rev_id and tostring(r.id):sub(-6) == tostring(rev_id):sub(-6)) then
-      rev = r
-      break
-    end
+  local rev = M.find_review(rev_id, true)
+  if not rev and state.current_review and (state.current_review.id == rev_id or rev_id == "") then
+    rev = state.current_review
   end
 
   if not rev then
@@ -210,12 +285,7 @@ function M.revert_review(rev_id)
   -- Update review JSON
   rev.status = "rejected"
   rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
-  if rev.patch_file and root then
-    local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
-    if vim.fn.filereadable(meta_path) == 1 then
-      vim.fn.writefile({ vim.fn.json_encode(rev) }, meta_path)
-    end
-  end
+  M.save_review_meta(rev)
 
   state.current_review = nil
   vim.notify(string.format("✗ Tasks: Reverted %s on %s!", rev.id, vim.fn.fnamemodify(target_full, ":.")), vim.log.levels.INFO)
@@ -223,7 +293,7 @@ function M.revert_review(rev_id)
   -- Refresh review list
   local rem = M.get_reviews("unreviewed")
   if #rem > 0 then
-    M.review("list")
+    M.list_reviews_qf()
   else
     vim.cmd("cclose")
     vim.notify("✓ Tasks: All implementations have been reviewed by a human!", vim.log.levels.INFO)
@@ -236,7 +306,6 @@ function M.accept_review(rev_id)
   local root = ui.get_root_dir()
   local state = state_mod.state
   local diff_mod = require("agent.diff")
-  local reviews = M.get_reviews("all")
 
   if not rev_id or rev_id == "" then
     if state.current_review and state.current_review.id then
@@ -254,14 +323,7 @@ function M.accept_review(rev_id)
     return false
   end
 
-  local rev = nil
-  for _, r in ipairs(reviews) do
-    if r.id == rev_id or (r.id and rev_id and tostring(r.id):sub(-6) == tostring(rev_id):sub(-6)) then
-      rev = r
-      break
-    end
-  end
-
+  local rev = M.find_review(rev_id, true)
   if not rev and state.current_review and (state.current_review.id == rev_id or rev_id == "") then
     rev = state.current_review
   end
@@ -271,18 +333,53 @@ function M.accept_review(rev_id)
     return false
   end
 
-  diff_mod.clear_diff(true)
-  if not rev.is_task_stub then
-    diff_mod.promote_contract_to_approved(rev.filepath or rev.file or rev.abs_file or rev.target_file, rev.task_id)
+  -- If diff is active for this review, accept without reverting
+  if state.pending_diff then
+    state.pending_diff.revert_lines = nil
+    local p_buf = state.pending_diff.bufnr
+    diff_mod.clear_diff(true)
+    if p_buf and vim.api.nvim_buf_is_valid(p_buf) then
+      local name = vim.api.nvim_buf_get_name(p_buf)
+      if name ~= "" and vim.bo[p_buf].buftype == "" then
+        pcall(vim.api.nvim_buf_call, p_buf, function() vim.cmd("silent! write!") end)
+      end
+    end
+  else
+    diff_mod.clear_diff(true)
   end
-  rev.status = "accepted"
-  rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
-  if rev.patch_file and root then
-    local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
-    if vim.fn.filereadable(meta_path) == 1 then
-      vim.fn.writefile({ vim.fn.json_encode(rev) }, meta_path)
+
+  local target_full = rev.abs_file or (rev.target_file and (rev.target_file:match("^/") and rev.target_file or (root .. "/" .. rev.target_file)))
+  -- Ensure new lines are present on disk if accepting directly without active diff
+  if not rev.is_task_stub and rev.new_lines and #rev.new_lines > 0 and target_full and vim.fn.filereadable(target_full) == 1 then
+    local cur_lines = vim.fn.readfile(target_full)
+    local first_nl = rev.new_lines[1]
+    local has_content = false
+    for _, cl in ipairs(cur_lines) do
+      if cl == first_nl then has_content = true; break end
+    end
+    if not has_content then
+      local s_line = math.max(0, (rev.start_line or 1) - 1)
+      local old_cnt = rev.old_lines_count or (rev.old_lines and #rev.old_lines) or 0
+      local e_line = math.min(#cur_lines, s_line + old_cnt)
+      local updated = {}
+      for i = 1, s_line do table.insert(updated, cur_lines[i]) end
+      for _, nl in ipairs(rev.new_lines) do table.insert(updated, nl) end
+      for i = e_line + 1, #cur_lines do table.insert(updated, cur_lines[i]) end
+      vim.fn.writefile(updated, target_full)
+      local b = vim.fn.bufnr(target_full)
+      if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
+        vim.api.nvim_buf_call(b, function() vim.cmd("checktime") end)
+      end
     end
   end
+
+  if not rev.is_task_stub and target_full then
+    diff_mod.promote_contract_to_approved(target_full, rev.task_id)
+  end
+
+  rev.status = "accepted"
+  rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
+  M.save_review_meta(rev)
 
   state.current_review = nil
   if rev.is_task_stub then
@@ -490,24 +587,12 @@ function M.review(subcmd, arg)
 
   -- If user passed a specific review id or index: :Tasks review <id|index>
   if subcmd ~= "" and subcmd ~= "list" then
-    local target_id = subcmd
-    local num = tonumber(target_id:match("^#?(%d+)$"))
-    local matched = nil
-    if num and all_reviews[num] then
-      matched = all_reviews[num]
-    else
-      for _, r in ipairs(all_reviews) do
-        if r.id == target_id or (r.task_id and r.task_id:lower() == target_id:lower()) or (r.id and tostring(r.id):sub(-6) == tostring(target_id):sub(-6)) then
-          matched = r
-          break
-        end
-      end
-    end
+    local matched = M.find_review(subcmd, true)
     if matched then
       M.show_review(matched)
       return
     else
-      vim.notify("Tasks: Review '" .. target_id .. "' not found.", vim.log.levels.WARN)
+      vim.notify("Tasks: Review '" .. subcmd .. "' not found.", vim.log.levels.WARN)
     end
   end
 
@@ -527,25 +612,13 @@ function M.accept(arg)
     return
   end
 
-  local rev_id = nil
   if arg ~= "" then
-    local num = tonumber(arg:match("^#?(%d+)$"))
-    local reviews = M.get_reviews("all")
-    if num and reviews[num] then
-      rev_id = reviews[num].id
-    else
-      for _, r in ipairs(reviews) do
-        if r.id == arg or (r.task_id and r.task_id:lower() == arg:lower()) or (r.id and tostring(r.id):sub(-6) == tostring(arg):sub(-6)) then
-          rev_id = r.id
-          break
-        end
-      end
-    end
-    if not rev_id then
+    local rev = M.find_review(arg, true)
+    if not rev then
       vim.notify("Tasks: Review ID '" .. arg .. "' not found. Run :Tasks review to see active reviews.", vim.log.levels.WARN)
       return
     end
-    M.accept_review(rev_id)
+    M.accept_review(rev.id)
     return
   end
 
@@ -614,25 +687,13 @@ function M.reject(arg)
     return
   end
 
-  local rev_id = nil
   if arg ~= "" then
-    local num = tonumber(arg:match("^#?(%d+)$"))
-    local reviews = M.get_reviews("all")
-    if num and reviews[num] then
-      rev_id = reviews[num].id
-    else
-      for _, r in ipairs(reviews) do
-        if r.id == arg or (r.task_id and r.task_id:lower() == arg:lower()) or (r.id and tostring(r.id):sub(-6) == tostring(arg):sub(-6)) then
-          rev_id = r.id
-          break
-        end
-      end
-    end
-    if not rev_id then
+    local rev = M.find_review(arg, true)
+    if not rev then
       vim.notify("Tasks: Review ID '" .. arg .. "' not found. Run :Tasks review to see active reviews.", vim.log.levels.WARN)
       return
     end
-    M.revert_review(rev_id)
+    M.revert_review(rev.id)
     return
   end
 

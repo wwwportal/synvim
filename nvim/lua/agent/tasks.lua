@@ -1312,8 +1312,7 @@ function M.decompose_and_add_tasks(specification, win)
     local cur_name = vim.api.nvim_buf_get_name(cur_buf)
     if cur_name ~= "" and vim.fn.filereadable(cur_name) == 1 then
       local rel = vim.fn.fnamemodify(cur_name, ":.")
-      local lnum = vim.api.nvim_win_get_cursor(win)[1]
-      active_hint = string.format("Active editor buffer: %s (around line %d)", rel, lnum)
+      active_hint = string.format("CURRENTLY OPEN FILE: %s (DO NOT place tasks in this file unless it is genuinely the best architectural fit for the task).", rel)
     end
   end
 
@@ -1338,7 +1337,8 @@ Analyze the repository structure, code conventions, and file hierarchy. Split th
 
 REQUIREMENTS:
 1. Decompose the specification into 1 to 5 concrete subtasks/parts.
-2. For each part, specify:
+2. For each part, select the BEST architectural target file in the repository (inspect KEY FILES IN REPOSITORY) matching domain responsibility. DO NOT simply dump tasks into whatever file happened to be open in the editor unless it genuinely belongs there!
+3. For each part, specify:
    - "task_id": concise unique kebab-case slug identifier (e.g. "auth-jwt-store", "auth-token-endpoint").
    - "file": repository-relative path where this stub should be inserted (use an existing file if suitable, or a standard new file path matching codebase conventions).
    - "line": 1-based line number where the stub should be inserted (e.g. 1 at top of file, or after imports, or near relevant struct/function).
@@ -1347,9 +1347,9 @@ REQUIREMENTS:
    - "blocks": array of task_id strings that depend on this part.
    - "action": precise 1-2 sentence description of what this part must implement.
    - "criteria": concise verification criterion.
-3. Order the "parts" array in STRICT LOGICAL TOPOLOGICAL ORDER:
+4. Order the "parts" array in STRICT LOGICAL TOPOLOGICAL ORDER:
    Prerequisites and foundational parts MUST appear before parts that depend on them.
-4. Output STRICT JSON ONLY matching this schema:
+5. Output STRICT JSON ONLY matching this schema:
 {
   "summary": "<one-sentence summary of decomposition>",
   "parts": [
@@ -1423,10 +1423,31 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
 
     if not parts or #parts == 0 then
       local fallback_file = "TODO.md"
-      if cur_buf and vim.api.nvim_buf_is_valid(cur_buf) and vim.bo[cur_buf].buftype == "" then
+      local spec_low = specification:lower()
+      local best_score = 0
+      local best_file = nil
+
+      for _, f in ipairs(file_list) do
+        local f_low = f:lower()
+        local score = 0
+        for word in spec_low:gmatch("[%a%d_-]+") do
+          if #word >= 4 and f_low:find(word, 1, true) then
+            score = score + 2
+          end
+        end
+        if score > best_score then
+          best_score = score
+          best_file = f
+        end
+      end
+
+      if best_file and best_score > 0 then
+        fallback_file = best_file
+      elseif cur_buf and vim.api.nvim_buf_is_valid(cur_buf) and vim.bo[cur_buf].buftype == "" then
         local cur_name = vim.api.nvim_buf_get_name(cur_buf)
         if cur_name ~= "" then fallback_file = vim.fn.fnamemodify(cur_name, ":.") end
       end
+
       local slug = specification:lower():gsub("[^%a0-9%s_-]", ""):gsub("%s+", "-"):sub(1, 28):gsub("%-+$", "")
       if slug == "" then slug = "task" end
       parts = {
