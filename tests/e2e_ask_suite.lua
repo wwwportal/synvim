@@ -350,6 +350,35 @@ do
   diff_mod.clear_diff(true)
 end
 
+-- -----------------------------------------------------------------------------
+-- SCENARIO 8: Multi-line Sub-Questions (Lines Spanning Multiple Lines)
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 8] Multi-line Sub-Questions Spanning Multiple Lines")
+do
+  local multiline_numbered = [[
+1. Where is the audio volume set
+   specifically for headphone microphone input?
+2. Where is speech transcription handled
+   for local whisper audio recording?
+]]
+  local parts = search_mod.split_questions(multiline_numbered)
+  assert_eq(#parts, 2, "Multi-line numbered questions cleanly split into 2 questions")
+  assert_true(parts[1]:find("audio volume set specifically for headphone microphone input", 1, true) ~= nil, "Question 1 collapsed multi-line body into unified sentence")
+  assert_true(parts[2]:find("speech transcription handled for local whisper audio recording", 1, true) ~= nil, "Question 2 collapsed multi-line body into unified sentence")
+end
+
+-- -----------------------------------------------------------------------------
+-- SCENARIO 9: Command-line Literal \n Unescaping
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 9] Command-line Literal \\n Unescaping")
+do
+  local cli_input = "1. Where is audio volume set?\\n2. Where is speech transcription handled?"
+  local parts = search_mod.split_questions(cli_input)
+  assert_eq(#parts, 2, "Literal \\n unescaped to real newlines and split into 2 questions")
+  assert_true(parts[1]:find("audio volume set", 1, true) ~= nil, "Part 1 has audio question")
+  assert_true(parts[2]:find("speech transcription handled", 1, true) ~= nil, "Part 2 has speech question")
+end
+
 -- Clean up
 pcall(vim.fn.delete, tmp_dir, "rf")
 

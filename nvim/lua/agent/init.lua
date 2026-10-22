@@ -163,8 +163,18 @@ function M.setup()
 
   vim.api.nvim_create_user_command("Ask", function(ctx)
     M.state.origin_win = vim.api.nvim_get_current_win()
-    search.ask(ctx.args)
-  end, { nargs = "+", desc = "Ask a question about the code: navigates to exact line with clarifying in-line comment (:Ask <question>)" })
+    local query = vim.trim(ctx.args or "")
+    if ctx.range == 2 and ctx.line1 and ctx.line2 then
+      local lines = vim.api.nvim_buf_get_lines(0, ctx.line1 - 1, ctx.line2, false)
+      local selected = vim.trim(table.concat(lines, "\n"))
+      if query ~= "" then
+        query = query .. "\n" .. selected
+      else
+        query = selected
+      end
+    end
+    search.ask(query)
+  end, { range = true, nargs = "*", desc = "Ask code question (supports multi-line, multi-question, and visual selection) (:Ask <question>)" })
 
   -- If :Git command does not exist, provide basic :Git with review support
   if vim.fn.exists(":Git") ~= 2 then

@@ -28,43 +28,64 @@ function M.extract_search_keywords(query)
   return keywords
 end
 
---- Parse and split multiple questions from a user query (numbered lists, multiple ?, conjunctions)
+--- Parse and split multiple questions from a user query (numbered lists, multiple ?, conjunctions, multi-line)
 function M.split_questions(input)
   if not input or type(input) ~= "string" then return {} end
-  local str = vim.trim(input)
+  -- Unescape literal \n or \r\n
+  local str = input:gsub("\\r\\n", "\n"):gsub("\\n", "\n")
+  str = vim.trim(str)
   if str == "" then return {} end
 
   local questions = {}
 
-  -- 1. Numbered questions: "1. ... 2. ..." or "1) ... 2) ..."
+  -- 1. Numbered questions (single line or spanning multiple lines)
   if str:match("^%s*[0-9]+[%.)]") or str:match("%s+[0-9]+[%.)]%s+") then
-    for part in str:gmatch("[%s\r\n]*[0-9]+[%.)]%s*([^0-9%.)\r\n]+)") do
-      local q = vim.trim(part)
-      if #q >= 3 then
-        table.insert(questions, q)
+    local norm = ("\n" .. str):gsub("([%s\r\n]+[0-9]+[%.)]%s+)", "\n%1")
+    local current_q = nil
+    for line in norm:gmatch("[^\r\n]+") do
+      local num_prefix, text = line:match("^%s*([0-9]+)[%.)]%s*(.*)$")
+      if num_prefix then
+        if current_q and vim.trim(current_q) ~= "" then
+          table.insert(questions, vim.trim(current_q))
+        end
+        current_q = text
+      elseif current_q and vim.trim(line) ~= "" then
+        current_q = current_q .. " " .. vim.trim(line)
       end
+    end
+    if current_q and vim.trim(current_q) ~= "" then
+      table.insert(questions, vim.trim(current_q))
     end
     if #questions >= 2 then return questions end
   end
 
-  -- 2. Bullet points: "- ...\n- ..." or "* ...\n* ..."
-  if str:match("[\r\n]%s*[-*]%s+") or str:match("^%s*[-*]%s+") then
+  -- 2. Bullet points (single line or spanning multiple lines)
+  if str:match("^%s*[-*]%s+") or str:match("[\r\n]%s*[-*]%s+") then
+    local current_q = nil
     for line in str:gmatch("[^\r\n]+") do
-      local q = line:gsub("^%s*[-*]%s+", "")
-      q = vim.trim(q)
-      if #q >= 3 then
-        table.insert(questions, q)
+      local bullet, text = line:match("^%s*([-%*])%s+(.*)$")
+      if bullet then
+        if current_q and vim.trim(current_q) ~= "" then
+          table.insert(questions, vim.trim(current_q))
+        end
+        current_q = text
+      elseif current_q then
+        current_q = current_q .. " " .. vim.trim(line)
       end
+    end
+    if current_q and vim.trim(current_q) ~= "" then
+      table.insert(questions, vim.trim(current_q))
     end
     if #questions >= 2 then return questions end
   end
 
-  -- 3. Multiple question marks: "Where is X? Where is Y?"
+  -- 3. Multiple question marks
   local q_count = 0
   for _ in str:gmatch("%?") do q_count = q_count + 1 end
   if q_count >= 2 then
     for part in str:gmatch("([^%?]+%?)") do
-      local q = vim.trim(part)
+      local q = part:gsub("[\r\n]+", " ")
+      q = vim.trim(q)
       q = q:gsub("^[%s,;]+", ""):gsub("^[aA]nd%s+", ""):gsub("^[aA]lso%s*,?%s*", "")
       if #q >= 5 then
         table.insert(questions, q)
@@ -72,7 +93,8 @@ function M.split_questions(input)
     end
     local tail = str:match("%?[^%?]+$")
     if tail then
-      local t = vim.trim(tail:sub(2))
+      local t = tail:sub(2):gsub("[\r\n]+", " ")
+      t = vim.trim(t)
       t = t:gsub("^[%s,;]+", ""):gsub("^[aA]nd%s+", ""):gsub("^[aA]lso%s*,?%s*", "")
       if #t >= 8 and (t:lower():find("where") or t:lower():find("how") or t:lower():find("what") or t:lower():find("which")) then
         table.insert(questions, t)
@@ -85,15 +107,15 @@ function M.split_questions(input)
   for _, sep in ipairs({ ", and where", " and where", ", and how", " and how", ", and what", " and what", ", also where", "; where", "; how" }) do
     local s = str:lower():find(sep, 1, true)
     if s then
-      local q1 = vim.trim(str:sub(1, s - 1))
-      local q2 = vim.trim(str:sub(s + #sep - 5))
+      local q1 = vim.trim(str:sub(1, s - 1):gsub("[\r\n]+", " "))
+      local q2 = vim.trim(str:sub(s + #sep - 5):gsub("[\r\n]+", " "))
       if #q1 >= 5 and #q2 >= 5 then
         return { q1, q2 }
       end
     end
   end
 
-  return { str }
+  return { vim.trim(str:gsub("[\r\n]+", " ")) }
 end
 
 --- Search codebase and rank matches by definition confidence
@@ -367,10 +389,16 @@ function M.ask(question, root_override, callback)
     callback = root_override
     root_override = nil
   end
-  question = vim.trim(question or "")
+
+  question = question or ""
+  -- Unescape literal \n or \r\n from command-line arguments
+  question = question:gsub("\\r\\n", "\n"):gsub("\\n", "\n")
+  question = vim.trim(question)
+
   if question == "" then
-    vim.notify("Usage: :Ask <question about the code>", vim.log.levels.INFO)
-    if callback then callback(nil) end
+    ui.open_multiline_input("Ask Code Question (multi-line & multi-question)", "", function(submitted_text)
+      M.ask(submitted_text, root_override, callback)
+    end)
     return
   end
 
