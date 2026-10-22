@@ -2,6 +2,16 @@
 -- e2e_diff_suite.lua: Comprehensive End-to-End Test Suite for synvim Diff Engine
 -- ==============================================================================
 
+local script_dir = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h")
+local repo_root = vim.fn.fnamemodify(script_dir, ":h")
+vim.opt.rtp:prepend(repo_root .. "/nvim")
+package.path = repo_root .. "/nvim/lua/?.lua;" .. repo_root .. "/nvim/lua/?/init.lua;" .. package.path
+package.loaded["agent.diff"] = nil
+package.loaded["agent.reviews"] = nil
+package.loaded["agent.tasks"] = nil
+package.loaded["agent.state"] = nil
+package.loaded["agent.ui"] = nil
+
 local diff_mod = require("agent.diff")
 local reviews_mod = require("agent.reviews")
 local tasks_mod = require("agent.tasks")
@@ -378,6 +388,101 @@ do
   local inlines_b, adds_b = diff_mod.compute_char_diff("local x = 10", "")
   assert_eq(#inlines_b, 1, "Inline deletion detected when line becomes empty")
   assert_eq(#adds_b, 0, "No additions on empty line")
+end
+
+-- -----------------------------------------------------------------------------
+-- TEST 14: Discontinuous Multiple Token Changes in Single Line
+-- -----------------------------------------------------------------------------
+print("\n[TEST 14] Discontinuous Multiple Token Changes in Single Line")
+do
+  local inlines, adds = diff_mod.compute_char_diff(
+    "func(arg1, old_first, arg2, old_second)",
+    "func(arg1, new_first, arg2, new_second)"
+  )
+  assert_eq(#inlines, 2, "2 separate inline deletions detected")
+  assert_eq(#adds, 2, "2 separate word additions detected")
+  assert_eq(inlines[1].col, 11, "First deletion aligned at column 11")
+  assert_eq(inlines[2].col, 28, "Second deletion aligned at column 28")
+  assert_eq(adds[1].start_col, 11, "First addition starts at column 11")
+  assert_eq(adds[2].start_col, 28, "Second addition starts at column 28")
+end
+
+-- -----------------------------------------------------------------------------
+-- TEST 15: Boundary Deletions (Start of Line & End of Line)
+-- -----------------------------------------------------------------------------
+print("\n[TEST 15] Boundary Deletions (Start of Line & End of Line)")
+do
+  -- Start of line deletion (e.g. removing 'const ')
+  local inlines_start, adds_start = diff_mod.compute_char_diff("const int val = 5;", "int val = 5;")
+  assert_eq(#inlines_start, 1, "Inline deletion at start of line detected")
+  assert_eq(inlines_start[1].col, 0, "Deletion starts at column 0")
+  assert_true(inlines_start[1].text:find("const ") ~= nil, "Deleted prefix matches 'const '")
+
+  -- End of line deletion (e.g. removing trailing inline comment)
+  local inlines_end, adds_end = diff_mod.compute_char_diff("int val = 5; // comment", "int val = 5;")
+  assert_eq(#inlines_end, 1, "Inline deletion at end of line detected")
+  assert_true(inlines_end[1].text:find("// comment") ~= nil, "Deleted suffix matches trailing comment")
+end
+
+-- -----------------------------------------------------------------------------
+-- TEST 16: File Boundary Indices (Line 1 & Bottom of File)
+-- -----------------------------------------------------------------------------
+print("\n[TEST 16] File Boundary Indices (Line 1 & Bottom of File)")
+do
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "first line", "second line" })
+
+  -- Insert at line 1
+  diff_mod.show_inline_diff(buf, 1, "new header\nfirst line", 1, false, { "first line" }, { task_id = "test-bound-top" })
+  local marks_top = vim.api.nvim_buf_get_extmarks(buf, state_mod.ns_diff, 0, -1, {})
+  assert_true(#marks_top > 0, "Top-of-file boundary diff sets extmarks without index errors")
+  diff_mod.clear_diff(true)
+
+  -- Insert at bottom of file (line > line_count)
+  diff_mod.show_inline_diff(buf, 999, "new bottom line", 0, false, {}, { task_id = "test-bound-bot" })
+  local marks_bot = vim.api.nvim_buf_get_extmarks(buf, state_mod.ns_diff, 0, -1, {})
+  assert_true(#marks_bot > 0, "Bottom-of-file boundary diff sets extmarks without index errors")
+  diff_mod.clear_diff(true)
+end
+
+-- -----------------------------------------------------------------------------
+-- TEST 17: Full Acceptance Lifecycle with Contract Promotion
+-- -----------------------------------------------------------------------------
+print("\n[TEST 17] Full Acceptance Lifecycle with Contract Promotion")
+do
+  local test_file = vim.fn.tempname() .. ".py"
+  local initial_code = {
+    "# TODO(unit-test-task | tier:A | status:DONE): Test implementation",
+    "def verified_func():",
+    "    return True",
+  }
+  vim.fn.writefile(initial_code, test_file)
+  local bufnr = vim.fn.bufadd(test_file)
+  vim.fn.bufload(bufnr)
+
+  local rev = {
+    id = "rev-accept-lifecycle",
+    task_id = "unit-test-task",
+    target_file = test_file,
+    abs_file = test_file,
+    start_line = 1,
+    old_lines_count = 3,
+    old_lines = initial_code,
+    new_lines = initial_code,
+  }
+
+  reviews_mod.show_review(rev)
+  assert_true(state_mod.state.pending_diff ~= nil, "Pending diff is active before accept")
+
+  -- Accept the diff
+  diff_mod.accept_diff()
+  assert_true(state_mod.state.pending_diff == nil, "Pending diff cleared upon accept")
+
+  -- Verify contract header was promoted from status:DONE to status:APPROVED
+  local lines_after = vim.fn.readfile(test_file)
+  assert_true(lines_after[1]:find("status:APPROVED") ~= nil, "Contract header promoted to status:APPROVED")
+
+  vim.fn.delete(test_file)
 end
 
 -- -----------------------------------------------------------------------------

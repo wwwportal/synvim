@@ -112,6 +112,8 @@ function M.compute_char_diff(old_line, new_line)
       anchor_col = new_toks[sb].start_col
       local end_col = new_toks[sb + cb - 1] and new_toks[sb + cb - 1].end_col or anchor_col
       table.insert(add_ranges, { start_col = anchor_col, end_col = end_col })
+    elseif sb <= 1 and #new_toks > 0 then
+      anchor_col = new_toks[1].start_col
     elseif sb <= #new_toks and new_toks[sb] then
       anchor_col = new_toks[sb].start_col
     end

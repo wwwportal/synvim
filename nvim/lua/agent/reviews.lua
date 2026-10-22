@@ -210,9 +210,11 @@ function M.revert_review(rev_id)
   -- Update review JSON
   rev.status = "rejected"
   rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
-  local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
-  if vim.fn.filereadable(meta_path) == 1 then
-    vim.fn.writefile({ vim.fn.json_encode(rev) }, meta_path)
+  if rev.patch_file and root then
+    local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
+    if vim.fn.filereadable(meta_path) == 1 then
+      vim.fn.writefile({ vim.fn.json_encode(rev) }, meta_path)
+    end
   end
 
   state.current_review = nil
@@ -260,6 +262,10 @@ function M.accept_review(rev_id)
     end
   end
 
+  if not rev and state.current_review and (state.current_review.id == rev_id or rev_id == "") then
+    rev = state.current_review
+  end
+
   if not rev then
     vim.notify("GitReview: Review ID not found: " .. tostring(rev_id), vim.log.levels.WARN)
     return false
@@ -271,9 +277,11 @@ function M.accept_review(rev_id)
   end
   rev.status = "accepted"
   rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
-  local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
-  if vim.fn.filereadable(meta_path) == 1 then
-    vim.fn.writefile({ vim.fn.json_encode(rev) }, meta_path)
+  if rev.patch_file and root then
+    local meta_path = root .. "/" .. (rev.patch_file:gsub("%.patch$", ".json"))
+    if vim.fn.filereadable(meta_path) == 1 then
+      vim.fn.writefile({ vim.fn.json_encode(rev) }, meta_path)
+    end
   end
 
   state.current_review = nil
