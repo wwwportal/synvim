@@ -181,9 +181,65 @@ return {
           },
           lualine_c = {
             {
-              "filename",
-              path = 1, -- 1: relative path
-              symbols = { modified = " ●", readonly = " ", unnamed = "[No Name]" },
+              function()
+                local buf = vim.api.nvim_get_current_buf()
+                local name = vim.api.nvim_buf_get_name(buf)
+                local bt = vim.bo[buf].buftype
+                local ft = vim.bo[buf].filetype
+
+                -- Clean formatting for terminal buffers (no ugly term://...//pid: or padlock)
+                if bt == "terminal" or name:match("^term://") then
+                  local ui_mod = package.loaded["agent.ui"]
+                  local live_cwd = ui_mod and ui_mod.get_terminal_cwd and ui_mod.get_terminal_cwd(buf)
+                  local dir, shell = nil, nil
+                  if not live_cwd then
+                    dir, shell = name:match("^term://(.-)//%d+:(.*)$")
+                    if not dir then dir, shell = name:match("^term://(.-):(.*)$") end
+                  else
+                    dir = live_cwd
+                    shell = name:match("^term://.-//%d+:(.*)$") or "bash"
+                  end
+
+                  local home = os.getenv("HOME") or ""
+                  if dir and home ~= "" and vim.startswith(dir, home) then
+                    dir = "~" .. dir:sub(#home + 1)
+                  end
+                  local short_shell = shell and vim.fn.fnamemodify(shell, ":t") or "bash"
+                  if dir and dir ~= "" then
+                    return string.format("  Terminal: %s (%s)", dir, short_shell)
+                  else
+                    return string.format("  Terminal (%s)", short_shell)
+                  end
+                end
+
+                if bt == "quickfix" then
+                  return " Quickfix Agenda"
+                end
+
+                if bt == "help" then
+                  return " Help: " .. vim.fn.fnamemodify(name, ":t")
+                end
+
+                if ft == "markdown" and bt == "nofile" then
+                  return "📝 Input"
+                end
+
+                if name == "" then
+                  return "[No Name]"
+                end
+
+                -- Compute clean relative or shortened path
+                local rel = vim.fn.fnamemodify(name, ":.")
+                local home = os.getenv("HOME") or ""
+                if home ~= "" and vim.startswith(rel, home) then
+                  rel = "~" .. rel:sub(#home + 1)
+                end
+
+                local mod = vim.bo[buf].modified and " ●" or ""
+                local ro = (vim.bo[buf].readonly or not vim.bo[buf].modifiable) and " " or ""
+
+                return rel .. mod .. ro
+              end,
               color = { fg = colors.white, gui = "bold" },
             },
           },
@@ -224,6 +280,12 @@ return {
               "tabs",
               mode = 2, -- 2: index and name
               max_length = vim.o.columns,
+              fmt = function(name)
+                if name:match("^term://") or name:match("^t//") then
+                  return "Terminal"
+                end
+                return name
+              end,
               tabs_color = {
                 active = { fg = colors.white, bg = colors.blue, gui = "bold" },
                 inactive = { fg = colors.fg_muted, bg = colors.bg_section },
