@@ -1618,7 +1618,7 @@ function M.add_task(arg_str, win)
   win = win or ui.get_primary_editor_win()
   arg_str = vim.trim(arg_str or "")
   if arg_str == "" then
-    vim.ui.input({ prompt = "Specification to split into tasks across repo: " }, function(input)
+    ui.open_docked_input("Tasks Add: Multi-line Task Entry", "", function(input)
       if input and vim.trim(input) ~= "" then
         M.add_task(input, win)
       end

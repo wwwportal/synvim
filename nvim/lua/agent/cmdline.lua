@@ -5,7 +5,7 @@ local search = require("agent.search")
 M.preview_buf = nil
 M.preview_win = nil
 M.ns_preview = vim.api.nvim_create_namespace("synvim_cmdline_preview")
-M.enabled = true
+M.enabled = false -- Disabled by default to prevent floating clutter over editor code
 
 --- Safely close floating preview window and buffer
 function M.close_preview()

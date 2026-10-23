@@ -109,11 +109,15 @@ do
 end
 
 -- -----------------------------------------------------------------------------
--- SCENARIO 3: Floating Preview Window Rendering Above Cmdline
+-- SCENARIO 3: Floating Preview Window Rendering (When Explicitly Enabled)
 -- -----------------------------------------------------------------------------
-print("\n[SCENARIO 3] Floating Preview Window Rendering Above Cmdline")
+print("\n[SCENARIO 3] Floating Preview Window Rendering (When Explicitly Enabled)")
 do
   cmdline_mod.close_preview()
+  assert_eq(cmdline_mod.enabled, false, "Floating preview is disabled by default to prevent clutter over code")
+
+  -- Enable for testing optional preview mode
+  cmdline_mod.enabled = true
 
   -- 1. Initial empty command rendering
   cmdline_mod.update_preview("Ask ")
@@ -158,6 +162,7 @@ end
 print("\n[SCENARIO 4] Interactive Typing & Autocmd Integration")
 do
   cmdline_mod.close_preview()
+  cmdline_mod.enabled = true
   cmdline_mod.setup()
 
   local was_window_valid_during_typing = false

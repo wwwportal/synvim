@@ -363,38 +363,35 @@ function M.show_help()
   vim.keymap.set("n", "<Esc>", close_fn, { buffer = buf, silent = true, nowait = true })
 end
 
---- Open an interactive multi-line scratch input buffer for complex questions or tasks
-function M.open_multiline_input(title, default_text, on_submit)
-  local buf = vim.api.nvim_create_buf(false, true)
+--- Open an interactive multi-line docked bottom split input buffer for questions or tasks
+function M.open_docked_input(title, default_text, on_submit)
+  local origin_win = vim.api.nvim_get_current_win()
+  local height = 4
+
+  -- Create a bottom split across the entire window width
+  vim.cmd("botright " .. height .. "new")
+  local win = vim.api.nvim_get_current_win()
+  local buf = vim.api.nvim_get_current_buf()
+
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].filetype = "markdown"
+  vim.bo[buf].swapfile = false
+
+  vim.wo[win].winfixheight = true
+  vim.wo[win].number = true
+  vim.wo[win].relativenumber = false
+  vim.wo[win].signcolumn = "no"
+  vim.wo[win].wrap = true
+  vim.wo[win].statusline = string.format(
+    " %s %%= [Enter: Newline | Ctrl+Enter / <C-s>: Submit | Esc/q: Cancel] ",
+    title or "Input"
+  )
 
   if default_text and default_text ~= "" then
     local d_lines = vim.split(default_text, "\n")
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, d_lines)
   end
-
-  local total_w = vim.o.columns
-  local total_h = vim.o.lines
-  local width = math.min(84, math.max(40, math.floor(total_w * 0.75)))
-  local height = math.min(14, math.max(6, math.floor(total_h * 0.4)))
-  local row = math.max(1, math.floor((total_h - height) / 2))
-  local col = math.max(1, math.floor((total_w - width) / 2))
-
-  local win = vim.api.nvim_open_win(buf, true, {
-    relative = "editor",
-    row = row,
-    col = col,
-    width = width,
-    height = height,
-    style = "minimal",
-    border = "rounded",
-    title = " " .. (title or "Input") .. " ",
-    title_pos = "center",
-    footer = " [<C-s> / :w Submit | <Esc> Cancel] ",
-    footer_pos = "right",
-  })
 
   local submitted = false
   local function submit()
@@ -403,6 +400,9 @@ function M.open_multiline_input(title, default_text, on_submit)
     local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
     local text = vim.trim(table.concat(lines, "\n"))
     pcall(vim.api.nvim_win_close, win, true)
+    if vim.api.nvim_win_is_valid(origin_win) then
+      vim.api.nvim_set_current_win(origin_win)
+    end
     if text ~= "" and on_submit then
       on_submit(text)
     end
@@ -412,15 +412,28 @@ function M.open_multiline_input(title, default_text, on_submit)
     if submitted then return end
     submitted = true
     pcall(vim.api.nvim_win_close, win, true)
+    if vim.api.nvim_win_is_valid(origin_win) then
+      vim.api.nvim_set_current_win(origin_win)
+    end
   end
 
-  vim.keymap.set({ "n", "i" }, "<C-s>", submit, { buffer = buf, silent = true, nowait = true })
+  -- Keys for submitting:
+  -- Insert mode: <C-CR>, <C-s>
+  pcall(vim.keymap.set, "i", "<C-CR>", submit, { buffer = buf, silent = true, nowait = true })
+  pcall(vim.keymap.set, "i", "<C-s>", submit, { buffer = buf, silent = true, nowait = true })
+
+  -- Normal mode: <CR>, <C-s>
   vim.keymap.set("n", "<CR>", submit, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "<C-s>", submit, { buffer = buf, silent = true, nowait = true })
   vim.keymap.set("n", "<Esc>", cancel, { buffer = buf, silent = true, nowait = true })
   vim.keymap.set("n", "q", cancel, { buffer = buf, silent = true, nowait = true })
   vim.keymap.set("n", "<C-c>", cancel, { buffer = buf, silent = true, nowait = true })
 
   pcall(vim.cmd, "startinsert")
+  return win, buf
 end
+
+-- Backward compatibility alias
+M.open_multiline_input = M.open_docked_input
 
 return M

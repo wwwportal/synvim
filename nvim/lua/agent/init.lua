@@ -24,6 +24,8 @@ M.show_help = ui.show_help
 M.help = ui.show_help
 M.close_dir_preview = ui.close_dir_preview
 M.show_dir_preview = ui.show_dir_preview
+M.open_docked_input = ui.open_docked_input
+M.open_multiline_input = ui.open_docked_input
 
 -- In-line Diffs
 M.setup_highlights = diff.setup_highlights
@@ -174,8 +176,14 @@ function M.setup()
         query = selected
       end
     end
+    if query == "" then
+      ui.open_docked_input("Ask: Multi-line Question Entry", "", function(text)
+        search.ask(text)
+      end)
+      return
+    end
     search.ask(query)
-  end, { range = true, nargs = "*", desc = "Ask code question (supports multi-line, multi-question, and visual selection) (:Ask <question>)" })
+  end, { range = true, nargs = "*", desc = "Ask code question (supports docked multi-line split, multi-question, and visual selection) (:Ask [question])" })
 
   -- If :Git command does not exist, provide basic :Git with review support
   if vim.fn.exists(":Git") ~= 2 then
