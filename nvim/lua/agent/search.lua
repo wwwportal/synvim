@@ -167,9 +167,9 @@ local PROVIDER_ALIASES = {
   ["sourcegraph"] = "code",
 }
 
---- Parse user input to `:Find` into `(clean_query, locations, provider)`
+--- Parse user input to `:Find` into `(clean_query, locations, provider, providers_list)`
 --- Supports:
----   1. Provider prefixes/tokens: `@deps`, `@loogle` (`@mathlib`), `@docs` (`@devdocs`, `@cht`), `@code` (`@web`, `@grep`)
+---   1. Multiple Provider tags at once: `@algo @code`, `@loogle @deps`, `@docs @algo`
 ---   2. `<query> in <loc1> [loc2 ...]`
 ---   3. `@<loc>`, `path:<loc>`, `dir:<loc>`, `file:<loc>`, `in:<loc>`, `-p <loc>`
 ---   4. Positional existing file/dir/glob tokens at start or end of multi-word queries
@@ -177,10 +177,18 @@ function M.parse_find_args(raw_input, root)
   root = root or ui.get_root_dir()
   local str = vim.trim(raw_input or "")
   if str == "" then
-    return "", {}, "repo"
+    return "", {}, "repo", { "repo" }
   end
 
-  local provider = "repo"
+  local providers = {}
+  local seen_providers = {}
+  local function add_provider(p)
+    if p and not seen_providers[p] then
+      seen_providers[p] = true
+      table.insert(providers, p)
+    end
+  end
+
   local locations = {}
   local seen_loc = {}
   local function add_loc(loc)
@@ -188,7 +196,7 @@ function M.parse_find_args(raw_input, root)
     local cl = vim.trim(loc):gsub("^['\"]", ""):gsub("['\"]$", "")
     local low = cl:lower()
     if PROVIDER_ALIASES[low] then
-      provider = PROVIDER_ALIASES[low]
+      add_provider(PROVIDER_ALIASES[low])
       return
     end
     if cl ~= "" and not seen_loc[cl] then
@@ -207,7 +215,7 @@ function M.parse_find_args(raw_input, root)
       local tag = w:sub(2)
       local p_alias = PROVIDER_ALIASES[tag:lower()]
       if p_alias then
-        provider = p_alias
+        add_provider(p_alias)
       else
         add_loc(tag)
       end
@@ -260,8 +268,10 @@ function M.parse_find_args(raw_input, root)
     filtered = head
   end
 
+  local primary_provider = (#providers > 0) and table.concat(providers, "+") or "repo"
+
   -- 3. Check leading or trailing positional directory/file/glob tokens when multiple tokens exist
-  if provider == "repo" and #filtered >= 2 and #locations == 0 then
+  if primary_provider == "repo" and #filtered >= 2 and #locations == 0 then
     -- Check leading tokens that are existing directories/files or globs
     while #filtered >= 2 and is_location_token(filtered[1], root, false) do
       add_loc(table.remove(filtered, 1))
@@ -278,14 +288,14 @@ function M.parse_find_args(raw_input, root)
     end
   end
 
-  if provider == "deps" and #locations == 0 then
+  if vim.tbl_contains(providers, "deps") and #locations == 0 then
     for _, dl in ipairs(M.resolve_deps_locations(root)) do
       add_loc(dl)
     end
   end
 
   local clean_query = vim.trim(table.concat(filtered, " "))
-  return clean_query, locations, provider
+  return clean_query, locations, primary_provider, providers
 end
 
 --- Extract core search keywords from natural language or symbol queries
@@ -955,6 +965,37 @@ function M.search_and_rank(query, root, locations, explicit_provider)
     if not explicit_provider and parsed_prov then
       provider = parsed_prov
     end
+  end
+
+  local provider_list = {}
+  if type(explicit_provider) == "table" then
+    provider_list = explicit_provider
+  elseif type(provider) == "string" and provider:find("%+") then
+    provider_list = vim.split(provider, "%+")
+  elseif provider then
+    provider_list = { provider }
+  end
+
+  if #provider_list > 1 then
+    local merged = {}
+    local seen_keys = {}
+    for _, p in ipairs(provider_list) do
+      local sub_results = M.search_and_rank(clean_query, root, locs, p)
+      for _, item in ipairs(sub_results) do
+        local key = (item.path or "") .. ":" .. tostring(item.line or 1)
+        if not seen_keys[key] then
+          seen_keys[key] = true
+          table.insert(merged, item)
+        end
+      end
+    end
+    table.sort(merged, function(a, b)
+      local sa = tonumber(a.score) or 0
+      local sb = tonumber(b.score) or 0
+      if sa ~= sb then return sa > sb end
+      return (a.path or "") < (b.path or "")
+    end)
+    return merged
   end
 
   if provider == "loogle" then

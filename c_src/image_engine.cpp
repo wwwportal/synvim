@@ -251,7 +251,7 @@ static void build_kitty_chunks_into(
             std::snprintf(
                 header_buf,
                 sizeof(header_buf),
-                "\033_Ga=T,f=100,i=%d,c=%d,r=%d,C=1,q=2,m=%d;",
+                "\033_Ga=T,f=100,i=%d,c=%d,r=%d,C=1,z=1,q=2,m=%d;",
                 image_id,
                 std::max(1, win_cols),
                 std::max(1, win_rows),

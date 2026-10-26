@@ -3010,6 +3010,12 @@ function M.open_architecture_review(on_satisfied_cb, opts)
   vim.api.nvim_win_set_buf(img_win, img_buf)
 
   local image_mod = require("agent.image")
+  if vim.fn.filereadable(first_png) ~= 1 then
+    local gen_script = root .. "/docs/architecture/generate_diagrams.sh"
+    if vim.fn.filereadable(gen_script) == 1 then
+      vim.fn.system({ gen_script, "-f", "png", first_puml })
+    end
+  end
   if vim.fn.filereadable(first_png) == 1 then
     image_mod.open_image_buffer(img_buf, first_png, img_win)
   end
@@ -3018,6 +3024,14 @@ function M.open_architecture_review(on_satisfied_cb, opts)
 
   if vim.api.nvim_win_is_valid(puml_win) then
     vim.api.nvim_set_current_win(puml_win)
+  end
+  if #vim.api.nvim_list_uis() > 0 then
+    pcall(vim.cmd, "redraw")
+    vim.defer_fn(function()
+      if vim.api.nvim_buf_is_valid(img_buf) and vim.api.nvim_win_is_valid(img_win) then
+        image_mod.render(img_buf)
+      end
+    end, 30)
   end
 
   local session = {

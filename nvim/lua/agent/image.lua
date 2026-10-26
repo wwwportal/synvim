@@ -160,14 +160,29 @@ function M.build_kitty_delete(image_id)
   return ptr ~= nil and ffi.string(ptr) or ""
 end
 
+local function wrap_tmux_passthrough(payload)
+  if not vim.env.TMUX or vim.env.TMUX == "" then
+    return payload
+  end
+  -- Wrap each APC escape chunk in tmux DCS passthrough (\033Ptmux;\033...\033\\)
+  return (payload:gsub("\027_G(.-)\027\\", "\027Ptmux;\027\027_G%1\027\027\\\027\\"))
+end
+
 local function write_tty(payload)
   if not payload or payload == "" then return false end
   if #vim.api.nvim_list_uis() == 0 then return false end
+  local out_seq = wrap_tmux_passthrough(payload)
   local tty = io.open("/dev/tty", "wb")
-  if not tty then return false end
-  tty:write(payload)
-  tty:flush()
-  tty:close()
+  if tty then
+    tty:write(out_seq)
+    tty:flush()
+    tty:close()
+    return true
+  end
+  pcall(function()
+    io.stdout:write(out_seq)
+    io.stdout:flush()
+  end)
   return true
 end
 
@@ -208,12 +223,21 @@ function M.render(bufnr)
   local term_row, term_col = 2, 1
   local win_cols, win_rows = 80, 24
   if win and vim.api.nvim_win_is_valid(win) then
+    pcall(function()
+      vim.wo[win].number = false
+      vim.wo[win].relativenumber = false
+      vim.wo[win].signcolumn = "no"
+      vim.wo[win].foldcolumn = "0"
+      vim.wo[win].cursorline = false
+      vim.wo[win].wrap = false
+      vim.wo[win].fillchars = "eob: "
+    end)
     local ok_pos, pos = pcall(vim.fn.win_screenpos, win)
     if ok_pos and type(pos) == "table" and pos[1] and pos[2] then
       term_row = math.max(1, pos[1] + 1) -- leave line 1 of buffer for status header
       term_col = math.max(1, pos[2])
     end
-    win_cols = math.max(10, vim.api.nvim_win_get_width(win) - 2)
+    win_cols = math.max(10, vim.api.nvim_win_get_width(win) - 1)
     win_rows = math.max(4, vim.api.nvim_win_get_height(win) - 2)
   end
 
@@ -237,12 +261,11 @@ function M.render(bufnr)
     st.last_escape_payload = (res.payload ~= nil and res.payload_len > 0)
       and ffi.string(res.payload, res.payload_len)
       or ""
-    write_tty(st.last_escape_payload)
   else
     st.last_error = res.error ~= nil and ffi.string(res.error) or "Failed to render image"
   end
 
-  -- Update header line in buffer
+  -- Update header line + blank canvas lines in buffer BEFORE redrawing and emitting Kitty graphics
   local fname = vim.fn.fnamemodify(st.filepath, ":t")
   local header = string.format(
     " 🖼  %s (%dx%d) │ Zoom: %.2fx │ Crop: %dx%d+%d+%d │ [+/=]:Zoom In [-]:Zoom Out [h/j/k/l]:Pan [0]:Reset [q]:Quit",
@@ -255,10 +278,21 @@ function M.render(bufnr)
     st.last_crop and st.last_crop.x or 0,
     st.last_crop and st.last_crop.y or 0
   )
+  local canvas_lines = { header }
+  for _ = 1, win_rows do
+    table.insert(canvas_lines, "")
+  end
   vim.bo[bufnr].modifiable = true
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { header })
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, canvas_lines)
   vim.bo[bufnr].modifiable = false
   vim.bo[bufnr].modified = false
+
+  if res.ok == 1 and st.last_escape_payload ~= "" then
+    if #vim.api.nvim_list_uis() > 0 then
+      pcall(vim.cmd, "redraw")
+    end
+    write_tty(st.last_escape_payload)
+  end
 
   return st
 end
@@ -378,21 +412,35 @@ function M.open_image_buffer(bufnr, filepath, win)
     end
   end, vim.tbl_extend("force", kopts, { desc = "Close image viewer" }))
 
-  vim.api.nvim_create_autocmd({ "BufLeave", "BufWipeout", "WinClosed" }, {
+  vim.api.nvim_create_autocmd({ "BufHidden", "BufWipeout" }, {
     buffer = bufnr,
     callback = function()
-      M.clear(bufnr)
+      if #vim.fn.win_findbuf(bufnr) == 0 then
+        M.clear(bufnr)
+      end
     end,
   })
 
-  vim.api.nvim_create_autocmd({ "BufWinEnter", "WinResized" }, {
+  vim.api.nvim_create_autocmd({ "BufWinEnter", "WinResized", "WinEnter" }, {
     buffer = bufnr,
     callback = function()
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(bufnr) and #vim.fn.win_findbuf(bufnr) > 0 then
+          M.render(bufnr)
+        end
+      end)
+    end,
+  })
+
+  local res_render = M.render(bufnr)
+  -- Defer an extra render pass after window split geometry & focus settle
+  vim.defer_fn(function()
+    if vim.api.nvim_buf_is_valid(bufnr) and #vim.fn.win_findbuf(bufnr) > 0 then
       M.render(bufnr)
-    end,
-  })
+    end
+  end, 30)
 
-  return M.render(bufnr)
+  return res_render
 end
 
 function M.setup()

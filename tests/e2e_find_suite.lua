@@ -599,8 +599,59 @@ scenario("Embedded Code Documentation & External Search Providers (@deps, @loogl
   assert_true(algo_text:find("https://cp-algorithms.com/data_structures/fenwick.html", 1, true) ~= nil, "Activated @algo buffer must include CP-Algorithms link")
   assert_true(algo_text:find("https://xlinux.nist.gov/dads/HTML/binaryIndexedTree.html", 1, true) ~= nil, "Activated @algo buffer must include NIST DADS link")
 
+  -- F. Test Multi-Tag Search (@algo @code simultaneously)
+  local fwin_multi, fbuf_multi = search.open_find_menu("@algo @code fenwick", repo_root)
+  assert_true(vim.api.nvim_win_is_valid(fwin_multi), ":Find with multiple @ tags must open")
+  assert_eq(search.state.provider, "algo+code", "Multiple tags must be combined into composite provider")
+  local multi_cands = search.state.candidates
+  local has_algo = false
+  local has_code = false
+  for _, c in ipairs(multi_cands) do
+    if c.match_type == "algo" then has_algo = true end
+    if c.match_type == "code" then has_code = true end
+  end
+  assert_true(has_algo, "Multi-tag search must include @algo results")
+  assert_true(has_code, "Multi-tag search must include @code results")
+  search.close_find_menu()
+
   search.custom_http_get = nil
   vim.fn.delete(dep_root, "rf")
+end)
+
+-- 11. PlantUML Architecture Review and Native Image Viewer Split Rendering
+scenario("PlantUML Architecture Review & Native Image Viewer Split Rendering", function()
+  local tasks_mod = require("agent.tasks")
+  local image_mod = require("agent.image")
+
+  local arch_dir = repo_root .. "/docs/architecture"
+  local puml_file = arch_dir .. "/synvim_architecture.puml"
+  local png_file = arch_dir .. "/synvim_architecture.png"
+
+  assert_true(vim.fn.filereadable(puml_file) == 1, "synvim_architecture.puml must exist on disk")
+  assert_true(vim.fn.filereadable(png_file) == 1, "synvim_architecture.png must exist on disk")
+
+  -- Open the architecture review split (.puml on left, rendered .png on right)
+  local session = tasks_mod.open_architecture_review()
+  assert_true(session ~= nil and session.active == true, "open_architecture_review must create an active review session")
+  assert_true(vim.api.nvim_win_is_valid(session.puml_win), "PlantUML window must be open and valid")
+  assert_true(vim.api.nvim_win_is_valid(session.img_win), "Rendered diagram image window must be open and valid in split")
+
+  -- Focus was switched to puml_win: verify the image state in img_buf did NOT get cleared/wiped!
+  local img_state = image_mod.states[session.img_buf]
+  assert_true(img_state ~= nil, "Image buffer state must remain valid in memory")
+  assert_true(img_state.img_w > 0 and img_state.img_h > 0, "Image dimensions must be decoded and non-zero")
+  local img_lines = vim.api.nvim_buf_get_lines(session.img_buf, 0, 1, false)
+  assert_true(img_lines[1]:find("synvim_architecture.png", 1, true) ~= nil, "Image header must display diagram filename")
+
+  -- Test interactive diagram zoom and pan in the image split
+  image_mod.zoom(session.img_buf, 1.25, true)
+  assert_true(img_state.scale > 1.0, "Zoom in must scale image > 1.0x")
+  image_mod.reset(session.img_buf)
+  assert_eq(img_state.scale, 1.0, "Reset must restore zoom to 1.0x")
+
+  -- Confirm satisfaction (<C-s>) to close review and clean up windows
+  tasks_mod.confirm_architecture_review()
+  assert_eq(state_mod.state.arch_review, nil, "confirm_architecture_review must clean up session state")
 end)
 
 print("==========================================================")
