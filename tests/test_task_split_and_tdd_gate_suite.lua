@@ -113,9 +113,10 @@ do
   assert_eq(state_mod.state.placement_queue[2].requires[1], "refactor-parser-core", "Second split task automatically requires first split task")
   assert_eq(state_mod.state.placement_queue[1].test, "tests/test_parser_core_suite.lua", "First split task has dedicated test")
   assert_eq(state_mod.state.placement_queue[2].test, "tests/test_ui_renderer_suite.lua", "Second split task has dedicated test")
+  tasks.stop_placement_mode(true)
 end
 
-print("\n=== [3/4] Testing Line-Anchored Placement & In-Tree Test Field Persistence ===")
+print("\n=== [3/4] Testing Carve & Drop at Location A -> Carry Remainder to Location B ===")
 do
   local tmp_dir = vim.fn.tempname()
   vim.fn.mkdir(tmp_dir, "p")
@@ -123,7 +124,8 @@ do
   local prev_cwd = vim.fn.getcwd()
   vim.fn.chdir(tmp_dir)
 
-  local target_file = tmp_dir .. "/module_a.lua"
+  local file_a = tmp_dir .. "/module_a.lua"
+  local file_b = tmp_dir .. "/module_b.lua"
   vim.fn.writefile({
     "local M = {}",
     "",
@@ -132,36 +134,80 @@ do
     "end",
     "",
     "return M",
-  }, target_file)
+  }, file_a)
+  vim.fn.writefile({
+    "local UI = {}",
+    "function UI.render()",
+    "  return nil",
+    "end",
+    "return UI",
+  }, file_b)
 
-  local buf = vim.fn.bufadd(target_file)
-  vim.fn.bufload(buf)
-  vim.api.nvim_set_current_buf(buf)
+  local buf_a = vim.fn.bufadd(file_a)
+  vim.fn.bufload(buf_a)
+  local buf_b = vim.fn.bufadd(file_b)
+  vim.fn.bufload(buf_b)
+  vim.api.nvim_set_current_buf(buf_a)
 
-  -- Place first split task right above `function M.parse()` (line 3)
-  tasks.drop_current_task_at_cursor(buf, 3)
-  assert_eq(#state_mod.state.placement_queue, 1, "1 task remaining in placement queue after first drop")
+  -- Start placement mode with a single cross-cutting task
+  local single_broad = tasks.finalize_task_specs({
+    {
+      task_id = "cross-cutting-feature",
+      action = "Add parser AST node in module_a and render it in module_b",
+    },
+  }, "module_a.lua", {})
+  tasks.start_placement_mode(single_broad)
+  assert_eq(#state_mod.state.placement_queue, 1, "Started with 1 broad task on cursor")
 
-  -- Place second split task at the bottom before `return M`
-  local total = vim.api.nvim_buf_line_count(buf)
-  tasks.drop_current_task_at_cursor(buf, total)
-  assert_eq(state_mod.state.placement_active, false, "Placement mode exited after all split tasks placed")
+  -- At Location A (module_a.lua:3), press <M-s> / carve_and_drop_at_cursor:
+  -- Carves off 'refactor-parser-core' and drops it immediately at module_a.lua:3,
+  -- while keeping 'update-ui-renderer' on the cursor in Placement Mode for Location B!
+  tasks.carve_and_drop_at_cursor(
+    {
+      task_id = "refactor-parser-core",
+      test = "tests/test_parser_core_suite.lua",
+      action = "Refactor parser state machine in module_a.lua",
+      allow = { "module_a.lua" },
+    },
+    {
+      task_id = "update-ui-renderer",
+      test = "tests/test_ui_renderer_suite.lua",
+      action = "Update UI renderer in module_b.lua",
+      allow = { "module_b.lua" },
+    },
+    buf_a,
+    3
+  )
 
-  print("\n=== [4/4] Testing Scanner Extraction of Associated Test & Line Anchor ===")
+  assert_eq(state_mod.state.placement_active, true, "Placement mode remains active after carving & dropping at Location A")
+  assert_eq(#state_mod.state.placement_queue, 1, "Remainder task is now the active queued task on cursor")
+  assert_eq(state_mod.state.placement_queue[1].task_id, "update-ui-renderer", "Remainder task on cursor is 'update-ui-renderer'")
+  assert_eq(state_mod.state.placement_queue[1].requires[1], "refactor-parser-core", "Remainder task Hoare precondition requires the carved sub-task dropped at Location A")
+
+  -- Navigate to Location B (module_b.lua:2) and drop the remainder with <M-p>
+  vim.api.nvim_set_current_buf(buf_b)
+  tasks.drop_current_task_at_cursor(buf_b, 2)
+  assert_eq(state_mod.state.placement_active, false, "Placement mode exited after dropping remainder at Location B")
+
+  print("\n=== [4/4] Testing Scanner Extraction of Associated Test & Multi-File Anchors ===")
   local scanned = tasks.scan_repository_tasks(tmp_dir)
   local by_id = {}
   for _, t in ipairs(scanned) do
     by_id[t.task_id] = t
   end
 
-  assert_true(by_id["refactor-parser-core"] ~= nil, "Scanner found first placed split task")
-  assert_eq(by_id["refactor-parser-core"].test, "tests/test_parser_core_suite.lua", "Scanner extracted 'test:' field for first task")
-  assert_eq(by_id["refactor-parser-core"].line, 3, "First task anchored at exact target line 3")
+  assert_true(by_id["refactor-parser-core"] ~= nil, "Scanner found carved task in module_a.lua")
+  assert_eq(by_id["refactor-parser-core"].file, "module_a.lua", "Carved task placed in module_a.lua")
+  assert_eq(by_id["refactor-parser-core"].test, "tests/test_parser_core_suite.lua", "Scanner extracted 'test:' field for carved task")
+  assert_eq(by_id["refactor-parser-core"].line, 3, "Carved task anchored at exact target line 3 in module_a.lua")
 
-  assert_true(by_id["update-ui-renderer"] ~= nil, "Scanner found second placed split task")
-  assert_eq(by_id["update-ui-renderer"].test, "tests/test_ui_renderer_suite.lua", "Scanner extracted 'test:' field for second task")
+  assert_true(by_id["update-ui-renderer"] ~= nil, "Scanner found remainder task in module_b.lua")
+  assert_eq(by_id["update-ui-renderer"].file, "module_b.lua", "Remainder task placed in module_b.lua")
+  assert_eq(by_id["update-ui-renderer"].test, "tests/test_ui_renderer_suite.lua", "Scanner extracted 'test:' field for remainder task")
+  assert_eq(by_id["update-ui-renderer"].requires[1], "refactor-parser-core", "Remainder task in module_b.lua requires carved task in module_a.lua")
 
-  pcall(vim.api.nvim_buf_delete, buf, { force = true })
+  pcall(vim.api.nvim_buf_delete, buf_a, { force = true })
+  pcall(vim.api.nvim_buf_delete, buf_b, { force = true })
   vim.fn.chdir(prev_cwd)
   pcall(vim.fn.delete, tmp_dir, "rf")
 end

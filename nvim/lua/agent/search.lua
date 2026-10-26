@@ -101,37 +101,107 @@ local function is_location_token(tok, root, allow_ext_or_basename)
   return false
 end
 
---- Parse user input to `:Find` into `(clean_query, locations)`
+--- Resolve local dependency directories for `@deps` searches (.lake/packages, .venv, node_modules, vendor, $VIMRUNTIME)
+function M.resolve_deps_locations(root)
+  root = root or ui.get_root_dir()
+  local dep_dirs = {
+    ".lake/packages",
+    "lake-packages",
+    ".venv",
+    "venv",
+    "node_modules",
+    "vendor",
+    "target/debug/build",
+  }
+  local out = {}
+  local seen = {}
+  for _, rel in ipairs(dep_dirs) do
+    local full = root .. "/" .. rel
+    if vim.fn.isdirectory(full) == 1 and not seen[rel] then
+      seen[rel] = true
+      table.insert(out, rel)
+    end
+  end
+  local vimruntime = vim.env.VIMRUNTIME
+  if vimruntime and vimruntime ~= "" then
+    local doc_dir = vimruntime .. "/doc"
+    local lua_dir = vimruntime .. "/lua"
+    if vim.fn.isdirectory(doc_dir) == 1 and not seen[doc_dir] then
+      seen[doc_dir] = true
+      table.insert(out, doc_dir)
+    end
+    if vim.fn.isdirectory(lua_dir) == 1 and not seen[lua_dir] then
+      seen[lua_dir] = true
+      table.insert(out, lua_dir)
+    end
+  end
+  return out
+end
+
+local PROVIDER_ALIASES = {
+  ["deps"] = "deps",
+  ["dep"] = "deps",
+  ["packages"] = "deps",
+  ["pkg"] = "deps",
+  ["loogle"] = "loogle",
+  ["mathlib"] = "loogle",
+  ["lean"] = "loogle",
+  ["docs"] = "docs",
+  ["doc"] = "docs",
+  ["devdocs"] = "docs",
+  ["cht"] = "docs",
+  ["cheat"] = "docs",
+  ["code"] = "code",
+  ["web"] = "code",
+  ["grep"] = "code",
+  ["github"] = "code",
+  ["sourcegraph"] = "code",
+}
+
+--- Parse user input to `:Find` into `(clean_query, locations, provider)`
 --- Supports:
----   1. `<query> in <loc1> [loc2 ...]`
----   2. `@<loc>`, `path:<loc>`, `dir:<loc>`, `file:<loc>`, `in:<loc>`, `-p <loc>`
----   3. Positional existing file/dir/glob tokens at start or end of multi-word queries
+---   1. Provider prefixes/tokens: `@deps`, `@loogle` (`@mathlib`), `@docs` (`@devdocs`, `@cht`), `@code` (`@web`, `@grep`)
+---   2. `<query> in <loc1> [loc2 ...]`
+---   3. `@<loc>`, `path:<loc>`, `dir:<loc>`, `file:<loc>`, `in:<loc>`, `-p <loc>`
+---   4. Positional existing file/dir/glob tokens at start or end of multi-word queries
 function M.parse_find_args(raw_input, root)
   root = root or ui.get_root_dir()
   local str = vim.trim(raw_input or "")
   if str == "" then
-    return "", {}
+    return "", {}, "repo"
   end
 
+  local provider = "repo"
   local locations = {}
   local seen_loc = {}
   local function add_loc(loc)
     if not loc then return end
     local cl = vim.trim(loc):gsub("^['\"]", ""):gsub("['\"]$", "")
+    local low = cl:lower()
+    if PROVIDER_ALIASES[low] then
+      provider = PROVIDER_ALIASES[low]
+      return
+    end
     if cl ~= "" and not seen_loc[cl] then
       seen_loc[cl] = true
       table.insert(locations, cl)
     end
   end
 
-  -- 1. Extract explicit `@path`, `path:...`, `dir:...`, `file:...`, `in:...`, `loc:...`, `-p <path>` tokens
+  -- 1. Extract explicit `@provider`, `@path`, `path:...`, `dir:...`, `file:...`, `in:...`, `loc:...`, `-p <path>` tokens
   local words = vim.split(str, "%s+", { trimempty = true })
   local filtered = {}
   local i = 1
   while i <= #words do
     local w = words[i]
     if w:sub(1, 1) == "@" and #w > 1 then
-      add_loc(w:sub(2))
+      local tag = w:sub(2)
+      local p_alias = PROVIDER_ALIASES[tag:lower()]
+      if p_alias then
+        provider = p_alias
+      else
+        add_loc(tag)
+      end
     elseif w:match("^[pP]ath:(.+)$") then
       add_loc(w:match("^[pP]ath:(.+)$"))
     elseif w:match("^[dD]ir:(.+)$") then
@@ -157,7 +227,8 @@ function M.parse_find_args(raw_input, root)
     if filtered[idx]:lower() == "in" then
       local all_locs = true
       for j = idx + 1, #filtered do
-        if not is_location_token(filtered[j], root, true) then
+        local tok_low = filtered[j]:gsub("^@", ""):lower()
+        if not PROVIDER_ALIASES[tok_low] and not is_location_token(filtered[j], root, true) then
           all_locs = false
           break
         end
@@ -171,7 +242,7 @@ function M.parse_find_args(raw_input, root)
 
   if in_idx then
     for j = in_idx + 1, #filtered do
-      add_loc(filtered[j])
+      add_loc(filtered[j]:gsub("^@", ""))
     end
     local head = {}
     for j = 1, in_idx - 1 do
@@ -181,7 +252,7 @@ function M.parse_find_args(raw_input, root)
   end
 
   -- 3. Check leading or trailing positional directory/file/glob tokens when multiple tokens exist
-  if #filtered >= 2 and #locations == 0 then
+  if provider == "repo" and #filtered >= 2 and #locations == 0 then
     -- Check leading tokens that are existing directories/files or globs
     while #filtered >= 2 and is_location_token(filtered[1], root, false) do
       add_loc(table.remove(filtered, 1))
@@ -198,8 +269,14 @@ function M.parse_find_args(raw_input, root)
     end
   end
 
+  if provider == "deps" and #locations == 0 then
+    for _, dl in ipairs(M.resolve_deps_locations(root)) do
+      add_loc(dl)
+    end
+  end
+
   local clean_query = vim.trim(table.concat(filtered, " "))
-  return clean_query, locations
+  return clean_query, locations, provider
 end
 
 --- Extract core search keywords from natural language or symbol queries
@@ -363,23 +440,502 @@ local function path_matches_lua_locations(rel_path, locations)
   return false
 end
 
---- Search codebase (both file names/paths and file contents) across entire repo or specified locations
---- @param query string Raw user query (may include `in <path>`, `@<path>`, `path:<path>`, etc.)
+--- URL-encode a query parameter string
+function M.url_encode(str)
+  if not str then return "" end
+  str = tostring(str):gsub("\r?\n", " ")
+  return (str:gsub("([^%w%-_%.~])", function(c)
+    return string.format("%%%02X", string.byte(c))
+  end))
+end
+
+--- Strip HTML tags, decode HTML entities, and remove ANSI escape sequences
+function M.clean_markup(str)
+  if not str then return "" end
+  local s = tostring(str)
+  -- Strip ANSI CSI sequences
+  s = s:gsub("\27%[[0-9;]*[a-zA-Z]", "")
+  -- Strip HTML tags
+  s = s:gsub("<[^>]+>", "")
+  -- Decode common HTML entities
+  s = s:gsub("&lt;", "<")
+       :gsub("&gt;", ">")
+       :gsub("&amp;", "&")
+       :gsub("&quot;", '"')
+       :gsub("&#39;", "'")
+       :gsub("&#x27;", "'")
+       :gsub("&nbsp;", " ")
+  return s
+end
+
+M.http_cache = {}
+M.custom_http_get = nil
+
+--- Perform a cached HTTP GET request (in-memory + disk cache in ~/.cache/synvim/find_cache)
+function M.http_get(url, headers, timeout_sec)
+  if not url or url == "" then return nil end
+  if M.custom_http_get then
+    return M.custom_http_get(url, headers)
+  end
+  if M.http_cache[url] ~= nil then
+    return M.http_cache[url]
+  end
+
+  local cache_dir = vim.fn.stdpath("cache") .. "/synvim/find_cache"
+  pcall(vim.fn.mkdir, cache_dir, "p")
+  local ok_sha, key = pcall(vim.fn.sha256, url)
+  if not ok_sha or not key then
+    key = url:gsub("[^%w]", "_"):sub(1, 96)
+  end
+  local cache_file = cache_dir .. "/" .. key .. ".cache"
+  if vim.fn.filereadable(cache_file) == 1 then
+    local ok_r, lines = pcall(vim.fn.readfile, cache_file)
+    if ok_r and type(lines) == "table" and #lines > 0 then
+      local body = table.concat(lines, "\n")
+      if body ~= "" then
+        M.http_cache[url] = body
+        return body
+      end
+    end
+  end
+
+  if vim.fn.executable("curl") ~= 1 then
+    return nil
+  end
+
+  local cmd = {
+    "curl", "-sL",
+    "--max-time", tostring(timeout_sec or 3),
+    "-A", "synvim-find/0.2",
+  }
+  if type(headers) == "table" then
+    for _, h in ipairs(headers) do
+      table.insert(cmd, "-H")
+      table.insert(cmd, h)
+    end
+  end
+  table.insert(cmd, url)
+
+  local out = vim.fn.system(cmd)
+  if vim.v.shell_error == 0 and out and vim.trim(out) ~= "" then
+    M.http_cache[url] = out
+    pcall(vim.fn.writefile, vim.split(out, "\n"), cache_file)
+    return out
+  end
+  return nil
+end
+
+--- Search Lean 4 & Mathlib4 theorems/definitions via Loogle JSON API (`@loogle`) + local `.lake/packages`
+function M.search_loogle(clean_query, root)
+  root = root or ui.get_root_dir()
+  local q = vim.trim(clean_query or "")
+  if q == "" then return {} end
+
+  local results = {}
+  local url = "https://loogle.lean-lang.org/json?q=" .. M.url_encode(q)
+  local body = M.http_get(url, { "Accept: application/json" }, 3)
+
+  if body and body ~= "" then
+    local ok, decoded = pcall(vim.json.decode, body)
+    if ok and type(decoded) == "table" and type(decoded.hits) == "table" then
+      for idx, hit in ipairs(decoded.hits) do
+        local name = tostring(hit.name or "theorem")
+        local typ = vim.trim(tostring(hit.type or "Prop"):gsub("[\r\n]+", " "))
+        local mod = tostring(hit.module or "Mathlib")
+        local doc = vim.trim(tostring(hit.doc or ""))
+
+        -- Check if module exists locally on disk inside `.lake/packages` or `root`
+        local mod_rel = mod:gsub("%.", "/") .. ".lean"
+        local candidate_paths = {
+          root .. "/.lake/packages/mathlib/" .. mod_rel,
+          root .. "/.lake/packages/std/" .. mod_rel,
+          root .. "/.lake/packages/batteries/" .. mod_rel,
+          root .. "/" .. mod_rel,
+        }
+        local resolved_rel = mod_rel
+        local resolved_line = 1
+        local is_virtual = true
+        local short_name = name:match("([^%.]+)$") or name
+
+        for _, cp in ipairs(candidate_paths) do
+          if vim.fn.filereadable(cp) == 1 then
+            resolved_rel = cp:gsub("^" .. vim.pesc(root) .. "/", "")
+            is_virtual = false
+            local ok_l, flines = pcall(vim.fn.readfile, cp)
+            if ok_l and type(flines) == "table" then
+              for lnum, ltxt in ipairs(flines) do
+                if ltxt:find(short_name, 1, true) and (
+                  ltxt:match("^%s*theorem%s+") or ltxt:match("^%s*lemma%s+")
+                  or ltxt:match("^%s*def%s+") or ltxt:match("^%s*abbrev%s+")
+                  or ltxt:match("^%s*class%s+") or ltxt:match("^%s*structure%s+")
+                ) then
+                  resolved_line = lnum
+                  break
+                end
+              end
+            end
+            break
+          end
+        end
+
+        local doc_lines = {}
+        for dl in doc:gmatch("[^\r\n]+") do
+          table.insert(doc_lines, dl)
+        end
+
+        local ctx_lines = {
+          "import " .. mod,
+          string.format("%s : %s", name, typ),
+          doc_lines[1] and ("-- " .. doc_lines[1]) or "-- (Lean 4 / Mathlib4 declaration)",
+          doc_lines[2] and ("-- " .. doc_lines[2]) or ("#check @" .. name),
+        }
+
+        local virt_lines = {
+          "-- ============================================================================",
+          "-- [Loogle — Lean 4 & Mathlib4 Theorem / Type Search]",
+          "-- ============================================================================",
+          "import " .. mod,
+          "",
+        }
+        if #doc_lines > 0 then
+          table.insert(virt_lines, "/--")
+          for _, dl in ipairs(doc_lines) do
+            table.insert(virt_lines, "  " .. dl)
+          end
+          table.insert(virt_lines, "-/")
+        end
+        local sig_line_idx = #virt_lines + 1
+        table.insert(virt_lines, string.format("-- %s : %s", name, typ))
+        table.insert(virt_lines, "#check @" .. name)
+
+        table.insert(results, {
+          path = resolved_rel,
+          line = is_virtual and sig_line_idx or resolved_line,
+          col = 1,
+          action = "navigate",
+          match_type = "loogle",
+          provider = "loogle",
+          description = string.format("%s : %s", name, typ),
+          score = math.max(100, 950 - (idx - 1) * 15),
+          is_virtual = is_virtual,
+          filetype = "lean",
+          context_lines = ctx_lines,
+          context_target_idx = 2,
+          virtual_lines = virt_lines,
+        })
+        if #results >= 50 then break end
+      end
+    end
+  end
+
+  -- Supplement with local `.lake/packages` search if available
+  if #results < 10 and (vim.fn.isdirectory(root .. "/.lake/packages") == 1 or vim.fn.isdirectory(root .. "/lake-packages") == 1) then
+    local local_deps = M.search_and_rank(q, root, { ".lake/packages", "lake-packages" }, "repo")
+    for _, item in ipairs(local_deps) do
+      item.match_type = "loogle"
+      item.provider = "loogle"
+      table.insert(results, item)
+      if #results >= 50 then break end
+    end
+  end
+
+  return results
+end
+
+local DOC_LANG_SET = {
+  ["lua"] = "lua", ["nvim"] = "lua", ["vim"] = "vim",
+  ["python"] = "python", ["py"] = "python",
+  ["cpp"] = "cpp", ["c++"] = "cpp", ["cxx"] = "cpp", ["c"] = "c",
+  ["rust"] = "rust", ["rs"] = "rust",
+  ["lean"] = "lean", ["lean4"] = "lean",
+  ["go"] = "go", ["golang"] = "go",
+  ["js"] = "javascript", ["javascript"] = "javascript",
+  ["ts"] = "typescript", ["typescript"] = "typescript",
+  ["sh"] = "bash", ["bash"] = "bash", ["zsh"] = "bash",
+}
+
+--- Search language & library documentation + code recipes (`@docs`: DevDocs + cht.sh + local docs)
+function M.search_docs(clean_query, root)
+  root = root or ui.get_root_dir()
+  local q = vim.trim(clean_query or "")
+  if q == "" then return {} end
+
+  local words = vim.split(q, "%s+", { trimempty = true })
+  local lang = nil
+  local topic_words = {}
+  if #words >= 2 and DOC_LANG_SET[words[1]:lower()] then
+    lang = DOC_LANG_SET[words[1]:lower()]
+    for i = 2, #words do table.insert(topic_words, words[i]) end
+  else
+    topic_words = words
+    local origin_win = M.state and M.state.origin_win or ui.get_primary_editor_win()
+    if origin_win and vim.api.nvim_win_is_valid(origin_win) then
+      local obuf = vim.api.nvim_win_get_buf(origin_win)
+      local ft = vim.bo[obuf].filetype or ""
+      if DOC_LANG_SET[ft:lower()] then
+        lang = DOC_LANG_SET[ft:lower()]
+      end
+    end
+    lang = lang or "lua"
+  end
+
+  local topic = table.concat(topic_words, " ")
+  local results = {}
+
+  -- 1. Query cht.sh (`https://cht.sh/<lang>/<topic>?T`) for concise code recipes & examples
+  local cht_path = table.concat(topic_words, "+")
+  local cht_url = string.format("https://cht.sh/%s/%s?T", M.url_encode(lang), cht_path)
+  local cht_body = M.http_get(cht_url, nil, 3)
+  if cht_body and cht_body ~= "" and not cht_body:match("^Unknown topic") and not cht_body:match("^404 ") then
+    local clean_txt = M.clean_markup(cht_body)
+    local all_lines = vim.split(clean_txt, "\n")
+    -- Split into logical recipe sections by comment headers (`# ...` or `-- ...` or `// ...`)
+    local sections = {}
+    local cur_sec = { title = string.format("[%s] %s — Code Recipe & Reference", lang, topic), lines = {}, start_line = 1 }
+    for lnum, line in ipairs(all_lines) do
+      local hdr = line:match("^%s*[#%-/]+%s*(.+)$")
+      if hdr and #cur_sec.lines >= 4 and #sections < 8 then
+        table.insert(sections, cur_sec)
+        cur_sec = { title = vim.trim(hdr), lines = { line }, start_line = lnum }
+      else
+        if vim.trim(line) ~= "" or #cur_sec.lines > 0 then
+          table.insert(cur_sec.lines, line)
+        end
+      end
+    end
+    if #cur_sec.lines > 0 then
+      table.insert(sections, cur_sec)
+    end
+
+    for idx, sec in ipairs(sections) do
+      local ctx = {}
+      for i = 1, 4 do
+        table.insert(ctx, sec.lines[i] or "")
+      end
+      table.insert(results, {
+        path = string.format("docs://cht.sh/%s/%s", lang, table.concat(topic_words, "_")),
+        line = sec.start_line,
+        col = 1,
+        action = "navigate",
+        match_type = "docs",
+        provider = "docs",
+        description = sec.title,
+        score = math.max(200, 920 - (idx - 1) * 25),
+        is_virtual = true,
+        filetype = lang,
+        context_lines = ctx,
+        context_target_idx = 1,
+        virtual_lines = all_lines,
+      })
+    end
+  end
+
+  -- 2. Search DevDocs JSON index if cached/available (`https://devdocs.io/docs/<lang>/index.json`)
+  local devdocs_url = string.format("https://devdocs.io/docs/%s/index.json", M.url_encode(lang))
+  local dd_body = M.http_get(devdocs_url, { "Accept: application/json" }, 2)
+  if dd_body and dd_body ~= "" then
+    local ok_dd, dd = pcall(vim.json.decode, dd_body)
+    if ok_dd and type(dd) == "table" and type(dd.entries) == "table" then
+      local t_low = topic:lower()
+      local dd_matches = {}
+      for _, entry in ipairs(dd.entries) do
+        local ename = tostring(entry.name or "")
+        local elow = ename:lower()
+        local etype = tostring(entry.type or "doc")
+        local epath = tostring(entry.path or "")
+        local s = 0
+        if elow == t_low then
+          s = 960
+        elseif vim.startswith(elow, t_low) then
+          s = 860
+        elseif elow:find(t_low, 1, true) then
+          s = 740
+        end
+        if s > 0 then
+          table.insert(dd_matches, { name = ename, type = etype, path = epath, score = s })
+          if #dd_matches >= 15 then break end
+        end
+      end
+      table.sort(dd_matches, function(a, b) return a.score > b.score end)
+      for _, m in ipairs(dd_matches) do
+        local vlines = {
+          string.format("# DevDocs (%s) — %s", lang, m.name),
+          string.format("Category: %s", m.type),
+          string.format("URL: https://devdocs.io/%s/%s", lang, m.path),
+          "",
+          string.format("Symbol: %s", m.name),
+        }
+        table.insert(results, {
+          path = string.format("devdocs://%s/%s", lang, m.path),
+          line = 1,
+          col = 1,
+          action = "navigate",
+          match_type = "docs",
+          provider = "docs",
+          description = string.format("[DevDocs:%s] %s (%s)", lang, m.name, m.type),
+          score = m.score,
+          is_virtual = true,
+          filetype = "markdown",
+          context_lines = {
+            string.format("DevDocs (%s) — %s", lang, m.type),
+            string.format("%s", m.name),
+            string.format("https://devdocs.io/%s/%s", lang, m.path),
+            "Press <CR> to open documentation reference buffer",
+          },
+          context_target_idx = 2,
+          virtual_lines = vlines,
+        })
+      end
+    end
+  end
+
+  -- 3. Search local documentation (`docs/`, `README.md`, `$VIMRUNTIME/doc`) via C++20 FFI engine
+  local doc_locs = {}
+  if vim.fn.isdirectory(root .. "/docs") == 1 then table.insert(doc_locs, "docs") end
+  if vim.fn.filereadable(root .. "/README.md") == 1 then table.insert(doc_locs, "README.md") end
+  local vimruntime = vim.env.VIMRUNTIME
+  if vimruntime and vimruntime ~= "" and vim.fn.isdirectory(vimruntime .. "/doc") == 1 then
+    table.insert(doc_locs, vimruntime .. "/doc")
+  end
+  if #doc_locs > 0 then
+    local local_docs = M.search_and_rank(topic, root, doc_locs, "repo")
+    for _, item in ipairs(local_docs) do
+      item.match_type = "docs"
+      item.provider = "docs"
+      table.insert(results, item)
+      if #results >= 60 then break end
+    end
+  end
+
+  return results
+end
+
+--- Search public open-source code usage via grep.app JSON API (`@code` / `@web`)
+function M.search_public_code(clean_query, root)
+  root = root or ui.get_root_dir()
+  local q = vim.trim(clean_query or "")
+  if q == "" then return {} end
+
+  local results = {}
+  local url = "https://grep.app/api/search?q=" .. M.url_encode(q)
+  local body = M.http_get(url, { "Accept: application/json" }, 3)
+
+  if body and body ~= "" then
+    local ok, decoded = pcall(vim.json.decode, body)
+    local hits = ok and type(decoded) == "table" and type(decoded.hits) == "table" and decoded.hits.hits or nil
+    if type(hits) == "table" then
+      local q_low = q:lower()
+      for idx, hit in ipairs(hits) do
+        local repo = (type(hit.repo) == "table" and hit.repo.raw) or tostring(hit.repo or "github/repo")
+        local fpath = (type(hit.path) == "table" and hit.path.raw) or tostring(hit.path or "file")
+        local snippet_html = (type(hit.content) == "table" and hit.content.snippet) or tostring(hit.content or "")
+
+        local snippet_lines = {}
+        local line_nums = {}
+        -- Parse `<tr data-line="N">...</tr>` rows if present in grep.app snippet HTML
+        for lnum_str, row_html in snippet_html:gmatch('data%-line="(%d+)"[^>]*>(.-)</tr>') do
+          local clean_row = vim.trim(M.clean_markup(row_html):gsub("[\r\n]+", " "))
+          table.insert(snippet_lines, clean_row)
+          table.insert(line_nums, tonumber(lnum_str) or #snippet_lines)
+        end
+        if #snippet_lines == 0 then
+          local clean_all = M.clean_markup(snippet_html)
+          for l in clean_all:gmatch("[^\r\n]+") do
+            table.insert(snippet_lines, l)
+            table.insert(line_nums, #snippet_lines)
+          end
+        end
+
+        local best_row_idx = 1
+        for r_i, sl in ipairs(snippet_lines) do
+          if sl:lower():find(q_low, 1, true) then
+            best_row_idx = r_i
+            break
+          end
+        end
+
+        local matched_line_num = line_nums[best_row_idx] or 1
+        local matched_desc = vim.trim(snippet_lines[best_row_idx] or fpath)
+        local ext = fpath:match("%.([a-zA-Z0-9]+)$") or "text"
+
+        local ctx = {}
+        local ctx_start = math.max(1, best_row_idx - 1)
+        local target_ctx_idx = 1
+        for r_i = ctx_start, ctx_start + 3 do
+          if snippet_lines[r_i] then
+            table.insert(ctx, snippet_lines[r_i])
+            if r_i == best_row_idx then
+              target_ctx_idx = #ctx
+            end
+          end
+        end
+
+        local vlines = {
+          string.format("-- [grep.app Public Code Search] Repo: https://github.com/%s/blob/HEAD/%s#L%d", repo, fpath, matched_line_num),
+          "",
+        }
+        local v_target_line = 3
+        for r_i, sl in ipairs(snippet_lines) do
+          table.insert(vlines, sl)
+          if r_i == best_row_idx then
+            v_target_line = #vlines
+          end
+        end
+
+        table.insert(results, {
+          path = string.format("%s:%s", repo, fpath),
+          line = matched_line_num,
+          virtual_cursor_line = v_target_line,
+          col = 1,
+          action = "navigate",
+          match_type = "code",
+          provider = "code",
+          description = matched_desc,
+          score = math.max(100, 940 - (idx - 1) * 15),
+          is_virtual = true,
+          filetype = DOC_LANG_SET[ext:lower()] or ext:lower(),
+          context_lines = ctx,
+          context_target_idx = target_ctx_idx,
+          virtual_lines = vlines,
+        })
+        if #results >= 50 then break end
+      end
+    end
+  end
+
+  return results
+end
+
+--- Search codebase (both file names/paths and file contents) across entire repo, specified locations, or external providers
+--- @param query string Raw user query (may include `@deps`, `@loogle`, `@docs`, `@code`, `in <path>`, `@<path>`, `path:<path>`)
 --- @param root string|nil Repository root directory
 --- @param locations table|nil Optional list of directory/file/glob scopes
+--- @param explicit_provider string|nil Optional explicit provider ("repo", "deps", "loogle", "docs", "code")
 --- @return table Ranked list of `{ path, line, col, action = "navigate", description, score, match_type }`
-function M.search_and_rank(query, root, locations)
+function M.search_and_rank(query, root, locations, explicit_provider)
   root = root or ui.get_root_dir()
   local clean_query = vim.trim(query or "")
   local locs = {}
+  local provider = explicit_provider or "repo"
   if type(locations) == "table" and #locations > 0 then
     for _, l in ipairs(locations) do
       table.insert(locs, l)
     end
   else
-    local parsed_q, parsed_locs = M.parse_find_args(clean_query, root)
+    local parsed_q, parsed_locs, parsed_prov = M.parse_find_args(clean_query, root)
     clean_query = parsed_q
     locs = parsed_locs
+    if not explicit_provider and parsed_prov then
+      provider = parsed_prov
+    end
+  end
+
+  if provider == "loogle" then
+    return M.search_loogle(clean_query, root)
+  elseif provider == "docs" then
+    return M.search_docs(clean_query, root)
+  elseif provider == "code" then
+    return M.search_public_code(clean_query, root)
   end
 
   if clean_query == "" and #locs == 0 then
@@ -401,6 +957,10 @@ function M.search_and_rank(query, root, locations)
           item.action = "navigate"
           item.line = tonumber(item.line) or 1
           item.col = tonumber(item.col) or 1
+          if provider == "deps" then
+            item.provider = "deps"
+            item.match_type = "deps"
+          end
         end
         return decoded
       end
@@ -697,6 +1257,14 @@ function M.update_find_inspector()
     kind_tag = "[SYMBOL]"
   elseif chosen.match_type == "file" then
     kind_tag = "[FILE]"
+  elseif chosen.match_type == "deps" then
+    kind_tag = "[DEPS]"
+  elseif chosen.match_type == "loogle" then
+    kind_tag = "[LOOGLE]"
+  elseif chosen.match_type == "docs" then
+    kind_tag = "[DOCS]"
+  elseif chosen.match_type == "code" then
+    kind_tag = "[CODE]"
   end
 
   local header_line
@@ -716,41 +1284,21 @@ function M.update_find_inspector()
     end
   end
 
-  -- Load surrounding code context lines [target_line - 1 .. target_line + 2]
-  local full_path = (chosen.path:sub(1, 1) == "/") and chosen.path or (root .. "/" .. chosen.path)
-  local file_lines = nil
-  for _, b in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_is_loaded(b) then
-      local bname = vim.api.nvim_buf_get_name(b)
-      if bname == full_path or vim.fn.fnamemodify(bname, ":p") == vim.fn.fnamemodify(full_path, ":p") then
-        file_lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
-        break
-      end
-    end
-  end
-
-  local target_l = math.max(1, tonumber(chosen.line) or 1)
-  local start_l = math.max(1, target_l - 1)
-  local end_l = start_l + 3
-
-  if not file_lines and vim.fn.filereadable(full_path) == 1 then
-    local ok, read_l = pcall(vim.fn.readfile, full_path, "", end_l + 2)
-    if ok and type(read_l) == "table" then
-      file_lines = read_l
-    end
-  end
-
   local insp_lines = { header_line }
   local target_insp_row_0 = nil
 
-  if file_lines and #file_lines > 0 then
-    end_l = math.min(#file_lines, start_l + 3)
-    for lnum = start_l, start_l + 3 do
-      if lnum <= #file_lines then
-        local raw_code = (file_lines[lnum] or ""):gsub("\t", "  "):gsub("\r", "")
-        local is_tgt = (lnum == target_l)
+  -- 1. If candidate carries pre-formatted context_lines (e.g. @loogle, @docs, @code), render them directly
+  if type(chosen.context_lines) == "table" and #chosen.context_lines > 0 then
+    local tgt_idx = tonumber(chosen.context_target_idx) or 1
+    for r_i = 1, 4 do
+      local c_line = chosen.context_lines[r_i]
+      if c_line ~= nil then
+        local raw_code = tostring(c_line):gsub("\t", "  "):gsub("\r", "")
+        local is_tgt = (r_i == tgt_idx)
         local marker = is_tgt and " ▶ " or "   "
-        local fmt_line = string.format("%s%4d │ %s", marker, lnum, raw_code)
+        local disp_lnum = (tonumber(chosen.line) or 1) + (r_i - tgt_idx)
+        if disp_lnum < 1 then disp_lnum = r_i end
+        local fmt_line = string.format("%s%4d │ %s", marker, disp_lnum, raw_code)
         if #fmt_line > width then
           fmt_line = fmt_line:sub(1, width - 1) .. "…"
         end
@@ -763,11 +1311,56 @@ function M.update_find_inspector()
       end
     end
   else
-    table.insert(insp_lines, string.format(" ▶ %4d │ %s", target_l, chosen.description or chosen.path))
-    table.insert(insp_lines, "      ~ │")
-    table.insert(insp_lines, "      ~ │")
-    table.insert(insp_lines, "      ~ │")
-    target_insp_row_0 = 1
+    -- 2. Otherwise load surrounding code context lines [target_line - 1 .. target_line + 2] from buffer or disk
+    local full_path = (chosen.path:sub(1, 1) == "/") and chosen.path or (root .. "/" .. chosen.path)
+    local file_lines = nil
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_is_loaded(b) then
+        local bname = vim.api.nvim_buf_get_name(b)
+        if bname == full_path or vim.fn.fnamemodify(bname, ":p") == vim.fn.fnamemodify(full_path, ":p") then
+          file_lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+          break
+        end
+      end
+    end
+
+    local target_l = math.max(1, tonumber(chosen.line) or 1)
+    local start_l = math.max(1, target_l - 1)
+    local end_l = start_l + 3
+
+    if not file_lines and vim.fn.filereadable(full_path) == 1 then
+      local ok, read_l = pcall(vim.fn.readfile, full_path, "", end_l + 2)
+      if ok and type(read_l) == "table" then
+        file_lines = read_l
+      end
+    end
+
+    if file_lines and #file_lines > 0 then
+      end_l = math.min(#file_lines, start_l + 3)
+      for lnum = start_l, start_l + 3 do
+        if lnum <= #file_lines then
+          local raw_code = (file_lines[lnum] or ""):gsub("\t", "  "):gsub("\r", "")
+          local is_tgt = (lnum == target_l)
+          local marker = is_tgt and " ▶ " or "   "
+          local fmt_line = string.format("%s%4d │ %s", marker, lnum, raw_code)
+          if #fmt_line > width then
+            fmt_line = fmt_line:sub(1, width - 1) .. "…"
+          end
+          table.insert(insp_lines, fmt_line)
+          if is_tgt then
+            target_insp_row_0 = #insp_lines - 1
+          end
+        else
+          table.insert(insp_lines, "      ~ │")
+        end
+      end
+    else
+      table.insert(insp_lines, string.format(" ▶ %4d │ %s", target_l, chosen.description or chosen.path))
+      table.insert(insp_lines, "      ~ │")
+      table.insert(insp_lines, "      ~ │")
+      table.insert(insp_lines, "      ~ │")
+      target_insp_row_0 = 1
+    end
   end
 
   vim.api.nvim_buf_set_lines(insp_buf, 0, -1, false, insp_lines)
@@ -894,6 +1487,18 @@ function M.render_find_menu()
       elseif c.match_type == "file" then
         badge = "[FILE]  "
         badge_hl = "Directory"
+      elseif c.match_type == "deps" then
+        badge = "[DEPS]  "
+        badge_hl = "Include"
+      elseif c.match_type == "loogle" then
+        badge = "[LOOGLE]"
+        badge_hl = "Special"
+      elseif c.match_type == "docs" then
+        badge = "[DOCS]  "
+        badge_hl = "Type"
+      elseif c.match_type == "code" then
+        badge = "[CODE]  "
+        badge_hl = "Constant"
       end
 
       local loc_str = string.format("%s:%d", c.path, c.line or 1)
@@ -1013,10 +1618,11 @@ function M.render_find_menu()
   vim.api.nvim_buf_clear_namespace(buf, M.state.ns, 0, -1)
 
   -- Line 1: Inline search bar prefix and right-aligned match counter
+  local prov_tag = (M.state.provider and M.state.provider ~= "repo") and (" @" .. M.state.provider) or ""
   local scope_str = (#M.state.locations > 0) and (" in " .. table.concat(M.state.locations, ",")) or ""
   local right_status = (total > 0)
-    and string.format(" [%d/%d%s | ↓/↑/C-n/C-p: Select | Tab: Preview | Enter: Jump | Esc: Close] ", M.state.selected_idx, total, scope_str)
-    or string.format(" [0 matches%s | Enter query or 'query in <dir>' | Esc: Close] ", scope_str)
+    and string.format(" [%d/%d%s%s | ↓/↑: Select | Tab: Preview | Enter: Jump | Esc: Close] ", M.state.selected_idx, total, prov_tag, scope_str)
+    or string.format(" [0 matches%s%s | Scopes: @deps @loogle @docs @code 'in <dir>' | Esc: Close] ", prov_tag, scope_str)
 
   pcall(vim.api.nvim_buf_set_extmark, buf, M.state.ns, 0, 0, {
     virt_text = { { " 🔍 Find: ", "Title" } },
@@ -1045,8 +1651,8 @@ function M.render_find_menu()
 
   if win and vim.api.nvim_win_is_valid(win) then
     local title_str = (total > 0)
-      and string.format(" Find — Files & Code (%d matches%s) ", total, scope_str)
-      or " Find — Files & Code (FZF + BM25 + AST) "
+      and string.format(" Find — Files, Code & Docs (%d matches%s%s) ", total, prov_tag, scope_str)
+      or " Find — Files, Code & Docs (@deps | @loogle | @docs | @code) "
     pcall(vim.api.nvim_win_set_config, win, {
       title = title_str,
       title_pos = "left",
@@ -1067,14 +1673,21 @@ function M.refresh_find_results(query_override)
   end
 
   local root = M.state.root or ui.get_root_dir()
-  local clean_q, locs = M.parse_find_args(M.state.query, root)
+  local clean_q, locs, prov = M.parse_find_args(M.state.query, root)
   M.state.clean_query = clean_q
   M.state.locations = locs
+  M.state.provider = prov or "repo"
 
-  if vim.trim(clean_q) == "" then
+  if vim.trim(clean_q) == "" and M.state.provider == "repo" then
     M.state.candidates = M.get_initial_candidates(root, locs, 40)
+  elseif vim.trim(clean_q) == "" and M.state.provider == "deps" then
+    M.state.candidates = M.get_initial_candidates(root, locs, 40)
+    for _, c in ipairs(M.state.candidates) do
+      c.match_type = "deps"
+      c.provider = "deps"
+    end
   else
-    M.state.candidates = M.search_and_rank(clean_q, root, locs)
+    M.state.candidates = M.search_and_rank(clean_q, root, locs, M.state.provider)
   end
 
   M.state.selected_idx = (#M.state.candidates > 0) and 1 or 0
@@ -1138,6 +1751,36 @@ function M.select_prev(step)
   end
 end
 
+--- Open a virtual documentation, theorem (@loogle), or public code (@code) result in a syntax-highlighted scratch buffer
+function M.open_virtual_result(chosen, target_win)
+  if not chosen or type(chosen.virtual_lines) ~= "table" then return end
+  target_win = target_win or ui.get_primary_editor_win() or vim.api.nvim_get_current_win()
+  if not vim.api.nvim_win_is_valid(target_win) then
+    target_win = vim.api.nvim_get_current_win()
+  end
+
+  local vbuf = M.state.virtual_preview_buf
+  if not vbuf or not vim.api.nvim_buf_is_valid(vbuf) then
+    vbuf = vim.api.nvim_create_buf(true, true)
+    M.state.virtual_preview_buf = vbuf
+  end
+  vim.bo[vbuf].buftype = "nofile"
+  vim.bo[vbuf].bufhidden = "hide"
+  vim.bo[vbuf].swapfile = false
+  vim.bo[vbuf].modifiable = true
+  pcall(vim.api.nvim_buf_set_name, vbuf, "[Find: " .. tostring(chosen.path or "Reference") .. "]")
+  vim.api.nvim_buf_set_lines(vbuf, 0, -1, false, chosen.virtual_lines)
+  if chosen.filetype and chosen.filetype ~= "" then
+    vim.bo[vbuf].filetype = chosen.filetype
+  end
+
+  vim.api.nvim_set_current_win(target_win)
+  vim.api.nvim_win_set_buf(target_win, vbuf)
+  local target_l = math.max(1, math.min(#chosen.virtual_lines, tonumber(chosen.virtual_cursor_line or chosen.line) or 1))
+  pcall(vim.api.nvim_win_set_cursor, target_win, { target_l, 0 })
+  pcall(function() vim.cmd("normal! zz") end)
+end
+
 --- Jump to or preview the currently selected result in the primary editor window
 function M.activate_selected_result(close_after, explicit_idx)
   local candidates = M.state.candidates or {}
@@ -1171,7 +1814,11 @@ function M.activate_selected_result(close_after, explicit_idx)
     target_win = ui.get_primary_editor_win()
   end
 
-  tasks_mod.jump_to_target(chosen, target_win)
+  if chosen.is_virtual and type(chosen.virtual_lines) == "table" then
+    M.open_virtual_result(chosen, target_win)
+  else
+    tasks_mod.jump_to_target(chosen, target_win)
+  end
   if state_mod.state.placement_active then
     pcall(tasks_mod.render_placement_preview)
   else
@@ -1187,6 +1834,14 @@ function M.activate_selected_result(close_after, explicit_idx)
       kind_label = "Symbol"
     elseif chosen.match_type == "file" then
       kind_label = "File"
+    elseif chosen.match_type == "deps" then
+      kind_label = "Deps"
+    elseif chosen.match_type == "loogle" then
+      kind_label = "Loogle"
+    elseif chosen.match_type == "docs" then
+      kind_label = "Docs"
+    elseif chosen.match_type == "code" then
+      kind_label = "Code"
     end
     local scope_suffix = (#M.state.locations > 0) and (" in " .. table.concat(M.state.locations, ", ")) or ""
     vim.api.nvim_echo({

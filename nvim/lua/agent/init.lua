@@ -122,6 +122,7 @@ M.cancel_architecture_review = tasks.cancel_architecture_review
 M.process_task_form_submission = tasks.process_task_form_submission
 M.start_placement_mode = tasks.start_placement_mode
 M.split_current_placement_task = tasks.split_current_placement_task
+M.carve_and_drop_at_cursor = tasks.carve_and_drop_at_cursor
 M.render_placement_preview = tasks.render_placement_preview
 M.clear_placement_preview = tasks.clear_placement_preview
 M.stop_placement_mode = tasks.stop_placement_mode
@@ -217,8 +218,21 @@ function M.setup()
     search.find(ctx.args)
   end, {
     nargs = "*",
-    complete = "file",
-    desc = "Hybrid FZF + BM25 + AST Symbol search across repo or locations (:Find <query> [in <path...> | @<path>])",
+    complete = function(arglead, cmdline)
+      local scopes = { "@deps", "@loogle", "@docs", "@code", "in" }
+      local out = {}
+      for _, s in ipairs(scopes) do
+        if vim.startswith(s, arglead) then
+          table.insert(out, s)
+        end
+      end
+      local files = vim.fn.getcompletion(arglead, "file")
+      for _, f in ipairs(files) do
+        table.insert(out, f)
+      end
+      return out
+    end,
+    desc = "Hybrid FZF + BM25 + AST Symbol + Docs search (:Find [@deps|@loogle|@docs|@code] <query> [in <path...>])",
   })
 
   vim.api.nvim_create_user_command("Ask", function(ctx)

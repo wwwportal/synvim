@@ -431,6 +431,156 @@ scenario("Full workflow: :Tasks add -> :Find target -> <M-p> drop from :Find -> 
   vim.fn.delete(e2e_dir, "rf")
 end)
 
+-- 10. Embedded Code Documentation & External Search Providers (@deps, @loogle, @docs, @code)
+scenario("Embedded Code Documentation & External Search Providers (@deps, @loogle, @docs, @code)", function()
+  -- A. Test @deps provider against a local `.lake/packages/mathlib` dependency tree
+  local dep_root = repo_root .. "/tests/tmp_deps_test"
+  local mathlib_dir = dep_root .. "/.lake/packages/mathlib/Mathlib/Algebra/Group"
+  local src_dir = dep_root .. "/src"
+  vim.fn.mkdir(mathlib_dir, "p")
+  vim.fn.mkdir(src_dir, "p")
+
+  vim.fn.writefile({
+    "namespace Mathlib.Algebra",
+    "theorem mul_inv_cancel_left (a b : G) : a * (a⁻¹ * b) = b := by simp",
+    "end Mathlib.Algebra",
+  }, mathlib_dir .. "/Defs.lean")
+
+  vim.fn.writefile({
+    "def project_main : IO Unit := pure ()",
+  }, src_dir .. "/Main.lean")
+
+  -- Normal repo search must NOT include `.lake/packages`
+  local normal_res = search.search_and_rank("mul_inv_cancel_left", dep_root)
+  local found_in_normal = false
+  for _, r in ipairs(normal_res) do
+    if r.path:find(".lake", 1, true) then found_in_normal = true end
+  end
+  assert_eq(found_in_normal, false, "Normal :Find must ignore .lake/packages by default")
+
+  -- `@deps` search MUST search `.lake/packages` via C++20 FFI engine and rank `mul_inv_cancel_left` #1
+  local cq_deps, locs_deps, prov_deps = search.parse_find_args("@deps mul_inv_cancel_left", dep_root)
+  assert_eq(prov_deps, "deps", "@deps token must set provider = 'deps'")
+  assert_eq(cq_deps, "mul_inv_cancel_left", "@deps token must be stripped from clean_query")
+  assert_true(#locs_deps >= 1, "@deps must resolve local dependency directories")
+
+  local deps_res = search.search_and_rank("@deps mul_inv_cancel_left", dep_root)
+  assert_true(#deps_res >= 1, "@deps search must find theorem inside .lake/packages/mathlib")
+  assert_eq(deps_res[1].match_type, "deps", "@deps results must have match_type = 'deps'")
+  assert_true(deps_res[1].path:find("Defs.lean", 1, true) ~= nil, "@deps top match must be Defs.lean")
+
+  -- Subsequent normal search on same root must STILL ignore `.lake/packages` (`is_explicit_only` guard)
+  local normal_after = search.search_and_rank("mul_inv_cancel_left", dep_root)
+  local leaked_after = false
+  for _, r in ipairs(normal_after) do
+    if r.path:find(".lake", 1, true) then leaked_after = true end
+  end
+  assert_eq(leaked_after, false, "Cached .lake/packages files must not leak into normal repo searches")
+
+  -- B. Test @loogle provider (Lean 4 & Mathlib4 theorem/type search + floating menu + inspector)
+  search.custom_http_get = function(url)
+    if url:find("loogle.lean-lang.org", 1, true) then
+      return vim.fn.json_encode({
+        count = 2,
+        hits = {
+          {
+            name = "List.map_append",
+            type = "∀ {α β : Type _} (f : α → β) (l₁ l₂ : List α), List.map f (l₁ ++ l₂) = List.map f l₁ ++ List.map f l₂",
+            module = "Mathlib.Data.List.Basic",
+            doc = "Mapping a function over an appended list distributes over `++`.",
+          },
+          {
+            name = "Mathlib.Algebra.mul_inv_cancel_left",
+            type = "∀ (a b : G), a * (a⁻¹ * b) = b",
+            module = "Mathlib.Algebra.Group.Defs",
+            doc = "Left cancellation with inverse in a group.",
+          },
+        },
+      })
+    elseif url:find("cht.sh", 1, true) then
+      return table.concat({
+        "# Lua table concatenation & manipulation",
+        "local t = {'a', 'b', 'c'}",
+        "print(table.concat(t, ', '))",
+        "",
+        "# Insert and remove elements",
+        "table.insert(t, 'd')",
+      }, "\n")
+    elseif url:find("devdocs.io", 1, true) then
+      return vim.fn.json_encode({
+        entries = {
+          { name = "table.concat", path = "index#pdf-table.concat", type = "Standard Libraries" },
+        },
+      })
+    elseif url:find("grep.app", 1, true) then
+      return vim.fn.json_encode({
+        hits = {
+          hits = {
+            {
+              repo = { raw = "neovim/neovim" },
+              path = { raw = "runtime/lua/vim/lsp/buf.lua" },
+              content = {
+                snippet = '<tr data-line="41"><td>local params = util.make_position_params()</td></tr>'
+                  .. '<tr data-line="42"><td><mark>nvim_open_win</mark>(buf, true, win_opts)</td></tr>'
+                  .. '<tr data-line="43"><td>return win_id</td></tr>',
+              },
+            },
+          },
+        },
+      })
+    end
+    return nil
+  end
+
+  local fwin_l, fbuf_l = search.open_find_menu("@loogle List.map_append", dep_root)
+  assert_true(vim.api.nvim_win_is_valid(fwin_l), ":Find @loogle floating window must open")
+  assert_eq(search.state.provider, "loogle", ":Find @loogle must set state.provider = 'loogle'")
+  assert_true(#search.state.candidates >= 2, ":Find @loogle must return Loogle theorem hits")
+  assert_eq(search.state.candidates[1].match_type, "loogle", "Loogle candidate must have match_type = 'loogle'")
+  local l_rows = vim.api.nvim_buf_get_lines(fbuf_l, 0, -1, false)
+  assert_true(l_rows[3]:find("[LOOGLE]", 1, true) ~= nil, "Floating results list must display [LOOGLE] badge")
+  local l_insp = vim.api.nvim_buf_get_lines(search.state.inspector_buf, 0, -1, false)
+  assert_true(l_insp[2]:find("import Mathlib.Data.List.Basic", 1, true) ~= nil, "Inspector must show Lean `import` module line")
+  assert_true(l_insp[3]:find("List.map_append", 1, true) ~= nil, "Inspector must highlight theorem type signature")
+  -- Second hit resolves directly to local `.lake/packages/mathlib/Mathlib/Algebra/Group/Defs.lean` line 2!
+  assert_eq(search.state.candidates[2].is_virtual, false, "Loogle hit present in local .lake/packages must resolve to real local file")
+  assert_eq(search.state.candidates[2].line, 2, "Loogle hit present locally must resolve exact theorem line number")
+
+  -- Activate virtual Loogle hit (#1) and verify it opens a Lean reference buffer
+  search.activate_selected_result(true, 1)
+  local cur_b = vim.api.nvim_get_current_buf()
+  assert_eq(vim.bo[cur_b].filetype, "lean", "Activating virtual @loogle result must open a Lean syntax buffer")
+  local v_text = table.concat(vim.api.nvim_buf_get_lines(cur_b, 0, -1, false), "\n")
+  assert_true(v_text:find("import Mathlib.Data.List.Basic", 1, true) ~= nil, "Virtual Loogle buffer must include import statement")
+
+  -- C. Test @docs provider (cht.sh + DevDocs + local docs)
+  local fwin_d, fbuf_d = search.open_find_menu("@docs lua table.concat", repo_root)
+  assert_true(vim.api.nvim_win_is_valid(fwin_d), ":Find @docs floating window must open")
+  assert_eq(search.state.provider, "docs", ":Find @docs must set state.provider = 'docs'")
+  assert_true(#search.state.candidates >= 2, ":Find @docs must return cht.sh + DevDocs documentation hits")
+  local d_rows = vim.api.nvim_buf_get_lines(fbuf_d, 0, -1, false)
+  assert_true(d_rows[3]:find("[DOCS]", 1, true) ~= nil, "Floating results list must display [DOCS] badge")
+  local d_insp = vim.api.nvim_buf_get_lines(search.state.inspector_buf, 0, -1, false)
+  assert_true(#d_insp == 5, "Inspector must display 5 lines for @docs preview")
+  search.close_find_menu()
+
+  -- D. Test @code provider (grep.app public open-source code search)
+  local fwin_c, fbuf_c = search.open_find_menu("@code nvim_open_win", repo_root)
+  assert_true(vim.api.nvim_win_is_valid(fwin_c), ":Find @code floating window must open")
+  assert_eq(search.state.provider, "code", ":Find @code must set state.provider = 'code'")
+  assert_true(#search.state.candidates >= 1, ":Find @code must return public code hits")
+  assert_eq(search.state.candidates[1].path, "neovim/neovim:runtime/lua/vim/lsp/buf.lua", "@code hit must format repo:path")
+  assert_eq(search.state.candidates[1].line, 42, "@code hit must extract exact data-line number (42) from snippet")
+  local c_rows = vim.api.nvim_buf_get_lines(fbuf_c, 0, -1, false)
+  assert_true(c_rows[3]:find("[CODE]", 1, true) ~= nil, "Floating results list must display [CODE] badge")
+  local c_insp = vim.api.nvim_buf_get_lines(search.state.inspector_buf, 0, -1, false)
+  assert_true(c_insp[3]:find("nvim_open_win(buf, true, win_opts)", 1, true) ~= nil, "Inspector must show HTML-stripped matched code line")
+  search.close_find_menu()
+
+  search.custom_http_get = nil
+  vim.fn.delete(dep_root, "rf")
+end)
+
 print("==========================================================")
 print(string.format("E2E :Find Suite Complete: %d passed, %d failed across %d scenarios", pass_count, fail_count, scenario_count))
 print("==========================================================")

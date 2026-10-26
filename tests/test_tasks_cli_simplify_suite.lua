@@ -144,6 +144,19 @@ do
   pcall(vim.fn.delete, tmp_dir, "rf")
 end
 
+print("\n=== [5/5] Testing Updated :Synvim help Menu ===")
+do
+  local ui_mod = require("agent.ui")
+  ui_mod.show_help()
+  local help_buf = vim.api.nvim_get_current_buf()
+  local help_text = table.concat(vim.api.nvim_buf_get_lines(help_buf, 0, -1, false), "\n")
+  assert_true(help_text:find(":Tasks test", 1, true) ~= nil, "Help menu documents ':Tasks test [id]'")
+  assert_true(help_text:find("Carve & drop", 1, true) ~= nil, "Help menu documents '<M-s>' Carve & drop sub-task workflow")
+  assert_true(help_text:find(":Tasks start", 1, true) == nil, "Help menu no longer lists removed ':Tasks start'")
+  assert_true(help_text:find(":Tasks YES", 1, true) == nil, "Help menu no longer lists removed ':Tasks YES'")
+  pcall(vim.api.nvim_buf_delete, help_buf, { force = true })
+end
+
 if failed > 0 then
   error(string.format("%d test(s) failed in test_tasks_cli_simplify_suite.lua", failed))
 end

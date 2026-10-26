@@ -644,9 +644,10 @@ static std::string glob_to_regex_str(std::string_view glob) {
 static bool path_matches_locations(
     std::string_view rel_path,
     std::string_view abs_path,
-    const std::vector<std::string>& locations
+    const std::vector<std::string>& locations,
+    bool is_explicit_only = false
 ) {
-    if (locations.empty()) return true;
+    if (locations.empty()) return !is_explicit_only;
     size_t slash = rel_path.rfind('/');
     std::string_view basename = (slash == std::string_view::npos) ? rel_path : rel_path.substr(slash + 1);
 
@@ -696,6 +697,7 @@ struct CachedFile {
     bool is_test_file = false;
     bool is_doc_file = false;
     bool is_core_dir = false;
+    bool is_explicit_only = false;
     std::string content_low;
     std::vector<std::string> lines;
     std::vector<std::string> lines_low;
@@ -706,6 +708,8 @@ struct RepoCorpusCache {
     std::chrono::steady_clock::time_point loaded_at{};
     std::vector<CachedFile> files;
     std::vector<std::string> vocab;
+    std::unordered_set<std::string> visited_abs;
+    std::unordered_set<std::string> loaded_explicit_locs;
     size_t total_lines_count = 0;
     size_t total_chars_count = 0;
 };
@@ -718,9 +722,10 @@ static void load_file_into_cache(
     bool force_include,
     std::unordered_set<std::string>& visited_abs,
     std::unordered_set<std::string>& vocab_set,
-    RepoCorpusCache& cache
+    RepoCorpusCache& cache,
+    bool is_explicit_only = false
 ) {
-    if (cache.files.size() >= 6000 && !force_include) return; // Hard cap on repository file count
+    if (cache.files.size() >= (is_explicit_only ? 10000 : 6000) && !force_include) return; // Hard cap on file count
     std::error_code ec;
     if (!fs::is_regular_file(p, ec)) return;
     std::string abs_p = p.lexically_normal().string();
@@ -764,6 +769,7 @@ static void load_file_into_cache(
         cf.path_low.rfind("nvim/lua/", 0) == 0 ||
         cf.path_low.rfind("bin/", 0) == 0
     );
+    cf.is_explicit_only = is_explicit_only;
     cf.content_low = to_lower_str(content);
 
     size_t start = 0;
@@ -808,63 +814,126 @@ static void load_file_into_cache(
     cache.files.push_back(std::move(cf));
 }
 
-static const RepoCorpusCache& get_or_load_corpus(const std::string& root_dir, const std::vector<std::string>& locations) {
-    auto now = std::chrono::steady_clock::now();
-    if (g_corpus_cache.root_dir == root_dir &&
-        !g_corpus_cache.files.empty() &&
-        std::chrono::duration_cast<std::chrono::milliseconds>(now - g_corpus_cache.loaded_at).count() < 4000) {
-        bool missing_explicit_loc = false;
-        if (!locations.empty()) {
-            bool any_match = false;
-            for (const auto& cf : g_corpus_cache.files) {
-                if (path_matches_locations(cf.rel_path, cf.abs_path, locations)) {
-                    any_match = true;
-                    break;
-                }
-            }
-            if (!any_match) {
-                std::error_code ec;
-                for (const auto& loc : locations) {
-                    if (fs::exists(fs::path(root_dir) / loc, ec) || fs::exists(fs::path(loc), ec)) {
-                        missing_explicit_loc = true;
-                        break;
-                    }
-                }
-            }
+static void load_explicit_location_into_cache(
+    const std::string& loc_raw,
+    const std::string& root_dir,
+    std::unordered_set<std::string>& vocab_set,
+    RepoCorpusCache& cache
+) {
+    std::string loc = loc_raw;
+    while (loc.rfind("./", 0) == 0) loc = loc.substr(2);
+    while (loc.size() > 1 && loc.back() == '/') loc.pop_back();
+    if (loc.empty() || loc == ".") return;
+    if (!cache.loaded_explicit_locs.insert(loc).second) return;
+
+    std::error_code ec;
+    fs::path target_p = fs::path(loc);
+    if (!target_p.is_absolute()) {
+        fs::path cand = fs::path(root_dir) / target_p;
+        if (fs::exists(cand, ec)) {
+            target_p = cand;
         }
-        if (!missing_explicit_loc) {
-            return g_corpus_cache;
+    }
+    if (!fs::exists(target_p, ec)) return;
+
+    bool is_dep_or_external = false;
+    std::string abs_target = target_p.lexically_normal().string();
+    if (abs_target.rfind(root_dir + "/", 0) != 0 && abs_target != root_dir) {
+        is_dep_or_external = true;
+    } else if (abs_target.size() > root_dir.size() + 1) {
+        std::string rel_t = abs_target.substr(root_dir.size() + 1);
+        size_t sl = rel_t.find('/');
+        std::string first_seg = (sl == std::string::npos) ? rel_t : rel_t.substr(0, sl);
+        if (is_ignored_dir(first_seg)) {
+            is_dep_or_external = true;
         }
     }
 
-    g_corpus_cache = RepoCorpusCache{};
-    g_corpus_cache.root_dir = root_dir;
-    g_corpus_cache.loaded_at = now;
+    if (fs::is_regular_file(target_p, ec)) {
+        load_file_into_cache(target_p, root_dir, true, cache.visited_abs, vocab_set, cache, is_dep_or_external);
+        return;
+    }
+    if (!fs::is_directory(target_p, ec)) return;
 
-    std::unordered_set<std::string> visited_abs;
-    std::unordered_set<std::string> vocab_set;
-
-    std::error_code ec;
     auto it = fs::recursive_directory_iterator(
-        root_dir, fs::directory_options::skip_permission_denied, ec
+        target_p, fs::directory_options::skip_permission_denied, ec
     );
     auto end = fs::recursive_directory_iterator();
     while (it != end) {
         const fs::path& p = it->path();
         std::string fname = p.filename().string();
         if (it->is_directory(ec)) {
-            if (is_ignored_dir(fname)) {
+            if (fname == ".git" || fname == ".hg" || fname == ".svn" ||
+                fname == "__pycache__" || fname == ".cache" || fname == "build") {
                 it.disable_recursion_pending();
             }
         } else if (it->is_regular_file(ec)) {
-            load_file_into_cache(p, root_dir, false, visited_abs, vocab_set, g_corpus_cache);
-            if (g_corpus_cache.files.size() >= 6000) break;
+            load_file_into_cache(p, root_dir, false, cache.visited_abs, vocab_set, cache, is_dep_or_external);
+            if (cache.files.size() >= (is_dep_or_external ? 10000 : 6000)) break;
         }
         it.increment(ec);
         if (ec) break;
     }
+}
 
-    g_corpus_cache.vocab.assign(vocab_set.begin(), vocab_set.end());
+static const RepoCorpusCache& get_or_load_corpus(const std::string& root_dir, const std::vector<std::string>& locations) {
+    auto now = std::chrono::steady_clock::now();
+    bool cache_valid = (
+        g_corpus_cache.root_dir == root_dir &&
+        !g_corpus_cache.files.empty() &&
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - g_corpus_cache.loaded_at).count() < 4000
+    );
+
+    if (!cache_valid) {
+        g_corpus_cache = RepoCorpusCache{};
+        g_corpus_cache.root_dir = root_dir;
+        g_corpus_cache.loaded_at = now;
+
+        std::unordered_set<std::string> vocab_set;
+        std::error_code ec;
+        auto it = fs::recursive_directory_iterator(
+            root_dir, fs::directory_options::skip_permission_denied, ec
+        );
+        auto end = fs::recursive_directory_iterator();
+        while (it != end) {
+            const fs::path& p = it->path();
+            std::string fname = p.filename().string();
+            if (it->is_directory(ec)) {
+                if (is_ignored_dir(fname)) {
+                    it.disable_recursion_pending();
+                }
+            } else if (it->is_regular_file(ec)) {
+                load_file_into_cache(p, root_dir, false, g_corpus_cache.visited_abs, vocab_set, g_corpus_cache);
+                if (g_corpus_cache.files.size() >= 6000) break;
+            }
+            it.increment(ec);
+            if (ec) break;
+        }
+        g_corpus_cache.vocab.assign(vocab_set.begin(), vocab_set.end());
+    }
+
+    // If explicit locations are requested (e.g. `@deps` -> `.lake/packages`, `$VIMRUNTIME/doc`, or a newly created dir),
+    // incrementally load any explicit location not yet present in the corpus cache.
+    if (!locations.empty()) {
+        std::unordered_set<std::string> vocab_set(g_corpus_cache.vocab.begin(), g_corpus_cache.vocab.end());
+        size_t prev_files = g_corpus_cache.files.size();
+        for (const auto& loc : locations) {
+            bool has_match = false;
+            for (const auto& cf : g_corpus_cache.files) {
+                if (path_matches_locations(cf.rel_path, cf.abs_path, {loc})) {
+                    has_match = true;
+                    break;
+                }
+            }
+            if (!has_match) {
+                load_explicit_location_into_cache(loc, root_dir, vocab_set, g_corpus_cache);
+            }
+        }
+        if (g_corpus_cache.files.size() != prev_files) {
+            g_corpus_cache.vocab.assign(vocab_set.begin(), vocab_set.end());
+        }
+    }
+
     return g_corpus_cache;
 }
 
@@ -902,7 +971,7 @@ extern "C" const char* synvim_search_repo(
         oss << "[";
         int count = 0;
         for (const auto& cf : cache.files) {
-            if (!path_matches_locations(cf.rel_path, cf.abs_path, locations)) continue;
+            if (!path_matches_locations(cf.rel_path, cf.abs_path, locations, cf.is_explicit_only)) continue;
             if (count > 0) oss << ",";
             oss << "{\"path\":\"" << json_escape(cf.rel_path) << "\","
                 << "\"line\":1,\"col\":1,\"score\":100.0,"
@@ -1001,7 +1070,7 @@ extern "C" const char* synvim_search_repo(
     active_files.reserve(cache.files.size());
 
     for (const auto& cf : cache.files) {
-        if (!path_matches_locations(cf.rel_path, cf.abs_path, locations)) continue;
+        if (!path_matches_locations(cf.rel_path, cf.abs_path, locations, cf.is_explicit_only)) continue;
         PathMatchResult pm = score_filepath(cf.rel_path, raw_query, tokens, subtokens);
         double prio = pm.score + (cf.is_core_dir ? 35.0 : 0.0) + (cf.is_code_file ? 25.0 : 0.0) - (cf.is_test_file ? 80.0 : 0.0);
         active_files.push_back(ScoredFileRef{ &cf, pm.score, pm.col, pm.matched, prio });
