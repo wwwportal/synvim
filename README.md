@@ -17,17 +17,25 @@ Run `:Synvim help` inside Neovim at any time to view this list.
 | Command | Action |
 | :--- | :--- |
 | `:Synvim help` | Show available commands and keybindings in a floating window |
+| `:History` | Open visited files list in recent order with time spent, edits & context (`<leader>h`) |
+| `:History qf` / `:History list` | Export visited files to Quickfix list |
+| `:History clear` | Reset visited files history |
 | `:Tasks` | Toggle repository task agenda in Quickfix (`<leader>q`) |
 | `:Tasks list` | List in-tree tasks in Quickfix |
-| `:Tasks add <desc>` | Insert formatted task contract at cursor line |
-| `:Tasks start [id]` | Implement nearest visible task or specified task contract by ID/index |
-| `:Tasks revise [id]` | Mark task as `status:REVISE` and critique directly via in-line comments |
-| `:Tasks review` | List pending changes and reviews with IDs/indexes in Quickfix |
-| `:Tasks accept <id>` | Accept and approve specific review by ID (atomic; no batch accept) |
-| `:Tasks reject <id>` | Reject and revert specific review by ID |
-| `:Tasks stop` | Abort running background synthesis job and clear preview diffs |
-| `:Find <concept>` | Semantic LLM search; jumps directly to relevant code |
-| `:Ask [question]` | Jump to relevant code and insert an in-line explanatory comment (empty opens docked multi-line bottom split; supports multi-question queue navigation and visual range selection) |
+| `:Tasks add` | Review architectural PlantUML models, then open Two-Layer Task Form |
+| `:Tasks form` | Open Two-Layer Task Specification Form directly (`<C-l>` fill, `<C-n>` +task) |
+| `:Tasks drop` | Place/drop active queued task directly at cursor (`<M-p>`) |
+| `:Tasks cancel` | Cancel active task placement mode (`<M-q>`) |
+| `:Tasks test [id]` | Run (or scaffold test-first) test suite for task `<id>` or closest cursor task |
+| `:Find [query] [in ..]` | Native C++20 hybrid search bar with live AST/FZF/BM25 results and code context inspector |
+| `:Find @algo <query>` | Search language-agnostic algorithms & data structures (CP-Algorithms + NIST DADS) |
+| `:Find @deps <query>` | Search installed dependencies (`.lake/packages`, `.venv`, `node_modules`, `$VIMRUNTIME`) |
+| `:Find @loogle <query>` | Search Lean 4 & Mathlib4 theorems/definitions by type signature or name |
+| `:Find @docs <query>` | Search language and library documentation + cheat sheets (DevDocs + cht.sh) |
+| `:Find @code <query>` | Search open-source usage across public repositories (grep.app) |
+| `:Find @tag1 @tag2 ...` | Multi-tag hybrid search (e.g. `:Find @algo @code fenwick`, `:Find @loogle @deps RingHom`) |
+| `:Ask [question]` | Jump to relevant code and insert an in-line explanatory comment |
+| `:Listen` | Voice-to-text dictation into active buffer (`<leader>v`) |
 
 ## Multi-Line & Multi-Question Entry
 

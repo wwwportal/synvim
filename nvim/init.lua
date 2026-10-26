@@ -548,7 +548,7 @@ require("voice").setup()
 require("agent").setup()
 
 vim.keymap.set("n", "<leader>q", "<Cmd>Tasks<CR>", { silent = true, desc = "Toggle tasks agenda (:Tasks)" })
-vim.keymap.set("n", "<leader>h", "<Cmd>History<CR>", { silent = true, desc = "Visited files navigation graph (:History)" })
+vim.keymap.set("n", "<leader>h", "<Cmd>History<CR>", { silent = true, desc = "Visited files list (:History)" })
 
 
 -- Global statusline

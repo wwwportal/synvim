@@ -195,7 +195,7 @@ function M.setup()
     desc = "Unified tasks manager (:Tasks [list|add|form|drop|cancel|test <id>])",
   })
 
-  -- Visited Files Navigation Graph (:History)
+  -- Visited Files List (:History)
   vim.api.nvim_create_user_command("History", function(ctx)
     local arg = vim.trim(ctx.args or ""):lower()
     if arg == "clear" then
@@ -208,9 +208,9 @@ function M.setup()
   end, {
     nargs = "?",
     complete = function(arglead, cmdline)
-      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "graph", "qf", "list", "clear" })
+      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "qf", "list", "clear" })
     end,
-    desc = "Visited files navigation graph & last cursor line (:History [graph|qf|clear])",
+    desc = "Visited files list in recent order (:History [qf|list|clear])",
   })
 
   vim.api.nvim_create_user_command("Find", function(ctx)

@@ -150,29 +150,24 @@ local qf_list = vim.fn.getqflist()
 assert_eq(#qf_list, 3, "Quickfix list populated with 3 unique files")
 vim.cmd("cclose")
 
--- [SCENARIO 6] Tasks YES, NO, MAYBE subcommands
-print("\n[SCENARIO 6] Tasks YES, NO, MAYBE subcommands")
+-- [SCENARIO 6] Tasks Simplified Subcommands
+print("\n[SCENARIO 6] Tasks Simplified Subcommands")
 -- Test autocompletion
 local comp = tasks.tasks_complete("", "Tasks ")
-local has_yes = false
-local has_no = false
-local has_maybe = false
-for _, s in ipairs(comp) do
-  if s == "YES" then has_yes = true end
-  if s == "NO" then has_no = true end
-  if s == "MAYBE" then has_maybe = true end
+local expected_cmds = { "list", "add", "form", "drop", "cancel", "test" }
+for _, ec in ipairs(expected_cmds) do
+  local found = false
+  for _, s in ipairs(comp) do
+    if s == ec then found = true end
+  end
+  assert_true(found, "Autocomplete includes " .. ec)
 end
-assert_true(has_yes, "Autocomplete includes YES")
-assert_true(has_no, "Autocomplete includes NO")
-assert_true(has_maybe, "Autocomplete includes MAYBE")
 
 -- Test command dispatch without crashing
-local ok_yes = pcall(tasks.tasks_command, "YES non_existent_id")
-local ok_no = pcall(tasks.tasks_command, "NO non_existent_id")
-local ok_maybe = pcall(tasks.tasks_command, "MAYBE")
-assert_true(ok_yes, ":Tasks YES executes cleanly")
-assert_true(ok_no, ":Tasks NO executes cleanly")
-assert_true(ok_maybe, ":Tasks MAYBE executes cleanly")
+local ok_list = pcall(tasks.tasks_command, "list")
+local ok_cancel = pcall(tasks.tasks_command, "cancel")
+assert_true(ok_list, ":Tasks list executes cleanly")
+assert_true(ok_cancel, ":Tasks cancel executes cleanly")
 
 -- [SCENARIO 7] Active Time & Character Edit Tracking
 print("\n[SCENARIO 7] Active Time & Character Edit Tracking")
@@ -211,7 +206,7 @@ local help_lines = vim.api.nvim_buf_get_lines(help_buf, 0, -1, false)
 local has_history_sec = false
 local has_tasks_sec = false
 for _, l in ipairs(help_lines) do
-  if l:find("Navigation & Visited Files Graph") then has_history_sec = true end
+  if l:find("Navigation & Visited Files") then has_history_sec = true end
   if l:find("Unified Tasks Workflow") then has_tasks_sec = true end
 end
 assert_true(has_history_sec, "Help contains Visited Files & History section")

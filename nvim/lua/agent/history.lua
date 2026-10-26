@@ -780,38 +780,6 @@ function M.show_history(opts)
   vim.keymap.set("n", "<C-p>", snap_prev, { buffer = buf, silent = true, nowait = true, desc = "Snap to previous option" })
   vim.keymap.set("n", "[", snap_prev, { buffer = buf, silent = true, nowait = true, desc = "Snap to previous option" })
 
-  -- Follow outgoing edge forward in graph (l or right arrow)
-  vim.keymap.set("n", "l", function()
-    local cur = vim.fn.line(".")
-    local entry = line_to_entry[cur] or line_to_entry[cur - 1] or line_to_entry[cur + 1]
-    if entry and M.state.transitions[entry.path] then
-      for tgt, _ in pairs(M.state.transitions[entry.path]) do
-        if path_to_line[tgt] then
-          local l = path_to_line[tgt]
-          local col = line_to_head_col[l] or 0
-          vim.api.nvim_win_set_cursor(win, { l, col })
-          return
-        end
-      end
-    end
-  end, { buffer = buf, silent = true, nowait = true, desc = "Follow outgoing transition edge" })
-
-  -- Follow incoming edge backward in graph (h or left arrow)
-  vim.keymap.set("n", "h", function()
-    local cur = vim.fn.line(".")
-    local entry = line_to_entry[cur] or line_to_entry[cur - 1] or line_to_entry[cur + 1]
-    if entry and M.state.incoming[entry.path] then
-      for src, _ in pairs(M.state.incoming[entry.path]) do
-        if path_to_line[src] then
-          local l = path_to_line[src]
-          local col = line_to_head_col[l] or 0
-          vim.api.nvim_win_set_cursor(win, { l, col })
-          return
-        end
-      end
-    end
-  end, { buffer = buf, silent = true, nowait = true, desc = "Follow incoming transition edge" })
-
   vim.keymap.set("n", "q", close_win, { buffer = buf, silent = true, nowait = true, desc = "Close history window" })
   vim.keymap.set("n", "<Esc>", close_win, { buffer = buf, silent = true, nowait = true, desc = "Close history window" })
 
@@ -819,7 +787,7 @@ function M.show_history(opts)
   vim.api.nvim_create_autocmd("WinClosed", {
     buffer = buf,
     callback = close_win,
-    desc = "Close inspector window when history graph is closed",
+    desc = "Close inspector window when history list is closed",
   })
 
   -- Quick jump keys 1..9
