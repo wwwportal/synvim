@@ -1,0 +1,212 @@
+@startuml synvim_domain_model
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Helvetica, Arial, sans-serif"
+skinparam defaultFontSize 12
+skinparam roundCorner 8
+skinparam shadowing false
+
+skinparam class {
+    BackgroundColor #F8FAFC
+    BorderColor #334155
+    FontColor #0F172A
+    ArrowColor #2563EB
+}
+
+title "synvim: Core Domain Model & Subsystem Classes"
+
+package "Tasks & In-Tree Anchors" {
+    class TaskSpec {
+        +String task_id
+        +String tier: "A" | "B" | "C"
+        +String action
+        +String ensures
+        +String hoare_invariants
+        +List<String> requires
+        +List<String> modifies
+        +List<String> blocks
+        +List<String> depends_on
+        +String test_suite
+        +format_contract_comment(lang): String
+    }
+
+    class TaskAnchor {
+        +String type: "task" | "symbol" | "line"
+        +String id
+        +int line
+        +int col
+        +String label
+        +String desc
+        +String status: "TODO" | "DONE" | "REVISE"
+        +String contract_raw
+    }
+
+    class PlacementState {
+        +boolean active
+        +List<TaskSpec> queue
+        +int current_index
+        +int extmark_id
+        +enqueue(TaskSpec)
+        +drop_at_cursor(bufnr, line)
+        +carve_subtask(sub_action)
+        +cycle_next()
+        +cycle_prev()
+        +cancel()
+    }
+
+    TaskSpec "1" -- "0..1" TaskAnchor : instantiated as
+    PlacementState "1" o-- "*" TaskSpec : queues
+}
+
+package "Search & Retrieval Subsystem" {
+    class SearchQuery {
+        +String raw_input
+        +String clean_query
+        +List<String> providers
+        +List<String> locations
+        +List<String> globs
+        +parse(String): SearchQuery
+    }
+
+    interface SearchProvider {
+        +String name
+        +boolean is_external
+        +search(query, locations): List<SearchCandidate>
+    }
+
+    class LocalCodeProvider implements SearchProvider {
+        +ffi_search_handle
+    }
+
+    class AlgoProvider implements SearchProvider {
+        +Map<String, AlgoEntry> catalog
+        +fetch_wikipedia_fallback(query)
+    }
+
+    class LoogleProvider implements SearchProvider {
+        +String endpoint
+        +query_lean4_mathlib(type_sig)
+    }
+
+    class DocsProvider implements SearchProvider {
+        +query_devdocs(lang, query)
+        +query_cht_sh(topic)
+    }
+
+    class CodeProvider implements SearchProvider {
+        +query_grep_app(pattern)
+    }
+
+    class SearchCandidate {
+        +String path
+        +int line
+        +int col
+        +String symbol
+        +float score
+        +String text
+        +String provider
+    }
+
+    SearchQuery "1" --> "*" SearchProvider : dispatched to
+    SearchProvider ..> SearchCandidate : produces
+}
+
+package "Session Metrics & Navigation" {
+    class HistoryEntry {
+        +String path
+        +String rel_path
+        +int line
+        +int col
+        +TaskAnchor anchor
+        +int count
+        +long time_spent_secs
+        +int chars_added
+        +int chars_deleted
+        +long last_enter
+    }
+
+    class HistoryManager {
+        +Map<String, HistoryEntry> files
+        +List<String> lru_order
+        +record_visit(path, line, col)
+        +track_on_bytes(bufnr, added, deleted)
+        +show_vertical_list()
+        +export_quickfix()
+    }
+
+    HistoryManager "1" o-- "*" HistoryEntry : tracks
+    HistoryEntry "1" o-- "0..1" TaskAnchor : links to closest
+}
+
+package "Image Viewing & Architecture Review" {
+    class ArchitectureReviewSession {
+        +boolean active
+        +String current_puml
+        +String current_png
+        +int puml_buf
+        +int puml_win
+        +int img_buf
+        +int img_win
+        +float zoom_level
+        +int pan_x
+        +int pan_y
+        +rerender(): boolean
+        +cycle_next_model()
+        +confirm_satisfaction()
+    }
+
+    class KittyGraphicsEngine {
+        +render_kitty_apc(img_path, win_id, opts)
+        +clear_kitty_image(bufnr)
+        +wrap_tmux_dcs(apc_str): String
+    }
+
+    ArchitectureReviewSession --> KittyGraphicsEngine : uses
+}
+
+package "Diff & Review Staging" {
+    class ReviewRecord {
+        +String id
+        +String status: "unreviewed" | "accepted" | "rejected"
+        +String target_file
+        +String patch_diff
+        +List<String> old_lines
+        +List<String> new_lines
+        +long timestamp
+    }
+
+    class InlineDiffEngine {
+        +compute_char_diff(old_lines, new_lines): List<DiffToken>
+        +render_virtual_extmarks(bufnr, diff)
+        +accept_diff(bufnr)
+        +clear_diff(bufnr)
+    }
+
+    ReviewRecord --> InlineDiffEngine : rendered by
+}
+
+package "Native C++20 FFI Engines" {
+    class LibsynvimSearch {
+        +index_repository(root_dir)
+        +search_bm25_fzf(query, locations): JSON
+    }
+
+    class LibsynvimDTL {
+        +compute_myers_diff(s1, s2): JSON
+    }
+
+    class LibsynvimAnchor {
+        +scan_anchors(file_path): JSON
+    }
+
+    class LibsynvimImage {
+        +rasterize_png_to_kitty(path, w, h, zoom): String
+    }
+}
+
+LocalCodeProvider ..> LibsynvimSearch : FFI call
+InlineDiffEngine ..> LibsynvimDTL : FFI call
+HistoryManager ..> LibsynvimAnchor : FFI call
+KittyGraphicsEngine ..> LibsynvimImage : FFI call
+
+@enduml

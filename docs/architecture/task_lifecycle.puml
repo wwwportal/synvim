@@ -20,15 +20,25 @@ skinparam sequence {
     BoxBackgroundColor #F8FAFC
 }
 
-title "synvim: In-Line Task Execution & Review Staging Sequence"
+title "synvim: In-Line Task Specification, Placement & Execution Sequence"
 
 actor "Developer" as user
-box "Neovim Frontend" #F8FAFC
-participant "UI / Docked Input\n(agent/ui.lua)" as ui
+
+box "Neovim Frontend & UI" #F8FAFC
 participant "Command Dispatcher\n(agent/init.lua)" as init
+participant "Architectural Viewer\n(agent/image.lua)" as image
+participant "Two-Layer Form\n(agent/tasks.lua & ui.lua)" as form
+participant "Search & History Hub\n(agent/search.lua & history.lua)" as nav
 participant "Task Engine\n(agent/tasks.lua)" as tasks
-participant "Diff Engine\n(agent/diff.lua)" as diff
+participant "In-Line Diff Engine\n(agent/diff.lua & ffi_dtl)" as diff
 participant "Review Manager\n(agent/reviews.lua)" as reviews
+end box
+
+box "Repository & Disk" #FEF3C7
+participant "docs/architecture/\n(*.puml / *.png)" as arch
+participant "Source File\n(SPEC Contract)" as src
+participant "Test Suite\n(tests/test_<id>.lua)" as tests
+participant ".agent/reviews/\n(<id>.json)" as rstore
 end box
 
 box "Agent Runtime" #F1F5F9
@@ -36,45 +46,72 @@ participant "LLM Client\n(agent/llm.lua)" as llm
 participant "Execution Engine\n(OpenCode / agy)" as engine
 end box
 
-box "Repository & Disk" #FEF3C7
-participant "Source File\n(SPEC Contract)" as src
-participant ".agent/reviews/\n(<id>.json)" as rstore
-end box
+== 1. Architectural Model Review Gate ==
+user -> init : Run :Tasks add
+init -> tasks : open_task_review_or_form()
+tasks -> image : open_architecture_review()
+image -> arch : Read model (.puml) & ensure rendered PNG exists
+image --> user : Split window: .puml editor (left) + native Kitty image (right)
+user -> image : Inspect & edit diagram (<C-r> re-render, +/- zoom, h/j/k/l pan, <Tab> cycle)
+user -> image : Confirm architectural model satisfaction (<C-s> or <M-a>)
+image -> tasks : Proceed to Task Specification Form
 
-== 1. Task Definition & Insertion ==
-user -> ui : Run :Tasks add (or docked split)
-ui -> tasks : insert_single_task_stub()
-tasks -> src : Write SPEC(task-id | tier:B | blocks:[...])
+== 2. Two-Layer Task Specification Form ==
+tasks -> form : open_task_form(origin_win)
+form --> user : Floating form: Layer 1 (Action & Ensures) + Layer 2 (Hoare Invariants & Tier)
+user -> form : Enter specifications (or <C-l> prefill, <C-n> enqueue multiple tasks)
+user -> form : Submit specifications (<C-s> or :w)
+form -> tasks : submit_form() -> enqueue tasks in Placement Queue
+tasks --> user : Enter interactive placement workflow (status banner & active hints)
+
+== 3. Code Location Anchoring & Sub-Task Carving ==
+user -> nav : Browse target code via :Find (floating menu) or :History (vertical list)
+nav --> user : Jump to destination file & line
+alt Anchor Complete Spec (<M-p>)
+    user -> tasks : Trigger <M-p> (:Tasks drop)
+    tasks -> src : Insert formatted SPEC(task-id | tier:B | blocks:[...])
+else Carve Sub-Task (<M-s>)
+    user -> tasks : Trigger <M-s> (split remainder)
+    tasks -> src : Anchor immediate sub-task contract in buffer
+    tasks -> tasks : Retain remaining sub-tasks in queue
+end
 tasks -> tasks : reindex_tasks() -> update .agent/task_index.json
-tasks --> user : Display in Quickfix Agenda (<leader>q)
+tasks --> user : Task anchored in-tree & displayed in Quickfix agenda (<leader>q)
 
-== 2. Task Execution ==
-user -> init : Run :Tasks start [task-id]
-init -> tasks : start_task(task-id)
-tasks -> src : Read target SPEC contract & surrounding context
-tasks -> llm : run(prompt, context)
-llm -> engine : Async spawn via jobstart (wire protocol)
-engine --> llm : Stream JSON solution payload {files, diff, contract}
+== 4. Test-Driven Verification Gate (TDD Red Phase) ==
+user -> init : Run :Tasks test [task-id]
+init -> tasks : test_task(task-id)
+opt Missing Test Suite
+    tasks -> tests : Scaffold test file (tests/test_<task-id>.lua)
+    tasks --> user : Scaffolded test file written. Developer writes assertions first!
+end
+tasks -> tests : Execute test command (nvim --headless -l tests/test_<task-id>.lua)
+tests --> tasks : Test results captured (red phase confirmed)
+
+== 5. Agent Synthesis & Character-Level Diff Review ==
+tasks -> llm : run(task_contract, context, test_suite)
+llm -> engine : Stream prompt via jobstart (JSON wire protocol)
+engine --> llm : Return solution JSON payload {diff, code, contracts}
 llm -> reviews : process_agent_response()
-
-== 3. Review Staging & In-Line Preview ==
 reviews -> rstore : Persist metadata & diff (<id>.json, status: unreviewed)
 reviews -> diff : show_inline_diff(bufnr, new_content, old_lines)
-diff -> src : Attach extmarks & virtual lines (character-level diff)
-diff --> user : Visual inline diff rendered directly in active buffer
+diff -> src : Attach extmarks & virtual lines (C++20 Myers DTL diff)
+diff --> user : Render character-level inline diff directly in active buffer
 
-== 4. Acceptance or Rejection ==
-alt Accept Changes
-    user -> init : Run :Tasks accept <id>
-    init -> reviews : accept_review(<id>)
+== 6. Acceptance & Contract Promotion (TDD Green Phase) ==
+alt Accept Changes (<M-a>)
+    user -> init : Confirm acceptance (<M-a>)
+    init -> tasks : Run :Tasks test [id] (gate verification)
+    tasks -> tests : Re-execute test suite
+    tests --> tasks : PASS (all assertions succeed)
+    tasks -> reviews : accept_review(<id>)
     reviews -> diff : accept_diff()
-    diff -> src : Apply new lines directly to buffer & write to disk
-    diff -> src : Promote contract header to (status:DONE)
+    diff -> src : Apply patch to disk & promote contract header to (status:DONE)
     reviews -> rstore : Update status: accepted
-    reviews --> user : Success notification & Quickfix refresh
-else Reject / Revert Changes
-    user -> init : Run :Tasks reject <id>
-    init -> reviews : reject(id)
+    reviews --> user : Success notification & Quickfix agenda updated
+else Reject / Revert Changes (<M-r>)
+    user -> init : Reject review (<M-r>)
+    init -> reviews : reject(<id>)
     reviews -> diff : clear_diff()
     diff -> src : Strip virtual lines & restore original buffer lines
     reviews -> rstore : Update status: rejected / reverted

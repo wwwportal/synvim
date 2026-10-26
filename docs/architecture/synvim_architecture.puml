@@ -52,41 +52,67 @@ actor "Developer / User" as user
 ' Presentation & Input Layer
 ' ==============================================================================
 package "Input & Interaction Modalities" as input_layer {
-    component "Terminal & Splits\n(Alt+Keybindings, Alt+z, Alt+h/j/k/l)" as term_mgr
+    component "Terminal & Splits\n(Alt+Arrows, Alt+z, Alt+h/j/k/l)" as term_mgr
+    component "Floating Hybrid Search (:Find)\n* Search bar on top\n* Live FZF/BM25/AST results\n* Bottom code context inspector" as find_menu
+    component "Visited Files List (:History / <leader>h)\n* Clean aligned vertical recent list\n* Real-time session time & character edits\n* Closest task context & numeric quick jump" as history_modal
+    component "Native Kitty Image Viewer Split\n* Live PlantUML review (<C-r> / :w)\n* Zoom (+/-), pan (h/j/k/l), reset (0)\n* Kitty APC z=1 (Ghostty / Kitty / Tmux)" as image_viewer
     component "Docked Bottom Split\n(botright 4-line input, <C-s> / Enter)" as docked_split
-    component "Live Commandline Preview\n(:Ask, :Find, :Tasks live parsing)" as cmdline_preview
-    component "Voice Input Subsystem\n(nvim/lua/voice.lua)" as voice_subsys
+    component "Voice Input Subsystem\n(nvim/lua/voice.lua / <leader>v)" as voice_subsys
 }
 
 ' ==============================================================================
 ' Neovim Plugin Architecture (lua/agent/)
 ' ==============================================================================
 package "Neovim Plugin Subsystem (nvim/lua/agent)" as nvim_core {
-    component "Dispatcher & Command Registry\n(agent/init.lua)\n[:Tasks, :Ask, :Find, :Synvim, :Git]" as agent_init
-    component "Shared State Hub\n(agent/state.lua)\n[Job tracking, queues, diff namespaces]" as state_hub
+    component "Dispatcher & Command Registry\n(agent/init.lua)\n[:Tasks, :Find, :History, :Ask, :Synvim, :Git]" as agent_init
+    component "Shared State Hub\n(agent/state.lua)\n[Jobs, placement queues, diff namespaces]" as state_hub
     
-    component "Task & Agenda Engine\n(agent/tasks.lua)\n* Task scanner & DAG reindexing\n* Quickfix agenda (:Tasks list)\n* Contract scaffolding (:Tasks add)\n* Queue navigator (<C-n>/<C-p>)" as tasks_engine
+    component "Unified Tasks Engine\n(agent/tasks.lua)\n* Architectural review gate\n* Two-Layer Task Form (<C-l>, <C-n>)\n* Interactive placement queue (<M-p>, <M-s>)\n* TDD test gate & scaffolding (:Tasks test)" as tasks_engine
     
-    component "In-Line Diff Engine\n(agent/diff.lua)\n* Tokenizer & char-level diff\n* Extmarks & virtual staging lines\n* Contract promotion (:DONE)" as diff_engine
+    component "Search & Retrieval Orchestrator\n(agent/search.lua & agent/algos.lua)\n* Multi-tag hybrid query router\n* Provider executor & rank merger\n* Bottom context inspector & previewer" as search_engine
     
-    component "Review & Staging Manager\n(agent/reviews.lua)\n* Review record builder\n* Atomic accept/reject\n* Rollback & patch applier" as reviews_engine
+    component "Visited Files & Metrics Hub\n(agent/history.lua)\n* Deduplicated vertical list tracker\n* Active session time & edit metrics\n* Quickfix list export (:History qf / list)" as history_engine
     
-    component "Search & Retrieval\n(agent/search.lua)\n* Query keyword ranker\n* Multi-question splitter\n* Semantic context builder" as search_engine
+    component "Native Image & Diagram Engine\n(agent/image.lua)\n* Kitty graphics protocol encoder (APC z=1)\n* Side-by-side PlantUML live editor split\n* Auto-compilation & redraw lifecycle" as image_engine
     
-    component "LLM Async Client\n(agent/llm.lua)\n* vim.fn.jobstart runner\n* JSON wire protocol parser\n* Response processor" as llm_client
+    component "In-Line Diff Engine\n(agent/diff.lua)\n* Token- and char-level diffing\n* Extmarks & virtual staging lines\n* Contract promotion (:DONE)" as diff_engine
     
-    component "UI & View Components\n(agent/ui.lua)\n* Docked input window\n* Directory preview popup\n* Floating help manual" as ui_components
+    component "Review & Staging Manager\n(agent/reviews.lua)\n* Review record builder\n* Atomic accept / reject / revert\n* Rollback & patch applier" as reviews_engine
+    
+    component "LLM Async Client\n(agent/llm.lua)\n* vim.fn.jobstart runner\n* Structured JSON solution parser\n* Response processor" as llm_client
+    
+    component "UI & View Components\n(agent/ui.lua)\n* Docked input window\n* Floating manual (:Synvim help)\n* Floating preview popups" as ui_components
 }
 
 ' ==============================================================================
-' External CLI Toolset & Daemons
+' Native C++20 FFI Engines (c_src/)
 ' ==============================================================================
-package "CLI Toolset & Scripts (bin/)" as cli_layer {
-    component "agent CLI Engine\n(bin/agent)\n* Source scanner\n* Headless & interactive runner\n* LLM engine dispatcher\n* Socket IPC client" as agent_cli
-    
+package "Native C++20 FFI Layer (c_src/ -> libsynvim_*.so)" as native_ffi {
+    component "libsynvim_search.so\n* FZF Smith-Waterman subsequence\n* BM25 natural language retrieval\n* 5-line sliding-window proximity\n* CamelCase / snake_case tokenization\n* In-memory symbol index & ranking" as ffi_search
+    component "libsynvim_dtl.so\n* Myers O(ND) linear-space diff\n* Divide-and-conquer refinement" as ffi_dtl
+    component "libsynvim_anchor.so\n* Fast C++ anchor & contract scanner\n* Closest symbol & task identification" as ffi_anchor
+    component "libsynvim_image.so\n* LuaJIT FFI libpng rasterizer & scaler\n* Direct Kitty graphics escape encoder" as ffi_image
+}
+
+' ==============================================================================
+' External Knowledge & Documentation Search Providers (@tag)
+' ==============================================================================
+cloud "External Search & Knowledge Providers (@tag)" as search_cloud {
+    component "@algo: Algorithms & Data Structures\n* CP-Algorithms & NIST DADS catalog (35+ algos)\n* Complexities, invariants & pseudocode\n* Wikipedia CS REST API live fallback" as algo_prov
+    component "@deps: Installed Dependencies\n* C++20 FFI local package scanner\n* .lake/packages, .venv, node_modules, $VIMRUNTIME" as deps_prov
+    component "@loogle: Lean 4 Theorem Search\n* loogle.lean-lang.org\n* Mathlib4 definitions & type signatures" as loogle_prov
+    component "@docs: Documentation & Cheat Sheets\n* DevDocs REST API & cht.sh recipes" as docs_prov
+    component "@code: Public GitHub Code Search\n* grep.app real-world open-source search" as code_prov
+}
+
+' ==============================================================================
+' CLI Toolset & Daemons
+' ==============================================================================
+package "CLI Toolset & Scripts (bin/ & docs/)" as cli_layer {
+    component "agent CLI Engine\n(bin/agent)\n* Headless & interactive runner\n* LLM engine dispatcher\n* Unix domain socket client" as agent_cli
     component "Speech Transcriber\n(bin/agent_transcribe.py)\n* Whisper / local speech-to-text" as transcribe_py
-    
-    component "Pre-Commit Gates & Verifiers\n(bin/pre_commit_gates.sh\nbin/verify_review.sh)" as gates_sh
+    component "Diagram Generator\n(docs/architecture/generate_diagrams.sh)\n* Local PlantUML / Docker / Kroki fallback" as diag_sh
+    component "Pre-Commit Gates & Verifiers\n(bin/pre_commit_gates.sh)" as gates_sh
 }
 
 ' ==============================================================================
@@ -94,6 +120,7 @@ package "CLI Toolset & Scripts (bin/)" as cli_layer {
 ' ==============================================================================
 database "Repository & In-Tree State\n(File System)" as storage_layer {
     folder "Source Files with In-Line Contracts\n[SPEC(...) | tier:A/B/C | blocks/depends_on]\n[TODO(...) | FIXME(...)]" as source_contracts
+    folder "docs/architecture/\n(*.puml models & rendered *.png/*.svg)" as arch_models
     folder ".agent/reviews/\n[<review_id>.json]\n(Patch, old/new lines, metadata)" as review_store
     file ".agent/task_index.json\n(Topological DAG indices)" as task_index_file
     folder ".git/\n(Hooks, branches, object database)" as git_repo
@@ -108,37 +135,60 @@ cloud "AI Provider Backends" as ai_cloud {
     component "Local LLM / Custom Endpoints\n(Ollama, Anthropic, OpenAI)" as custom_llm
 }
 
-' System audio hardware
 component "Microphone / sox / rec" as mic_hw
 
 ' ==============================================================================
 ' Connections & Data Flow
 ' ==============================================================================
 user --> term_mgr : Manipulate splits & terminals
+user --> find_menu : :Find [@algo|@deps|@loogle|@docs|@code]
+user --> history_modal : :History / <leader>h (snap, preview, jump)
+user --> image_viewer : Review diagrams during :Tasks add (+/-/h/j/k/l)
 user --> docked_split : Enter multi-line prompt / task
-user --> cmdline_preview : Type :Ask, :Find, :Tasks
-user --> agent_cli : Invoke via terminal / scripts
-user --> mic_hw : Voice dictation
+user --> mic_hw : Voice dictation (<leader>v)
+user --> agent_cli : Terminal / CI runner
 
 mic_hw --> voice_subsys : Capture raw audio
 voice_subsys --> transcribe_py : Stream WAV/FLAC audio
 transcribe_py --> voice_subsys : Return transcribed text
 voice_subsys --> agent_init : Feed into :Ask / :Tasks
 
-cmdline_preview --> agent_init : Dispatch command
-docked_split --> agent_init : Submit user query
+find_menu --> search_engine : Live query input
+history_modal --> history_engine : Navigation & jump events
+image_viewer --> image_engine : Zoom/pan & confirmation
+docked_split --> agent_init : Submit prompt
+
 agent_init --> state_hub : Read / update agent state
-agent_init --> tasks_engine : Execute :Tasks [list|add|start|revise]
-agent_init --> search_engine : Execute :Find / :Ask
-agent_init --> reviews_engine : Execute :Tasks [review|accept|reject]
-agent_init --> ui_components : Open help / dir preview
+agent_init --> tasks_engine : Execute :Tasks [list|add|form|drop|cancel|test]
+agent_init --> search_engine : Execute :Find
+agent_init --> history_engine : Open :History
+agent_init --> ui_components : Open help / popups
 
-tasks_engine --> source_contracts : Scan & write SPEC(...) contracts
+' Search Flow
+search_engine --> ffi_search : Fast local repo indexing & scoring
+search_engine --> search_cloud : Query external providers (@algo, @deps, @loogle, etc.)
+search_engine --> find_menu : Feed live ranked results & context
+
+' History Flow
+history_engine --> ffi_anchor : Resolve closest anchor/task
+history_engine --> source_contracts : Track BufEnter/Leave & on_bytes edits
+
+' Tasks & Architecture Review Flow
+tasks_engine --> image_engine : Open architecture review on :Tasks add
+image_engine --> arch_models : Read & edit *.puml models
+image_engine --> diag_sh : Synchronously render PNG if missing
+image_engine --> ffi_image : Render image via Kitty APC chunks
+tasks_engine --> source_contracts : Place task contracts via <M-p> / <M-s>
 tasks_engine --> task_index_file : Read / write topological index
-tasks_engine --> llm_client : Submit task context for synthesis
-search_engine --> source_contracts : Keyword & symbol search
-search_engine --> llm_client : Ask questions about code
+tasks_engine ..> source_contracts : Scaffold & run TDD test suite (:Tasks test)
+tasks_engine --> llm_client : Submit task contract for synthesis
 
+' Native FFI Hookups
+diff_engine --> ffi_dtl : Compute character-level diffs
+reviews_engine --> diff_engine : Render inline preview in editor
+diff_engine --> source_contracts : Apply virtual extmarks & tokens
+
+' LLM and Review Staging
 llm_client --> state_hub : Maintain job status & queue
 llm_client --> opencode_engine : Stream prompt context via CLI / API
 opencode_engine ..> agy_engine : Failover if unavailable
@@ -146,9 +196,6 @@ llm_client --> custom_llm : Optional API route
 
 llm_client --> reviews_engine : Yield proposed code modifications
 reviews_engine --> review_store : Persist review metadata & diffs
-reviews_engine --> diff_engine : Render inline preview in editor
-diff_engine --> source_contracts : Apply virtual extmarks & tokens
-
 diff_engine --> reviews_engine : User accepts/rejects changes
 reviews_engine --> source_contracts : Commit patch or revert buffer
 reviews_engine --> git_repo : Stage approved changes

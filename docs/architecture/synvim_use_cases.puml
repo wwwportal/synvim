@@ -1,0 +1,104 @@
+@startuml synvim_use_cases
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Helvetica, Arial, sans-serif"
+skinparam defaultFontSize 12
+skinparam roundCorner 8
+skinparam shadowing false
+
+skinparam package {
+    BackgroundColor #F8FAFC
+    BorderColor #64748B
+    FontColor #0F172A
+    FontStyle bold
+}
+
+skinparam usecase {
+    BackgroundColor #FFFFFF
+    BorderColor #2563EB
+    FontColor #0F172A
+    ArrowColor #2563EB
+}
+
+skinparam actor {
+    BackgroundColor #F3E8FF
+    BorderColor #7E22CE
+    FontColor #581C87
+}
+
+title "synvim: System Use Case Diagram"
+
+actor "Developer / Programmer" as dev
+actor "Voice Input Subsystem" as voice
+actor "External Search Engines\n(Loogle, DevDocs, grep.app, Wikipedia)" as ext_search
+actor "AI Execution Engines\n(OpenCode / Antigravity)" as ai_engine
+
+package "Unified Tasks & TDD Engineering" {
+    usecase "Review Architectural Models\n(:Tasks add split with Kitty PNG)" as UC_ArchReview
+    usecase "Draft Two-Layer Task Specification\n(Action/Ensures + Hoare Invariants)" as UC_SpecForm
+    usecase "Interactive Placement & Carving\n(<M-p> drop, <M-s> carve sub-task)" as UC_Placement
+    usecase "Scaffold & Run Test Gate\n(:Tasks test [id] red-green gate)" as UC_TDDTest
+    usecase "View Repository Task Agenda\n(:Tasks / <leader>q Quickfix)" as UC_Agenda
+    usecase "Synthesize In-Line Solution" as UC_Synth
+    usecase "Inspect & Accept Inline Diff\n(Myers character-level diff, <M-a>/<M-r>)" as UC_DiffReview
+}
+
+package "Search & Exploration Subsystem (:Find)" {
+    usecase "FZF Symbol & AST Code Search\n(C++20 FFI definitions > callers)" as UC_FindSymbol
+    usecase "Natural Language BM25 Search\n(5-line sliding proximity window)" as UC_FindBM25
+    usecase "Multi-Tag Hybrid Search\n(:Find @tag1 @tag2 query)" as UC_FindMultiTag
+    usecase "Query Language-Agnostic Algorithms\n(@algo CP-Algorithms + NIST DADS)" as UC_AlgoSearch
+    usecase "Query Installed Dependencies\n(@deps .lake, .venv, node_modules)" as UC_DepsSearch
+    usecase "Query Lean 4 Theorems & Types\n(@loogle loogle.lean-lang.org)" as UC_LoogleSearch
+    usecase "Query Documentation & Recipes\n(@docs DevDocs + cht.sh)" as UC_DocsSearch
+    usecase "Query Public Open-Source Usage\n(@code grep.app)" as UC_CodeSearch
+}
+
+package "Navigation & Session Analytics (:History)" {
+    usecase "Browse Visited Files in Recent Order\n(:History / <leader>h vertical list)" as UC_HistoryList
+    usecase "Track Active Session Time & Edits\n(BufEnter/Leave duration + on_bytes)" as UC_HistoryMetrics
+    usecase "Export Visited Files to Quickfix\n(:History qf / list)" as UC_HistoryQF
+}
+
+package "Interactive Assistance & Voice Dictation" {
+    usecase "Docked Multi-Line Question Entry\n(:Ask docked bottom split)" as UC_AskDocked
+    usecase "Hands-Free Voice Dictation\n(:Listen / <leader>v via Whisper)" as UC_VoiceDictate
+}
+
+dev --> UC_ArchReview
+dev --> UC_SpecForm
+dev --> UC_Placement
+dev --> UC_TDDTest
+dev --> UC_Agenda
+dev --> UC_DiffReview
+
+dev --> UC_FindSymbol
+dev --> UC_FindBM25
+dev --> UC_FindMultiTag
+dev --> UC_HistoryList
+dev --> UC_HistoryQF
+dev --> UC_AskDocked
+dev --> UC_VoiceDictate
+
+UC_ArchReview ..> UC_SpecForm : <<includes>>
+UC_SpecForm ..> UC_Placement : <<includes>>
+UC_Placement ..> UC_TDDTest : <<enforces>>
+UC_TDDTest ..> UC_Synth : <<triggers on red phase>>
+UC_Synth --> ai_engine : <<dispatches prompt>>
+UC_Synth ..> UC_DiffReview : <<yields inline diff>>
+
+UC_FindMultiTag ..> UC_AlgoSearch : <<routes>>
+UC_FindMultiTag ..> UC_DepsSearch : <<routes>>
+UC_FindMultiTag ..> UC_LoogleSearch : <<routes>>
+UC_FindMultiTag ..> UC_DocsSearch : <<routes>>
+UC_FindMultiTag ..> UC_CodeSearch : <<routes>>
+
+UC_AlgoSearch --> ext_search : REST API fallback
+UC_LoogleSearch --> ext_search : Theorem search
+UC_DocsSearch --> ext_search : Doc query
+UC_CodeSearch --> ext_search : Code grep
+
+UC_HistoryList ..> UC_HistoryMetrics : <<reads>>
+voice --> UC_VoiceDictate : Audio capture
+
+@enduml

@@ -1,0 +1,121 @@
+@startuml synvim_task_activity
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Helvetica, Arial, sans-serif"
+skinparam defaultFontSize 12
+skinparam roundCorner 8
+skinparam shadowing false
+
+skinparam activity {
+    BackgroundColor #F8FAFC
+    BorderColor #2563EB
+    FontColor #0F172A
+    ArrowColor #2563EB
+}
+
+skinparam diamond {
+    BackgroundColor #EFF6FF
+    BorderColor #3B82F6
+    FontColor #1E40AF
+}
+
+title "synvim: In-Line Task Specification & TDD Verification Activity Flow"
+
+start
+
+:Developer runs **:Tasks add**;
+
+partition "Architectural Model Review" {
+    :Discover architectural models in **docs/architecture/*.puml**;
+    :Open side-by-side split:
+    - Left: PlantUML editor
+    - Right: Native Kitty Image Viewer (APC z=1);
+    
+    repeat
+        :Review & edit diagram;
+        if (User edits .puml?) then (yes)
+            :Save or press **<C-r>** to re-render;
+            :Execute **generate_diagrams.sh -f png**;
+            :Refresh Kitty image preview in-place;
+        else (no)
+        endif
+        if (Cycle models?) then (<Tab>)
+            :Switch active .puml model;
+        endif
+    repeat while (Model satisfies requirements?) is (no)
+    ->yes (<C-s> or <M-a>);
+    :Confirm architectural satisfaction;
+}
+
+partition "Two-Layer Task Specification" {
+    :Open floating Two-Layer Task Form;
+    :Fill Layer 1: High-Level Intent (Action & Ensures);
+    :Fill Layer 2: Hoare Invariants (Pre/Post, Tier, Modifies);
+    note right
+        <C-l> Auto-prefills contract templates
+        <C-n> Adds multiple tasks to batch queue
+    end note
+    :Submit form (<C-s> or :w);
+    :Push specifications into **Placement Queue**;
+}
+
+partition "Code Location Anchoring & Sub-Task Carving" {
+    :Enter Placement Mode (virtual status banner);
+    repeat
+        :Navigate codebase using **:Find** or **:History**;
+        :Position cursor at target source line;
+        if (Task fits single location?) then (yes)
+            :Press **<M-p>** to anchor whole task;
+            :Insert formatted SPEC contract at cursor;
+        else (no)
+            :Press **<M-s>** to carve sub-task;
+            :Insert sub-task contract at cursor;
+            :Retain remaining sub-tasks in queue;
+        endif
+    repeat while (More tasks in queue?) is (yes)
+    ->no;
+    :Update topological DAG (**task_index.json**);
+    :Refresh Quickfix Task Agenda (**<leader>q**);
+}
+
+partition "Test-Driven Verification Gate (TDD Red Phase)" {
+    :Developer runs **:Tasks test [id]**;
+    if (Test file exists?) then (no)
+        :Scaffold test suite (**tests/test_<id>.lua**);
+        :Developer defines test-first assertions;
+    else (yes)
+    endif
+    :Execute test runner;
+    :Confirm failing test assertions (Red phase);
+}
+
+partition "Agent Synthesis & In-Line Diff Review" {
+    :Trigger agent synthesis with contract & test context;
+    :OpenCode / Antigravity generates proposed patch;
+    :Calculate character-level diff via C++20 Myers DTL;
+    :Render inline diff with extmarks & virtual lines in buffer;
+    
+    if (Review outcome?) then (Reject / Revise <M-r>)
+        :Strip virtual diff extmarks;
+        :Restore pristine buffer lines;
+        stop
+    else (Accept <M-a>)
+        :Re-run **:Tasks test [id]**;
+        if (All test assertions pass?) then (yes - Green phase)
+            :Commit patch lines to disk;
+            :Promote contract header to **(status:DONE)**;
+            :Update review record status: accepted;
+            :Stage approved changes to git;
+        else (no - Red phase)
+            :Report test failure;
+            :Retain diff for human revision;
+            stop
+        endif
+    endif
+}
+
+:Task implementation verified & complete;
+
+stop
+
+@enduml
