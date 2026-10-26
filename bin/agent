@@ -856,26 +856,13 @@ def main():
     if raw_target in ("start", "run") and args.extra_args:
         raw_target = args.extra_args[0]
 
-    # Resolve numeric UID: match active project tasks agenda first
+    # Resolve numeric UID directly against active project tasks agenda
     clean_uid = raw_target.lstrip("#")
     if clean_uid.isdigit():
         num_idx = int(clean_uid)
         all_curr_tasks = scan_project_tasks(root)
         if 1 <= num_idx <= len(all_curr_tasks):
             raw_target = all_curr_tasks[num_idx - 1]["id"]
-        else:
-            task_index_path = root / ".agent" / "task_index.json"
-            if task_index_path.exists():
-                try:
-                    with open(task_index_path, "r", encoding="utf-8") as f:
-                        idx_data = json.load(f)
-                    index_to_id = idx_data.get("index_to_id", {})
-                    if clean_uid in index_to_id:
-                        candidate = index_to_id[clean_uid]
-                        if any(t["id"].lower() == candidate.lower() for t in all_curr_tasks):
-                            raw_target = candidate
-                except Exception:
-                    pass
 
     target_line = args.line
 

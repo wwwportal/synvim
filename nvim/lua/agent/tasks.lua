@@ -242,45 +242,8 @@ function M.scan_repository_tasks(root)
   return tasks
 end
 
-function M.sync_task_index(tasks)
-  pcall(function()
-    local root = ui.get_root_dir()
-    local dot_agent = root .. "/.agent"
-    if vim.fn.isdirectory(dot_agent) == 0 then
-      vim.fn.mkdir(dot_agent, "p")
-    end
-    local index_to_id = {}
-    local id_to_index = {}
-    for idx, t in ipairs(tasks) do
-      if t.task_id and t.task_id ~= "task" then
-        index_to_id[tostring(idx)] = t.task_id
-        id_to_index[t.task_id] = idx
-      end
-    end
-    local data = {
-      updated_at = os.date("%Y-%m-%d %H:%M:%S"),
-      index_to_id = index_to_id,
-      id_to_index = id_to_index,
-    }
-    local content = vim.json.encode(data)
-    vim.fn.writefile({ content }, dot_agent .. "/task_index.json")
-  end)
-end
-
 function M.reindex_tasks()
-  local tasks = M.scan_repository_tasks()
-  table.sort(tasks, function(a, b)
-    if (a.tier or "U") ~= (b.tier or "U") then
-      return (a.tier or "U") < (b.tier or "U")
-    end
-    if (a.file or "") ~= (b.file or "") then
-      return (a.file or "") < (b.file or "")
-    end
-    return (a.line or 0) < (b.line or 0)
-  end)
-
-  M.sync_task_index(tasks)
-  return tasks
+  return M.scan_repository_tasks()
 end
 
 function M.resolve_task_identifier(arg)
@@ -314,21 +277,10 @@ function M.resolve_task_identifier(arg)
     end
   end
 
-  -- 3. Fallback: persistent mapping in .agent/task_index.json if it exists and refers to an active task
-  if num_str then
-    local root = ui.get_root_dir()
-    local idx_path = root .. "/.agent/task_index.json"
-    if vim.uv.fs_stat(idx_path) then
-      local lines = vim.fn.readfile(idx_path)
-      local ok, data = pcall(vim.json.decode, table.concat(lines, "\n"))
-      if ok and data and data.index_to_id and data.index_to_id[num_str] then
-        local mapped = data.index_to_id[num_str]
-        for _, t in ipairs(all_tasks) do
-          if t.task_id and t.task_id:lower() == mapped:lower() then
-            return t.task_id
-          end
-        end
-      end
+  -- 3. Fuzzy substring match on task_id slug
+  for _, t in ipairs(all_tasks) do
+    if t.task_id and t.task_id ~= "task" and t.task_id:lower():find(clean_arg:lower(), 1, true) then
+      return t.task_id
     end
   end
 
@@ -674,8 +626,6 @@ function M.show_tasks()
     end
     return (a.line or 0) < (b.line or 0)
   end)
-
-  M.sync_task_index(tasks)
 
   local qf_list = {}
   local task_queue = {}
@@ -1285,6 +1235,9 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
     return
   end
 
+  local ws_mod = require("agent.workspaces")
+  local base_snapshot = ws_mod.capture_file_base(filepath)
+
   state.is_busy = true
   if state.active_job then
     pcall(function() state.active_job:kill(9) end)
@@ -1383,13 +1336,15 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
       return
     end
 
-    -- Apply changes to buffer and save to file so code runs/inspects immediately
+    -- Apply changes to buffer preview (without saving to disk until user accepts via :Tasks YES)
     vim.bo[bufnr].modifiable = true
     vim.api.nvim_buf_set_lines(bufnr, s_idx, e_idx, false, new_lines)
-    vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write") end)
 
-    -- Create review record and patch on disk marked UNREVIEWED
-    local rev = rev_mod.create_review(filepath, start_lnum, old_cnt, orig_slice, new_lines, raw_header, solution.description or chosen_desc, "unreviewed")
+    -- Create review record and patch on disk marked UNREVIEWED with base hash tracking
+    local rev = rev_mod.create_review(filepath, start_lnum, old_cnt, orig_slice, new_lines, raw_header, solution.description or chosen_desc, "unreviewed", nil, false, {
+      base_hash = base_snapshot.hash,
+      base_content = base_snapshot.content,
+    })
     state.current_review = rev
 
     diff_mod.show_inline_diff(bufnr, start_lnum, new_content, old_cnt, false, orig_slice, rev)
@@ -1776,6 +1731,9 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
     return
   end
 
+  local ws_mod = require("agent.workspaces")
+  local base_snapshot = ws_mod.capture_file_base(filepath)
+
   state.is_busy = true
   if state.active_job then
     pcall(function() state.active_job:kill(9) end)
@@ -2123,7 +2081,7 @@ end
 function M.tasks_complete(arglead, cmdline)
   local parts = vim.split(vim.trim(cmdline), "%s+")
   local has_trailing = cmdline:match("%s+$") ~= nil
-  local subcmds = { "list", "add", "start", "stop", "review", "YES", "MAYBE", "NO", "accept", "reject", "revise" }
+  local subcmds = { "list", "add", "start", "stop", "review", "YES", "MAYBE", "NO", "resolve", "rebase", "accept", "reject", "revise" }
 
   if #parts == 1 or (#parts == 2 and not has_trailing) then
     return vim.tbl_filter(function(s) return vim.startswith(s:lower(), arglead:lower()) or vim.startswith(s, arglead) end, subcmds)
@@ -2140,7 +2098,7 @@ function M.tasks_complete(arglead, cmdline)
       table.insert(ids, tostring(idx))
     end
     return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, ids)
-  elseif sub == "accept" or sub == "reject" or sub == "yes" or sub == "no" then
+  elseif sub == "accept" or sub == "reject" or sub == "yes" or sub == "no" or sub == "resolve" or sub == "rebase" then
     local ids = {}
     local rev_mod = require("agent.reviews")
     local reviews = rev_mod.get_reviews("all")
@@ -2196,6 +2154,12 @@ function M.tasks_command(args)
     rev_mod.reject(rest)
   elseif subcmd == "maybe" or subcmd == "revise" then
     M.revise_task(rest)
+  elseif subcmd == "resolve" then
+    local rev_mod = require("agent.reviews")
+    rev_mod.review("resolve", rest)
+  elseif subcmd == "rebase" then
+    local rev_mod = require("agent.reviews")
+    rev_mod.review("rebase", rest)
   else
     -- Check if subcmd matches a known task ID or numeric index
     local all_tasks = M.scan_repository_tasks()

@@ -147,8 +147,9 @@ function M.save_review_meta(rev)
 end
 
 --- Create a review record and patch on disk
-function M.create_review(file_path, start_line, old_count, old_lines, new_lines, task_id, desc, status, order_idx, is_task_stub)
+function M.create_review(file_path, start_line, old_count, old_lines, new_lines, task_id, desc, status, order_idx, is_task_stub, extra_opts)
   status = status or "unreviewed"
+  extra_opts = extra_opts or {}
   local root = ui.get_root_dir()
   local file_root = vim.fs.root(file_path, { ".git", "Cargo.toml", "Makefile", "pyproject.toml", "package.json" })
   if file_root then
@@ -163,6 +164,9 @@ function M.create_review(file_path, start_line, old_count, old_lines, new_lines,
   else
     rel_file = vim.fn.fnamemodify(file_path, ":.")
   end
+
+  local ws_mod = require("agent.workspaces")
+  local base_snapshot = ws_mod.capture_file_base(file_path)
 
   -- Build unified patch
   local patch_lines = {
@@ -190,6 +194,9 @@ function M.create_review(file_path, start_line, old_count, old_lines, new_lines,
     new_lines_count = #new_lines,
     old_lines = old_lines or {},
     new_lines = new_lines or {},
+    base_hash = extra_opts.base_hash or base_snapshot.hash,
+    base_content = extra_opts.base_content or base_snapshot.content,
+    worktree = extra_opts.worktree or nil,
     description = desc or "",
     order = order_idx or 9999,
     is_task_stub = is_task_stub or false,
@@ -292,6 +299,12 @@ function M.revert_review(rev_id)
     end
   end
 
+  -- 3. Clean up isolated agent workspace if one was created
+  local ws_mod = require("agent.workspaces")
+  if rev.worktree or rev.task_id then
+    pcall(ws_mod.remove_workspace, rev.worktree or rev.task_id)
+  end
+
   -- Update review JSON
   rev.status = "rejected"
   rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
@@ -390,6 +403,12 @@ function M.accept_review(rev_id)
 
   if not rev.is_task_stub and target_full then
     diff_mod.promote_contract_to_approved(target_full, rev.task_id)
+  end
+
+  -- Clean up isolated agent workspace if one was created
+  local ws_mod = require("agent.workspaces")
+  if rev.worktree or rev.task_id then
+    pcall(ws_mod.remove_workspace, rev.worktree or rev.task_id)
   end
 
   rev.status = "accepted"
@@ -566,6 +585,27 @@ function M.show_review(rev, target_win)
   local new_content = table.concat(rev.new_lines or {}, "\n")
   local old_cnt = rev.old_lines_count or (rev.old_lines and #rev.old_lines) or 1
 
+  -- Check for base hash divergence and reconcile concurrent edits
+  local ws_mod = require("agent.workspaces")
+  local current_buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local current_content = table.concat(current_buf_lines, "\n")
+  local current_hash = vim.fn.sha256(current_content)
+
+  if rev.base_hash and rev.base_hash ~= "" and rev.base_hash ~= current_hash and not rev.is_task_stub then
+    local base_str = rev.base_content or table.concat(rev.old_lines or {}, "\n")
+    local rec = ws_mod.reconcile_changes(current_content, base_str, new_content)
+    if rec.has_conflict then
+      rev.is_conflict = true
+      rev.conflict_markers = rec.conflict_markers
+      vim.notify(string.format("⚠ [AGENT CONFLICT]: Upstream edits conflicted with review '%s' in '%s'. Run ':Tasks resolve %s' or ':Tasks rebase %s'.", rev.id, rev.target_file, rev.id, rev.id), vim.log.levels.WARN)
+    elseif rec.status == "merged" then
+      rev.is_conflict = false
+      vim.notify(string.format("● [Tasks] Upstream changes reconciled cleanly via 3-way merge for '%s'.", rev.target_file), vim.log.levels.INFO)
+      new_content = rec.merged_content
+      rev.new_lines = vim.split(new_content, "\n")
+    end
+  end
+
   local diff_mod = require("agent.diff")
   diff_mod.show_inline_diff(bufnr, lnum, new_content, old_cnt, false, rev.old_lines, rev)
 
@@ -598,6 +638,35 @@ function M.review(subcmd, arg)
   elseif subcmd == "revise" or subcmd == "w" or subcmd == "maybe" or subcmd == "m" then
     local tasks_mod = require("agent.tasks")
     tasks_mod.revise_task(arg)
+    return
+  elseif subcmd == "resolve" then
+    local target_id = arg or (state_mod.state.current_review and state_mod.state.current_review.id)
+    local rev = target_id and M.find_review(target_id, true) or state_mod.state.current_review
+    if rev then
+      local ws_mod = require("agent.workspaces")
+      local root = ui.get_root_dir()
+      local target_full = rev.abs_file or (root .. "/" .. rev.target_file)
+      local bufnr = vim.fn.bufadd(target_full)
+      vim.fn.bufload(bufnr)
+      local cur_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      local cur_str = table.concat(cur_lines, "\n")
+      local rec = ws_mod.reconcile_changes(cur_str, rev.base_content or "", table.concat(rev.new_lines or {}, "\n"))
+      ws_mod.open_conflict_resolver(rev, bufnr, rec)
+    else
+      vim.notify("Review: No review found to resolve.", vim.log.levels.WARN)
+    end
+    return
+  elseif subcmd == "rebase" then
+    local target_id = arg or (state_mod.state.current_review and state_mod.state.current_review.id)
+    local rev = target_id and M.find_review(target_id, true) or state_mod.state.current_review
+    if rev and rev.task_id then
+      local tasks_mod = require("agent.tasks")
+      vim.notify(string.format("● [Tasks] Rebasing task '%s' against updated file...", rev.task_id), vim.log.levels.INFO)
+      M.revert_review(rev.id)
+      tasks_mod.start_task(rev.task_id)
+    else
+      vim.notify("Review: No review found to rebase.", vim.log.levels.WARN)
+    end
     return
   elseif subcmd == "clear" or subcmd == "close" then
     local diff_mod = require("agent.diff")
