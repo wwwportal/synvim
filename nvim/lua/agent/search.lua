@@ -151,6 +151,15 @@ local PROVIDER_ALIASES = {
   ["devdocs"] = "docs",
   ["cht"] = "docs",
   ["cheat"] = "docs",
+  ["algo"] = "algo",
+  ["algos"] = "algo",
+  ["algorithm"] = "algo",
+  ["algorithms"] = "algo",
+  ["ds"] = "algo",
+  ["datastructure"] = "algo",
+  ["datastructures"] = "algo",
+  ["cp"] = "algo",
+  ["nist"] = "algo",
   ["code"] = "code",
   ["web"] = "code",
   ["grep"] = "code",
@@ -807,6 +816,18 @@ function M.search_docs(clean_query, root)
     end
   end
 
+  -- 4. Also surface matching language-agnostic algorithms & data structures from CP-Algorithms / NIST DADS
+  local ok_alg, algos_mod = pcall(require, "agent.algos")
+  if ok_alg and algos_mod then
+    local algo_hits = algos_mod.search(q, nil)
+    for _, ah in ipairs(algo_hits) do
+      if ah.score >= 220 then
+        table.insert(results, ah)
+        if #results >= 65 then break end
+      end
+    end
+  end
+
   return results
 end
 
@@ -906,11 +927,17 @@ function M.search_public_code(clean_query, root)
   return results
 end
 
+--- Search language-agnostic algorithms & data structures (`@algo`: CP-Algorithms + NIST DADS catalog & live articles)
+function M.search_algo(clean_query, root)
+  local algos_mod = require("agent.algos")
+  return algos_mod.search(clean_query or "", M.http_get)
+end
+
 --- Search codebase (both file names/paths and file contents) across entire repo, specified locations, or external providers
---- @param query string Raw user query (may include `@deps`, `@loogle`, `@docs`, `@code`, `in <path>`, `@<path>`, `path:<path>`)
+--- @param query string Raw user query (may include `@deps`, `@loogle`, `@docs`, `@algo`, `@code`, `in <path>`, `@<path>`, `path:<path>`)
 --- @param root string|nil Repository root directory
 --- @param locations table|nil Optional list of directory/file/glob scopes
---- @param explicit_provider string|nil Optional explicit provider ("repo", "deps", "loogle", "docs", "code")
+--- @param explicit_provider string|nil Optional explicit provider ("repo", "deps", "loogle", "docs", "algo", "code")
 --- @return table Ranked list of `{ path, line, col, action = "navigate", description, score, match_type }`
 function M.search_and_rank(query, root, locations, explicit_provider)
   root = root or ui.get_root_dir()
@@ -934,6 +961,8 @@ function M.search_and_rank(query, root, locations, explicit_provider)
     return M.search_loogle(clean_query, root)
   elseif provider == "docs" then
     return M.search_docs(clean_query, root)
+  elseif provider == "algo" then
+    return M.search_algo(clean_query, root)
   elseif provider == "code" then
     return M.search_public_code(clean_query, root)
   end
@@ -1263,6 +1292,8 @@ function M.update_find_inspector()
     kind_tag = "[LOOGLE]"
   elseif chosen.match_type == "docs" then
     kind_tag = "[DOCS]"
+  elseif chosen.match_type == "algo" then
+    kind_tag = "[ALGO]"
   elseif chosen.match_type == "code" then
     kind_tag = "[CODE]"
   end
@@ -1496,6 +1527,9 @@ function M.render_find_menu()
       elseif c.match_type == "docs" then
         badge = "[DOCS]  "
         badge_hl = "Type"
+      elseif c.match_type == "algo" then
+        badge = "[ALGO]  "
+        badge_hl = "PreProc"
       elseif c.match_type == "code" then
         badge = "[CODE]  "
         badge_hl = "Constant"
@@ -1751,9 +1785,16 @@ function M.select_prev(step)
   end
 end
 
---- Open a virtual documentation, theorem (@loogle), or public code (@code) result in a syntax-highlighted scratch buffer
+--- Open a virtual documentation, theorem (@loogle), algorithm (@algo), or public code (@code) result in a syntax-highlighted scratch buffer
 function M.open_virtual_result(chosen, target_win)
-  if not chosen or type(chosen.virtual_lines) ~= "table" then return end
+  if not chosen then return end
+  if chosen.algo_entry then
+    local ok_alg, algos_mod = pcall(require, "agent.algos")
+    if ok_alg and algos_mod then
+      chosen.virtual_lines = algos_mod.build_virtual_lines(chosen.algo_entry, M.http_get)
+    end
+  end
+  if type(chosen.virtual_lines) ~= "table" then return end
   target_win = target_win or ui.get_primary_editor_win() or vim.api.nvim_get_current_win()
   if not vim.api.nvim_win_is_valid(target_win) then
     target_win = vim.api.nvim_get_current_win()
@@ -1840,6 +1881,8 @@ function M.activate_selected_result(close_after, explicit_idx)
       kind_label = "Loogle"
     elseif chosen.match_type == "docs" then
       kind_label = "Docs"
+    elseif chosen.match_type == "algo" then
+      kind_label = "Algo"
     elseif chosen.match_type == "code" then
       kind_label = "Code"
     end

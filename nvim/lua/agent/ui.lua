@@ -334,6 +334,7 @@ function M.show_help(initial_query)
     "",
     "Search & Inspection",
     "  :Find [query] [in ..]  Floating search menu (search bar on top + live FZF/BM25/AST results + bottom code inspector)",
+    "  :Find @algo <query>    Search language-agnostic algorithms & data structures (CP-Algorithms + NIST DADS + complexity/invariants)",
     "  :Find @deps <query>    Search local installed dependencies (.lake/packages, .venv, node_modules, $VIMRUNTIME) via C++20 FFI",
     "  :Find @loogle <query>  Search Lean 4 & Mathlib4 theorems/defs by name or type signature (loogle.lean-lang.org)",
     "  :Find @docs <query>    Search language & library documentation + code recipes (DevDocs + cht.sh + local docs)",

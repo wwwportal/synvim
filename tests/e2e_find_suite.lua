@@ -577,6 +577,28 @@ scenario("Embedded Code Documentation & External Search Providers (@deps, @loogl
   assert_true(c_insp[3]:find("nvim_open_win(buf, true, win_opts)", 1, true) ~= nil, "Inspector must show HTML-stripped matched code line")
   search.close_find_menu()
 
+  -- E. Test @algo provider (CP-Algorithms + NIST DADS language-agnostic algorithm & data structure encyclopedia)
+  local fwin_a, fbuf_a = search.open_find_menu("@algo fenwick binary indexed tree", repo_root)
+  assert_true(vim.api.nvim_win_is_valid(fwin_a), ":Find @algo floating window must open")
+  assert_eq(search.state.provider, "algo", ":Find @algo must set state.provider = 'algo'")
+  assert_true(#search.state.candidates >= 1, ":Find @algo must return matching algorithm/data structure entries")
+  assert_eq(search.state.candidates[1].match_type, "algo", "Top @algo candidate must have match_type = 'algo'")
+  assert_eq(search.state.candidates[1].path, "cp-algorithms://data_structures/fenwick.md", "Top @algo match must be Fenwick Tree")
+  local a_rows = vim.api.nvim_buf_get_lines(fbuf_a, 0, -1, false)
+  assert_true(a_rows[3]:find("[ALGO]", 1, true) ~= nil, "Floating results list must display [ALGO] badge")
+  local a_insp = vim.api.nvim_buf_get_lines(search.state.inspector_buf, 0, -1, false)
+  assert_true(a_insp[2]:find("Fenwick Tree", 1, true) ~= nil, "Inspector must show algorithm name & category")
+  assert_true(a_insp[3]:find("O(log n)", 1, true) ~= nil, "Inspector must show Time & Space complexity bounds")
+  assert_true(a_insp[4]:find("Invariant:", 1, true) ~= nil, "Inspector must show core mathematical/structural invariant")
+
+  -- Activate @algo result and verify full Markdown reference + pseudocode opens in buffer
+  search.activate_selected_result(true, 1)
+  local algo_buf = vim.api.nvim_get_current_buf()
+  local algo_text = table.concat(vim.api.nvim_buf_get_lines(algo_buf, 0, -1, false), "\n")
+  assert_true(algo_text:find("## Language-Agnostic Pseudocode", 1, true) ~= nil, "Activated @algo buffer must contain language-agnostic pseudocode")
+  assert_true(algo_text:find("https://cp-algorithms.com/data_structures/fenwick.html", 1, true) ~= nil, "Activated @algo buffer must include CP-Algorithms link")
+  assert_true(algo_text:find("https://xlinux.nist.gov/dads/HTML/binaryIndexedTree.html", 1, true) ~= nil, "Activated @algo buffer must include NIST DADS link")
+
   search.custom_http_get = nil
   vim.fn.delete(dep_root, "rf")
 end)

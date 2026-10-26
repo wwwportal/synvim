@@ -219,7 +219,7 @@ function M.setup()
   end, {
     nargs = "*",
     complete = function(arglead, cmdline)
-      local scopes = { "@deps", "@loogle", "@docs", "@code", "in" }
+      local scopes = { "@algo", "@deps", "@loogle", "@docs", "@code", "in" }
       local out = {}
       for _, s in ipairs(scopes) do
         if vim.startswith(s, arglead) then
