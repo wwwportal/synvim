@@ -1,0 +1,84 @@
+@startuml synvim_task_lifecycle
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Helvetica, Arial, sans-serif"
+skinparam defaultFontSize 12
+skinparam roundCorner 8
+skinparam shadowing false
+
+skinparam sequence {
+    ArrowColor #2563EB
+    ActorBorderColor #7E22CE
+    LifeLineBorderColor #64748B
+    LifeLineBackgroundColor #F1F5F9
+    ParticipantBorderColor #334155
+    ParticipantBackgroundColor #F8FAFC
+    ParticipantFontColor #0F172A
+    GroupBorderColor #94A3B8
+    GroupBackgroundColor #F8FAFC
+    BoxBorderColor #CBD5E1
+    BoxBackgroundColor #F8FAFC
+}
+
+title "synvim: In-Line Task Execution & Review Staging Sequence"
+
+actor "Developer" as user
+box "Neovim Frontend" #F8FAFC
+participant "UI / Docked Input\n(agent/ui.lua)" as ui
+participant "Command Dispatcher\n(agent/init.lua)" as init
+participant "Task Engine\n(agent/tasks.lua)" as tasks
+participant "Diff Engine\n(agent/diff.lua)" as diff
+participant "Review Manager\n(agent/reviews.lua)" as reviews
+end box
+
+box "Agent Runtime" #F1F5F9
+participant "LLM Client\n(agent/llm.lua)" as llm
+participant "Execution Engine\n(OpenCode / agy)" as engine
+end box
+
+box "Repository & Disk" #FEF3C7
+participant "Source File\n(SPEC Contract)" as src
+participant ".agent/reviews/\n(<id>.json)" as rstore
+end box
+
+== 1. Task Definition & Insertion ==
+user -> ui : Run :Tasks add (or docked split)
+ui -> tasks : insert_single_task_stub()
+tasks -> src : Write SPEC(task-id | tier:B | blocks:[...])
+tasks -> tasks : reindex_tasks() -> update .agent/task_index.json
+tasks --> user : Display in Quickfix Agenda (<leader>q)
+
+== 2. Task Execution ==
+user -> init : Run :Tasks start [task-id]
+init -> tasks : start_task(task-id)
+tasks -> src : Read target SPEC contract & surrounding context
+tasks -> llm : run(prompt, context)
+llm -> engine : Async spawn via jobstart (wire protocol)
+engine --> llm : Stream JSON solution payload {files, diff, contract}
+llm -> reviews : process_agent_response()
+
+== 3. Review Staging & In-Line Preview ==
+reviews -> rstore : Persist metadata & diff (<id>.json, status: unreviewed)
+reviews -> diff : show_inline_diff(bufnr, new_content, old_lines)
+diff -> src : Attach extmarks & virtual lines (character-level diff)
+diff --> user : Visual inline diff rendered directly in active buffer
+
+== 4. Acceptance or Rejection ==
+alt Accept Changes
+    user -> init : Run :Tasks accept <id>
+    init -> reviews : accept_review(<id>)
+    reviews -> diff : accept_diff()
+    diff -> src : Apply new lines directly to buffer & write to disk
+    diff -> src : Promote contract header to (status:DONE)
+    reviews -> rstore : Update status: accepted
+    reviews --> user : Success notification & Quickfix refresh
+else Reject / Revert Changes
+    user -> init : Run :Tasks reject <id>
+    init -> reviews : reject(id)
+    reviews -> diff : clear_diff()
+    diff -> src : Strip virtual lines & restore original buffer lines
+    reviews -> rstore : Update status: rejected / reverted
+    reviews --> user : Buffer restored to pristine state
+end
+
+@enduml

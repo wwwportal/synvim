@@ -5,7 +5,7 @@ Executes in-line TODO/FIXME tasks or task description files directly in the code
 Anchors all tasks and intent directly into source code as the single source of truth,
 preventing task loss from session interruptions and computer crashes.
 
-Powered by OpenCode subagents with automatic agy failover.
+Powered by Google Antigravity (agy) agent with automatic opencode failover.
 Dual CLI & Neovim workflow.
 """
 
@@ -57,8 +57,9 @@ COMMENT_PREFIXES = {
 }
 
 STRUCTURED_TODO_RE = re.compile(
-    r'^[ \t]*(?:#|//|--)\s*(TODO|FIXME|SPEC)\(([a-zA-Z0-9_\-]+)\s*\|\s*tier:([ABC])'
-    r'((?:\s*\|\s*(?:blocks|depends_on|requires|ensures|invariant|modifies|status):[^|)]+)*)\):(?:\s*(.*))?$'
+    r'^[ \t]*(?:#|//|--)\s*(TODO|FIXME|SPEC|CONTRACT)\(([a-zA-Z0-9_\-]+)'
+    r'(?:\s*\|\s*tier:([ABCU]))?'
+    r'((?:\s*\|\s*(?:blocks|depends_on|requires|ensures|invariant|modifies|allow|forbid|always|repair|status):[^|)]+)*)\):(?:\s*(.*))?$'
 )
 UNSTRUCTURED_TODO_RE = re.compile(
     r'^[ \t]*(?:#|//|--)\s*(TODO|FIXME)(?:\(([^)]+)\))?\s*[:\-]?\s*(.*)$',
@@ -117,11 +118,12 @@ def extract_tasks_from_file(file_path: Path) -> List[Dict[str, Any]]:
                 cont_line = lines[j].strip()
                 if cont_line.startswith(("#", "//", "--")):
                     cleaned = re.sub(r'^(?:#|//|--)\s*', '', cont_line)
-                    if cleaned.lower().startswith(("action:", "description:")):
+                    cleaned_lower = cleaned.lower()
+                    if cleaned_lower.startswith(("action:", "description:")):
                         extra_desc.append(cleaned)
                         task_lines_count += 1
                         j += 1
-                    elif cleaned.lower().startswith(("ensures:", "criterion:", "requires:", "invariant:", "modifies:", "status:")):
+                    elif cleaned_lower.startswith(("ensures:", "criterion:", "requires:", "invariant:", "modifies:", "status:", "allow:", "forbid:", "always:", "repair:", "[pre]", "[post]", "[hoare", "[dtl")):
                         extra_desc.append(cleaned)
                         task_lines_count += 1
                         j += 1
@@ -138,15 +140,56 @@ def extract_tasks_from_file(file_path: Path) -> List[Dict[str, Any]]:
             else:
                 full_desc = desc
 
+            contract_req = []
+            contract_allow = []
+            contract_forbid = []
+            contract_ensures = None
+            contract_always = None
+            contract_repair = None
+
+            for ed in extra_desc:
+                m_req = re.search(r'(?:requires:|\[pre\])\s*\[?([^\]\r\n]*)\]?', ed, re.IGNORECASE)
+                if m_req and m_req.group(1):
+                    for r in m_req.group(1).split(","):
+                        if r.strip():
+                            contract_req.append(r.strip())
+                m_alw = re.search(r'(?:allow:|modifies:)\s*\[?([^\]\r\n]*)\]?', ed, re.IGNORECASE)
+                if m_alw and m_alw.group(1):
+                    for a in m_alw.group(1).split(","):
+                        if a.strip():
+                            contract_allow.append(a.strip())
+                m_fbd = re.search(r'(?:forbid:|deny:)\s*\[?([^\]\r\n]*)\]?', ed, re.IGNORECASE)
+                if m_fbd and m_fbd.group(1):
+                    for f in m_fbd.group(1).split(","):
+                        if f.strip():
+                            contract_forbid.append(f.strip())
+                m_ens = re.search(r'(?:ensures:|\[post\])\s*(.*)', ed, re.IGNORECASE)
+                if m_ens:
+                    contract_ensures = m_ens.group(1).strip()
+                m_alw_inv = re.search(r'(?:always:|invariant:)\s*(.*)', ed, re.IGNORECASE)
+                if m_alw_inv:
+                    contract_always = m_alw_inv.group(1).strip()
+                m_rep = re.search(r'(?:repair:|ctd:)\s*(.*)', ed, re.IGNORECASE)
+                if m_rep:
+                    contract_repair = m_rep.group(1).strip()
+
+            resolved_tier = tier.upper() if tier else ("A" if len(contract_req) == 0 else "B")
+
             tasks.append({
                 "file": str(file_path),
                 "line": i + 1,
                 "lines_count": task_lines_count,
                 "kind": kind.upper(),
                 "id": task_id,
-                "tier": tier.upper(),
+                "tier": resolved_tier,
                 "description": full_desc or f"Task {task_id}",
                 "raw_header": line.strip(),
+                "requires": contract_req,
+                "ensures": contract_ensures,
+                "allow": contract_allow,
+                "forbid": contract_forbid,
+                "always": contract_always,
+                "repair": contract_repair,
             })
             i += task_lines_count
         elif um and not line.strip().startswith("#!"):
@@ -189,22 +232,22 @@ def scan_project_tasks(root_dir: Path) -> List[Dict[str, Any]]:
     return all_tasks
 
 
-def run_llm_task(prompt: str, engine: str = "opencode", model: Optional[str] = None) -> Tuple[Optional[str], str]:
-    """Runs prompt against opencode or agy with streaming progress spinner."""
-    opencode_bin = shutil.which("opencode") or str(Path.home() / ".opencode" / "bin" / "opencode")
+def run_llm_task(prompt: str, engine: str = "agy", model: Optional[str] = None) -> Tuple[Optional[str], str]:
+    """Runs prompt against agy or opencode with streaming progress spinner."""
     agy_bin = shutil.which("agy") or str(Path.home() / ".local" / "bin" / "agy")
+    opencode_bin = shutil.which("opencode") or str(Path.home() / ".opencode" / "bin" / "opencode")
 
-    use_opencode = (engine == "opencode" or (engine == "auto" and os.path.exists(opencode_bin)))
+    use_agy = (engine == "agy" or (engine == "auto" and os.path.exists(agy_bin)))
 
-    if use_opencode and os.path.exists(opencode_bin):
-        cmd = [opencode_bin, "run", "--format", "json", "--auto", prompt]
-        engine_label = "opencode"
-    elif os.path.exists(agy_bin):
+    if use_agy and os.path.exists(agy_bin):
         agy_model = model or "gemini-3.8-flash-low"
         cmd = [agy_bin, "-p", prompt, "--model", agy_model, "--dangerously-skip-permissions", "--disable-slash-commands", "--effort", "low", "--output-format", "json"]
         engine_label = f"agy:{agy_model}"
+    elif os.path.exists(opencode_bin):
+        cmd = [opencode_bin, "run", "--format", "json", "--auto", prompt]
+        engine_label = "opencode"
     else:
-        return None, "Neither 'opencode' nor 'agy' found in PATH."
+        return None, "Neither 'agy' nor 'opencode' found in PATH."
 
     sys.stderr.write(f"\n{BOLD}{CYAN}● [Agent:{engine_label}]{RESET} Executing task...\n")
     sys.stderr.flush()
@@ -245,9 +288,9 @@ def run_llm_task(prompt: str, engine: str = "opencode", model: Optional[str] = N
     sys.stderr.flush()
 
     stdout = "".join(stdout_lines)
-    if proc.returncode != 0 and engine_label == "opencode" and os.path.exists(agy_bin):
-        sys.stderr.write(f"{YELLOW}Warning: opencode failed (code {proc.returncode}), falling back to agy...{RESET}\n")
-        return run_llm_task(prompt, engine="agy", model=model)
+    if proc.returncode != 0 and engine_label.startswith("agy") and os.path.exists(opencode_bin):
+        sys.stderr.write(f"{YELLOW}Warning: agy failed (code {proc.returncode}), falling back to opencode...{RESET}\n")
+        return run_llm_task(prompt, engine="opencode", model=model)
 
     # Parse output: opencode JSON stream or agy response
     full_text = ""
@@ -324,6 +367,49 @@ def parse_solution_json(raw_response: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def validate_dtl_policy(root: Path, task: Dict[str, Any], file_path: Path, new_content: str) -> Tuple[bool, Optional[str], Optional[str]]:
+    so_paths = [
+        root / "build" / "libsynvim_dtl.so",
+        Path.home() / ".local" / "lib" / "libsynvim_dtl.so",
+        Path("/usr/local/lib/libsynvim_dtl.so"),
+    ]
+    for so_path in so_paths:
+        if so_path.exists():
+            try:
+                import ctypes
+                lib = ctypes.CDLL(str(so_path))
+                class DtlValidationResult(ctypes.Structure):
+                    _fields_ = [
+                        ("code", ctypes.c_int),
+                        ("message", ctypes.c_char_p),
+                        ("ctd_action", ctypes.c_char_p),
+                    ]
+                lib.dtl_validate_patch.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+                lib.dtl_validate_patch.restype = DtlValidationResult
+
+                task_spec = {
+                    "id": task.get("id", "task"),
+                    "allow": task.get("allow", []),
+                    "deny": task.get("forbid", []),
+                }
+                task_json = json.dumps(task_spec).encode("utf-8")
+                try:
+                    rel_file = str(file_path.relative_to(root)).encode("utf-8")
+                except ValueError:
+                    rel_file = str(file_path).encode("utf-8")
+                patch_bytes = new_content.encode("utf-8")
+                res = lib.dtl_validate_patch(task_json, rel_file, patch_bytes)
+                if res.code == 0:
+                    return True, None, None
+                msg = res.message.decode("utf-8") if res.message else "DTL Normative Violation"
+                ctd = res.ctd_action.decode("utf-8") if res.ctd_action else "auto_revert"
+                return False, msg, ctd
+            except Exception:
+                pass
+            break
+    return True, None, None
+
+
 def execute_task(task: Dict[str, Any], file_path: Path, args: argparse.Namespace) -> int:
     root = find_git_root(file_path.parent)
     try:
@@ -338,11 +424,27 @@ def execute_task(task: Dict[str, Any], file_path: Path, args: argparse.Namespace
     task_id = task.get("id", "task")
     tier = task.get("tier", "U")
 
+    # ── Layer 1: Hoare Pre-flight Check ──
+    if task.get("requires"):
+        all_proj_tasks = scan_project_tasks(root)
+        unmet = []
+        for req_id in task["requires"]:
+            found_req = [t for t in all_proj_tasks if t["id"].lower() == req_id.lower()]
+            if found_req:
+                req_task = found_req[0]
+                if "DONE" not in req_task.get("raw_header", "") and "APPROVED" not in req_task.get("raw_header", ""):
+                    unmet.append(f"'{req_id}' (pending)")
+            else:
+                unmet.append(f"'{req_id}' (unresolved)")
+        if unmet:
+            print(f"{BOLD}{YELLOW}⚠ [HOARE PRECONDITION UNMET]: Task '{task_id}' requires prerequisite: {', '.join(unmet)}{RESET}\n")
+
     # Numbered source context
     numbered_source = []
     for idx, l in enumerate(file_lines):
         numbered_source.append(f"{idx+1}: {l}")
     source_context = "\n".join(numbered_source)
+    ir_context = ""
 
     prompt = f"""CRITICAL INSTRUCTION: You are the Autonomous Source-First Code Agent.
 Your task is to implement the following in-line task directly inside the target file.
@@ -422,6 +524,13 @@ Emit ONLY raw JSON. No markdown code blocks, no prose before or after.
 
     if args.diff:
         return 0
+
+    # ── Layer 2: DTL Trajectory Validation ──
+    dtl_ok, dtl_err, ctd_action = validate_dtl_policy(root, task, file_path, new_content)
+    if not dtl_ok:
+        sys.stderr.write(f"\n{BOLD}{RED}⚠ [DTL TRAJECTORY VIOLATION]: {dtl_err}{RESET}\n")
+        sys.stderr.write(f"{BOLD}{YELLOW}Executing Contrary-to-Duty (CTD) Repair: {ctd_action}{RESET}\n\n")
+        return 1
 
     # Apply or Interactive
     if args.interactive:
@@ -723,12 +832,13 @@ def main():
   agent -i src/eval.py           # Review implementation in Neovim in-line diff
         """
     )
-    parser.add_argument("target", nargs="?", default=".", help="Target file (file.py[:line]) or directory (default: current directory)")
+    parser.add_argument("target", nargs="?", default=".", help="Target file (file.py[:line]), task ID, or directory (default: current directory)")
+    parser.add_argument("extra_args", nargs="*", help="Optional extra arguments (e.g. task ID for start/run)")
     parser.add_argument("--line", "-l", type=int, default=None, help="Specific target line number in file")
     parser.add_argument("--apply", "-a", action="store_true", help="Automatically apply changes to file without prompting")
     parser.add_argument("--diff", "-d", action="store_true", help="Print unified diff only and exit")
     parser.add_argument("--interactive", "-i", action="store_true", help="Open in Neovim with interactive in-line diff preview")
-    parser.add_argument("--engine", choices=["opencode", "agy", "auto"], default="opencode", help="Execution engine (default: opencode)")
+    parser.add_argument("--engine", choices=["agy", "opencode", "auto"], default="agy", help="Execution engine (default: agy)")
     parser.add_argument("--model", "-m", type=str, default=None, help="LLM model override")
     parser.add_argument("--list", action="store_true", help="List all detected TODO tasks without executing")
     parser.add_argument("--budget", type=int, default=16000, help="Dependency context token budget for Code Graph IR")
@@ -743,6 +853,30 @@ def main():
         return handle_review_command(args, root)
 
     raw_target = args.target
+    if raw_target in ("start", "run") and args.extra_args:
+        raw_target = args.extra_args[0]
+
+    # Resolve numeric UID: match active project tasks agenda first
+    clean_uid = raw_target.lstrip("#")
+    if clean_uid.isdigit():
+        num_idx = int(clean_uid)
+        all_curr_tasks = scan_project_tasks(root)
+        if 1 <= num_idx <= len(all_curr_tasks):
+            raw_target = all_curr_tasks[num_idx - 1]["id"]
+        else:
+            task_index_path = root / ".agent" / "task_index.json"
+            if task_index_path.exists():
+                try:
+                    with open(task_index_path, "r", encoding="utf-8") as f:
+                        idx_data = json.load(f)
+                    index_to_id = idx_data.get("index_to_id", {})
+                    if clean_uid in index_to_id:
+                        candidate = index_to_id[clean_uid]
+                        if any(t["id"].lower() == candidate.lower() for t in all_curr_tasks):
+                            raw_target = candidate
+                except Exception:
+                    pass
+
     target_line = args.line
 
     # Handle file:line syntax
@@ -796,7 +930,16 @@ def main():
         return 0
 
     if not target_path.exists():
-        sys.stderr.write(f"{RED}Error: Target path does not exist: {target_path}{RESET}\n")
+        # Check if raw_target matches a task ID across the repository
+        all_tasks = scan_project_tasks(root)
+        matched = [t for t in all_tasks if t['id'].lower() == raw_target.lower()]
+        if not matched:
+            matched = [t for t in all_tasks if raw_target.lower() in t['id'].lower()]
+        if matched:
+            selected_task = matched[0]
+            return execute_task(selected_task, Path(selected_task["file"]), args)
+
+        sys.stderr.write(f"{RED}Error: Target path does not exist and matches no task ID: {raw_target}{RESET}\n")
         return 1
 
     # Target is a file

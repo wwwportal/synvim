@@ -274,33 +274,7 @@ return {
             },
           },
         },
-        tabline = {
-          lualine_a = {
-            {
-              "tabs",
-              mode = 2, -- 2: index and name
-              max_length = vim.o.columns,
-              fmt = function(name)
-                if name:match("^term://") or name:match("^t//") then
-                  return "Terminal"
-                end
-                return name
-              end,
-              tabs_color = {
-                active = { fg = colors.white, bg = colors.blue, gui = "bold" },
-                inactive = { fg = colors.fg_muted, bg = colors.bg_section },
-              },
-            },
-          },
-          lualine_z = {
-            {
-              function()
-                return "Tabs: <A-1>..<A-9> | <A-t> New | <A-]> Next"
-              end,
-              color = { fg = colors.fg_muted, bg = colors.bg_bar },
-            },
-          },
-        },
+        tabline = {},
       })
     end,
   },

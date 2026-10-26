@@ -281,7 +281,9 @@ function M.clear_diff(keep_buffer)
         local new_cnt = (p.new_lines and #p.new_lines) or 0
         vim.bo[p.bufnr].modifiable = true
         vim.api.nvim_buf_set_lines(p.bufnr, s_idx, s_idx + new_cnt, false, p.revert_lines)
-        pcall(vim.api.nvim_buf_call, p.bufnr, function() vim.cmd("silent! write") end)
+        if not p.was_modified then
+          vim.bo[p.bufnr].modified = false
+        end
       end
 
       -- If it was an unsaved new file, wipe the buffer so no empty file is left on disk
@@ -338,6 +340,31 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
 
   local cur_slice = vim.api.nvim_buf_get_lines(bufnr, s_idx, s_idx + #new_lines, false)
   local already_applied = (table.concat(cur_slice, "\n") == new_content)
+
+  -- Language-agnostic native FFI anchor & anti-reduplication sentinel check
+  local anchor_mod = require("agent.anchor")
+  local task_id_to_check = (review_meta and review_meta.task_id) or (new_lines[1] and new_lines[1]:match("%(([%w_%-]+)"))
+  local anchor_res = anchor_mod.find_anchor(bufnr, {
+    target_lines = (old_lines and #old_lines > 0) and old_lines or nil,
+    new_lines = new_lines,
+    identifier_slug = task_id_to_check,
+  })
+
+  if anchor_res.is_already_applied then
+    already_applied = true
+    target_line = anchor_res.start_line
+    s_idx = math.max(0, target_line - 1)
+  elseif not already_applied and (old_lines_count == 0 or (review_meta and review_meta.is_task_stub)) then
+    if anchor_res.duplicate_line then
+      already_applied = true
+      target_line = anchor_res.duplicate_line
+      s_idx = math.max(0, target_line - 1)
+    end
+  elseif anchor_res.confidence >= 0.85 and (anchor_res.match_mode == "sandwich" or anchor_res.match_mode == "exact_target") then
+    target_line = anchor_res.start_line
+    s_idx = math.max(0, target_line - 1)
+  end
+
   local revert_lines = nil
 
   -- Extract original deleted lines
@@ -390,7 +417,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     vim.bo[bufnr].modifiable = true
     vim.api.nvim_buf_set_lines(bufnr, s_idx, e_idx, false, new_lines)
     vim.bo[bufnr].modifiable = was_mod
-    vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write") end)
+    -- NEVER save to disk during preview! Diff preview is ephemeral until accepted.
   else
     if review_meta and review_meta.old_lines and #review_meta.old_lines > 0 then
       revert_lines = review_meta.old_lines
@@ -565,6 +592,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     new_lines = new_lines,
     old_count = old_lines_count,
     revert_lines = revert_lines,
+    was_modified = vim.bo[bufnr].modified,
     is_new_file = is_new_file or false,
     review = review_meta,
     bound_keys = {},
@@ -579,15 +607,15 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
   bind_buf_key("<M-a>", function()
     local rev_mod = require("agent.reviews")
     rev_mod.accept()
-  end, "Accept diff (:Tasks accept)")
+  end, "Accept diff (:Tasks YES)")
   bind_buf_key("<M-r>", function()
     local rev_mod = require("agent.reviews")
     rev_mod.reject()
-  end, "Reject diff (:Tasks reject)")
+  end, "Reject diff (:Tasks NO)")
   bind_buf_key("<M-w>", function()
     local tasks_mod = require("agent.tasks")
     tasks_mod.revise_task()
-  end, "Revise diff (:Tasks revise)")
+  end, "Revise diff (:Tasks MAYBE)")
   bind_buf_key("<Tab>", function()
     for _, w in ipairs(vim.api.nvim_list_wins()) do
       local b = vim.api.nvim_win_get_buf(w)

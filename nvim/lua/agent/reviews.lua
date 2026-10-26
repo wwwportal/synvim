@@ -520,7 +520,7 @@ function M.list_reviews_qf(filter)
     tasks_mod.setup_agent_qf_keymaps(cur_w, vim.api.nvim_win_get_buf(qf_win))
     pcall(vim.api.nvim_set_current_win, qf_win)
   end
-  vim.notify(string.format("Tasks: %d pending review%s (:Tasks accept <id> | :Tasks reject <id>)", #unreviewed, #unreviewed == 1 and "" or "s"), vim.log.levels.INFO)
+  vim.notify(string.format("Tasks: %d pending review%s (:Tasks YES <id> | :Tasks NO <id>)", #unreviewed, #unreviewed == 1 and "" or "s"), vim.log.levels.INFO)
 end
 
 --- Display a specific review in-line
@@ -542,6 +542,23 @@ function M.show_review(rev, target_win)
   vim.api.nvim_win_set_buf(origin_win, bufnr)
 
   local lnum = rev.start_line or 1
+
+  -- Dynamically locate the actual current line of this task or content in the buffer
+  -- via native C++ FFI language-agnostic anchor engine
+  local anchor_mod = require("agent.anchor")
+  local anchor_res = anchor_mod.find_anchor(bufnr, {
+    target_lines = rev.old_lines,
+    new_lines = rev.new_lines,
+    identifier_slug = rev.task_id,
+  })
+  if anchor_res.is_already_applied or anchor_res.confidence >= 0.85 then
+    lnum = anchor_res.start_line
+    rev.start_line = anchor_res.start_line
+  elseif anchor_res.duplicate_line then
+    lnum = anchor_res.duplicate_line
+    rev.start_line = anchor_res.duplicate_line
+  end
+
   pcall(vim.api.nvim_win_set_cursor, origin_win, { lnum, 0 })
   pcall(function() vim.cmd("normal! zz") end)
 
@@ -562,7 +579,7 @@ end
 function M.review(subcmd, arg)
   subcmd = (subcmd or ""):lower()
 
-  if subcmd == "accept" or subcmd == "a" then
+  if subcmd == "accept" or subcmd == "a" or subcmd == "yes" or subcmd == "y" then
     local target_id = arg or (state_mod.state.current_review and state_mod.state.current_review.id)
     if target_id then
       M.accept_review(target_id)
@@ -570,13 +587,17 @@ function M.review(subcmd, arg)
       vim.notify("Review: No active review to accept. Run :Tasks review to select one.", vim.log.levels.WARN)
     end
     return
-  elseif subcmd == "reject" or subcmd == "r" then
+  elseif subcmd == "reject" or subcmd == "r" or subcmd == "no" or subcmd == "n" then
     local target_id = arg or (state_mod.state.current_review and state_mod.state.current_review.id)
     if target_id then
       M.revert_review(target_id)
     else
       vim.notify("Review: No active review to reject. Run :Tasks review to select one.", vim.log.levels.WARN)
     end
+    return
+  elseif subcmd == "revise" or subcmd == "w" or subcmd == "maybe" or subcmd == "m" then
+    local tasks_mod = require("agent.tasks")
+    tasks_mod.revise_task(arg)
     return
   elseif subcmd == "clear" or subcmd == "close" then
     local diff_mod = require("agent.diff")
@@ -623,7 +644,7 @@ function M.accept(arg)
   local tasks_mod = require("agent.tasks")
 
   if arg:lower() == "all" then
-    vim.notify("Tasks: Batch accept is disabled. Please accept changes individually by review ID: :Tasks accept <id>", vim.log.levels.WARN)
+    vim.notify("Tasks: Batch accept is disabled. Please accept changes individually by review ID: :Tasks YES <id>", vim.log.levels.WARN)
     return
   end
 
@@ -683,7 +704,7 @@ function M.accept(arg)
     M.accept_review(unrev[1].id)
     return
   elseif #unrev > 1 then
-    vim.notify(string.format("Tasks: Multiple pending reviews exist (%d). Specify review ID: :Tasks accept <id>. Run :Tasks review to list them.", #unrev), vim.log.levels.INFO)
+    vim.notify(string.format("Tasks: Multiple pending reviews exist (%d). Specify review ID: :Tasks YES <id>. Run :Tasks review to list them.", #unrev), vim.log.levels.INFO)
     M.list_reviews_qf()
     return
   else
@@ -698,7 +719,7 @@ function M.reject(arg)
   local diff_mod = require("agent.diff")
 
   if arg:lower() == "all" then
-    vim.notify("Tasks: Batch reject is disabled. Please reject changes individually by review ID: :Tasks reject <id>", vim.log.levels.WARN)
+    vim.notify("Tasks: Batch reject is disabled. Please reject changes individually by review ID: :Tasks NO <id>", vim.log.levels.WARN)
     return
   end
 
@@ -734,7 +755,7 @@ function M.reject(arg)
     M.revert_review(unrev[1].id)
     return
   elseif #unrev > 1 then
-    vim.notify(string.format("Tasks: Multiple pending reviews exist (%d). Specify review ID: :Tasks reject <id>. Run :Tasks review to list them.", #unrev), vim.log.levels.INFO)
+    vim.notify(string.format("Tasks: Multiple pending reviews exist (%d). Specify review ID: :Tasks NO <id>. Run :Tasks review to list them.", #unrev), vim.log.levels.INFO)
     M.list_reviews_qf()
     return
   else

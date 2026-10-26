@@ -522,13 +522,13 @@ Emit ONLY raw JSON. No markdown code blocks, no text before or after.
     state.active_job = nil
   end
 
-  local opencode_bin = vim.fn.exepath("opencode")
   local agy_bin = vim.fn.exepath("agy")
+  local opencode_bin = vim.fn.exepath("opencode")
   local cmd = {}
-  if opencode_bin ~= "" then
-    cmd = { opencode_bin, "run", "--format", "json", system_prompt }
-  elseif agy_bin ~= "" then
+  if agy_bin ~= "" then
     cmd = { agy_bin, "-p", system_prompt, "--model", "Gemini 3.8 Flash (Low)", "--print-timeout", "30s", "--dangerously-skip-permissions", "--disable-slash-commands" }
+  elseif opencode_bin ~= "" then
+    cmd = { opencode_bin, "run", "--format", "json", system_prompt }
   else
     state.is_busy = false
     vim.notify("Agent: Neither 'agy' nor 'opencode' found in PATH", vim.log.levels.ERROR)

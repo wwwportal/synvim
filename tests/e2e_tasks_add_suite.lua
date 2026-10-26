@@ -306,6 +306,52 @@ do
   assert_eq(lines[4], "        return 42", "Subsequent indented line preserved")
 end
 
+-- -----------------------------------------------------------------------------
+-- SCENARIO 12: Two-Layer Hoare & DTL Policy Generation in Tasks Add
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 12] Two-Layer Hoare & DTL Policy Generation in Tasks Add")
+do
+  local target_file = tmp_dir .. "/service_auth.py"
+  vim.fn.writefile({ "# service authentication module" }, target_file)
+
+  local mock_parts = {
+    {
+      task_id = "token-verification-service",
+      file = "service_auth.py",
+      line = 1,
+      tier = "A",
+      depends_on = {},
+      blocks = {},
+      action = "Implement token verification service",
+      ensures = "Token verification service passes test suite",
+      allow = { "service_auth.py" },
+      forbid = { ".env*", "*.pem", "*.key" },
+      always = "Authentication invariants preserved",
+      repair = "on_violation -> (auto_revert, mark:REVISE)",
+    }
+  }
+
+  tasks_mod.decompose_and_add_tasks("implement token verification service", nil, mock_parts)
+
+  local all_tasks = tasks_mod.scan_repository_tasks(tmp_dir)
+  local found_task = nil
+  for _, t in ipairs(all_tasks) do
+    if t.description and t.description:find("token verification") then
+      found_task = t
+      break
+    end
+  end
+
+  assert_true(found_task ~= nil, "Added task parsed by scan_repository_tasks")
+  if found_task then
+    assert_true(found_task.contract ~= nil, "Task has contract object")
+    assert_true(#(found_task.contract.allow or {}) >= 1, "Task contract has DTL allow patterns")
+    assert_true(#(found_task.contract.forbid or {}) >= 1, "Task contract has DTL forbid patterns")
+    assert_true(found_task.contract.ensures ~= nil, "Task contract has Hoare ensures postcondition")
+    assert_true(found_task.contract.repair ~= nil, "Task contract has DTL repair policy")
+  end
+end
+
 -- Clean up temporary directory
 pcall(vim.fn.delete, tmp_dir, "rf")
 

@@ -36,6 +36,15 @@ cp "$SCRIPT_DIR/bin/agent_transcribe.py" "$LOCAL_BIN/agent_transcribe.py"
 cp "$SCRIPT_DIR/bin/agent" "$LOCAL_BIN/agent"
 chmod +x "$LOCAL_BIN/agent_transcribe.py" "$LOCAL_BIN/agent"
 
+# Build native C++ FFI engines (DTL & Anchor) if compiler is present
+if command -v make >/dev/null 2>&1 && (command -v g++ >/dev/null 2>&1 || command -v clang++ >/dev/null 2>&1); then
+    echo "--> Compiling native FFI engines (libsynvim_dtl.so & libsynvim_anchor.so)..."
+    make -C "$SCRIPT_DIR" all
+    mkdir -p "$HOME/.local/lib"
+    cp "$SCRIPT_DIR/build/libsynvim_dtl.so" "$HOME/.local/lib/libsynvim_dtl.so"
+    cp "$SCRIPT_DIR/build/libsynvim_anchor.so" "$HOME/.local/lib/libsynvim_anchor.so"
+fi
+
 echo "==> [2/3] Bootstrapping lazy.nvim and core plugins..."
 LAZY_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/lazy"
 mkdir -p "$LAZY_DIR"

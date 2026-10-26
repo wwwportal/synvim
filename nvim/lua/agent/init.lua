@@ -8,6 +8,10 @@ local llm = require("agent.llm")
 local search = require("agent.search")
 local tasks = require("agent.tasks")
 local cmdline = require("agent.cmdline")
+local history = require("agent.history")
+local dtl = require("agent.dtl")
+
+M.dtl = dtl
 
 M.state = state_mod.state
 M.ns_diff = state_mod.ns_diff
@@ -17,6 +21,7 @@ M.ns_flash = state_mod.ns_flash
 M.get_terminal_cwd = ui.get_terminal_cwd
 M.get_root_dir = ui.get_root_dir
 M.get_primary_editor_win = ui.get_primary_editor_win
+M.find_or_open_file = ui.find_or_open_file
 M.find_or_open_tab = ui.find_or_open_tab
 M.format_ls_columns = ui.format_ls_columns
 M.resolve_suggested_path = ui.resolve_suggested_path
@@ -53,6 +58,12 @@ M.git_review = reviews.review
 M.review_command = reviews.review
 M.accept = reviews.accept
 M.reject = reviews.reject
+M.YES = reviews.accept
+M.NO = reviews.reject
+M.MAYBE = tasks.revise_task
+
+-- History & Navigation Graph
+M.history = history
 
 -- LLM Execution & Parsing
 M.collect_context = llm.collect_context
@@ -156,7 +167,25 @@ function M.setup()
   end, {
     nargs = "*",
     complete = tasks.tasks_complete,
-    desc = "Unified tasks manager (:Tasks [list|add|start|stop|review|accept|reject|revise])",
+    desc = "Unified tasks manager (:Tasks [list|add|start|stop|review|YES|MAYBE|NO])",
+  })
+
+  -- Visited Files Navigation Graph (:History)
+  vim.api.nvim_create_user_command("History", function(ctx)
+    local arg = vim.trim(ctx.args or ""):lower()
+    if arg == "clear" then
+      history.clear()
+    elseif arg == "qf" or arg == "list" then
+      history.show_quickfix()
+    else
+      history.show_history()
+    end
+  end, {
+    nargs = "?",
+    complete = function(arglead, cmdline)
+      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "graph", "qf", "list", "clear" })
+    end,
+    desc = "Visited files navigation graph & last cursor line (:History [graph|qf|clear])",
   })
 
   vim.api.nvim_create_user_command("Find", function(ctx)
@@ -210,16 +239,11 @@ function M.setup()
   end
 
   vim.api.nvim_create_user_command("Synvim", function(ctx)
-    local arg = vim.trim(ctx.args or ""):lower()
-    if arg == "help" or arg == "" then
-      ui.show_help()
-    else
-      vim.notify("synvim: Unknown argument '" .. ctx.args .. "'. Run :Synvim help for usage.", vim.log.levels.WARN)
-    end
+    ui.show_help()
   end, {
     nargs = "?",
     complete = function(arglead, cmdline)
-      return vim.tbl_filter(function(s) return vim.startswith(s, arglead) end, { "help" })
+      return vim.tbl_filter(function(s) return vim.startswith(s:lower(), arglead:lower()) end, { "help" })
     end,
     desc = "Show synvim commands and usage (:Synvim help)",
   })
@@ -230,8 +254,10 @@ function M.setup()
     cnoreabbrev <expr> ask (getcmdtype() ==# ':' && getcmdline() ==# 'ask') ? 'Ask' : 'ask'
     cnoreabbrev <expr> find (getcmdtype() ==# ':' && getcmdline() ==# 'find') ? 'Find' : 'find'
     cnoreabbrev <expr> synvim (getcmdtype() ==# ':' && getcmdline() ==# 'synvim') ? 'Synvim' : 'synvim'
+    cnoreabbrev <expr> history (getcmdtype() ==# ':' && getcmdline() ==# 'history') ? 'History' : 'history'
   ]])
 
+  history.setup()
   cmdline.setup()
 end
 

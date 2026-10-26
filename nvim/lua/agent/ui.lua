@@ -184,24 +184,23 @@ function M.get_primary_editor_win()
   return fallback_win
 end
 
---- Find existing tab displaying filepath, or open in a clean tab without disturbing splits
-function M.find_or_open_tab(filepath)
+--- Find existing window displaying filepath, or open in an editor split without disturbing layout
+function M.find_or_open_file(filepath)
   local fullpath = vim.fn.fnamemodify(filepath, ":p")
 
-  -- 1. Check if fullpath is already open in any window across any tab
-  for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
-    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
+  -- 1. Check if fullpath is already open in any window
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_is_valid(win) then
       local b = vim.api.nvim_win_get_buf(win)
       local bname = vim.api.nvim_buf_get_name(b)
       if bname ~= "" and vim.fn.fnamemodify(bname, ":p") == fullpath then
-        vim.api.nvim_set_current_tabpage(tab)
         vim.api.nvim_set_current_win(win)
         return win
       end
     end
   end
 
-  -- 2. If current window in current tab is an empty unnamed buffer, reuse it
+  -- 2. If current window is an empty unnamed buffer, reuse it
   local cur_win = vim.api.nvim_get_current_win()
   local cur_buf = vim.api.nvim_win_get_buf(cur_win)
   if vim.bo[cur_buf].buftype == "" and vim.api.nvim_buf_get_name(cur_buf) == "" and not vim.bo[cur_buf].modified then
@@ -209,19 +208,24 @@ function M.find_or_open_tab(filepath)
     return cur_win
   end
 
-  -- 3. If current window is terminal or quickfix, open in a full-screen tab so terminal context is preserved
+  -- 3. If current window is terminal or quickfix, target an existing editor window or split
   if vim.bo[cur_buf].buftype == "terminal" or vim.bo[cur_buf].buftype == "quickfix" then
-    vim.cmd("tabedit " .. vim.fn.fnameescape(fullpath))
-    return vim.api.nvim_get_current_win()
+    local ed_win = M.find_editor_window()
+    if ed_win and vim.api.nvim_win_is_valid(ed_win) and ed_win ~= cur_win then
+      vim.api.nvim_set_current_win(ed_win)
+      vim.cmd("edit " .. vim.fn.fnameescape(fullpath))
+      return ed_win
+    else
+      vim.cmd("split " .. vim.fn.fnameescape(fullpath))
+      return vim.api.nvim_get_current_win()
+    end
   end
 
   -- 4. Otherwise switch buffer in current editor window
-  local ok = pcall(vim.cmd, "edit " .. vim.fn.fnameescape(fullpath))
-  if not ok then
-    pcall(vim.cmd, "tabedit " .. vim.fn.fnameescape(fullpath))
-  end
+  vim.cmd("edit " .. vim.fn.fnameescape(fullpath))
   return vim.api.nvim_get_current_win()
 end
+M.find_or_open_tab = M.find_or_open_file
 
 --- Format directory entries in multi-column terminal ls layout
 function M.format_ls_columns(entries, suggested, max_width)
@@ -286,31 +290,44 @@ function M.show_dir_preview(base_dir, entries, suggested, on_accept)
   end
 end
 
---- Display a centered, minimalist floating window showing all synvim commands and keybindings
-function M.show_help()
+--- Display a centered, minimalist floating window showing all synvim commands and keybindings with interactive search bar
+function M.show_help(initial_query)
   local lines = {
     "synvim - commands & usage",
     "─────────────────────────────────────────────────────────────────────────────",
     "",
-    "Unified Tasks Workflow",
+    "Navigation & Visited Files Graph (:History or <leader>h)",
+    "  :History               Visited files graph with time spent, edits & task context",
+    "  :History qf            Export visited files to Quickfix list",
+    "  :History clear         Reset visited files history",
+    "  [In History Modal]:",
+    "    j / k                Navigate between visited files (snaps to file number)",
+    "    <Down> / <Up>        Navigate between visited files",
+    "    <CR> / o             Jump to file at closest task / recorded line and close",
+    "    <Tab> / p            Preview file at closest task without closing modal",
+    "    1 .. 9               Jump directly to file 1..9 by index",
+    "    c                    Clear visit history",
+    "    q / <Esc>            Close history window",
+    "",
+    "Unified Tasks Workflow (:Tasks or <leader>q)",
     "  :Tasks                 Toggle repository task agenda (:Tasks or <leader>q)",
     "  :Tasks list            List in-tree tasks in Quickfix",
     "  :Tasks add <desc>      Insert formatted task contract at cursor",
     "  :Tasks start [id]      Implement task (closest visible, or by ID/index)",
-    "  :Tasks revise [id]     Mark task as REVISE; critique directly via in-line comments",
+    "  :Tasks MAYBE [id]      Mark task as REVISE; critique directly via in-line comments",
     "  :Tasks review          List pending reviews and changes with IDs",
-    "  :Tasks accept <id>     Accept and approve specific review by ID",
-    "  :Tasks reject <id>     Reject and revert specific review by ID",
+    "  :Tasks YES <id>        Accept and approve specific review by ID (alias: accept)",
+    "  :Tasks NO <id>         Reject and revert specific review by ID (alias: reject)",
     "  :Tasks stop            Stop active agent synthesis job and clear diffs",
+    "",
+    "In-Line Diff Shortcuts (when diff is active)",
+    "  <M-a>                  Accept active review diff (:Tasks YES)",
+    "  <M-r>                  Reject active review diff (:Tasks NO)",
+    "  <M-w>                  Mark task for revision (:Tasks MAYBE)",
     "",
     "Search & Inspection",
     "  :Find <concept>        Semantic LLM search; jumps directly to relevant code",
     "  :Ask <question>        Navigate to code and insert an in-line explanation diff",
-    "",
-    "In-Line Diff Shortcuts (when diff is active)",
-    "  <M-a>                  Accept active review diff (:Tasks accept)",
-    "  <M-r>                  Reject active review diff (:Tasks reject)",
-    "  <M-w>                  Mark task for revision (:Tasks revise)",
     "",
     "Voice Dictation",
     "  :Listen                Voice-to-text dictation into active buffer (<leader>v)",
@@ -321,13 +338,11 @@ function M.show_help()
     "  Alt + z                Toggle maximize / zoom active split",
     "  Alt + q / Alt + w      Close active split (:SmartQuit)",
     "  Alt + + / Alt + _      Split right / split down with a new terminal",
-    "  Alt + 1..9 / Alt + t   Jump to tab 1..9 / open new tab",
-    "  Alt + ] / Alt + [      Next / previous tab",
     "  Ctrl + d / Ctrl + u    Scroll fixed 10 lines",
     "  Esc                    Return to Normal mode when at a shell prompt",
     "",
     "─────────────────────────────────────────────────────────────────────────────",
-    "Press 'q' or <Esc> to close this window",
+    "Press '/' or '?' to search with Vim regex  |  'q' or <Esc> to close",
   }
 
   local buf = vim.api.nvim_create_buf(false, true)
@@ -337,15 +352,15 @@ function M.show_help()
   vim.bo[buf].modifiable = false
   vim.bo[buf].filetype = "synvim-help"
 
-  local width = 80
-  local height = #lines
+  local width = 84
+  local height = math.min(#lines, vim.o.lines - 6)
   local ui = vim.api.nvim_list_uis()[1]
   local total_w = ui and ui.width or vim.o.columns
   local total_h = ui and ui.height or vim.o.lines
   local row = math.max(1, math.floor((total_h - height) / 2))
   local col = math.max(1, math.floor((total_w - width) / 2))
 
-  local win = vim.api.nvim_open_win(buf, true, {
+  local win_config = {
     relative = "editor",
     row = row,
     col = col,
@@ -353,14 +368,20 @@ function M.show_help()
     height = height,
     style = "minimal",
     border = "rounded",
-  })
+    title = " synvim - commands & usage ",
+    title_pos = "left",
+  }
+
+  local win = vim.api.nvim_open_win(buf, true, win_config)
+  vim.wo[win].wrap = false
+  vim.wo[win].cursorline = true
 
   local close_fn = function()
     pcall(vim.api.nvim_win_close, win, true)
   end
 
-  vim.keymap.set("n", "q", close_fn, { buffer = buf, silent = true, nowait = true })
-  vim.keymap.set("n", "<Esc>", close_fn, { buffer = buf, silent = true, nowait = true })
+  vim.keymap.set("n", "q", close_fn, { buffer = buf, silent = true, nowait = true, desc = "Close help" })
+  vim.keymap.set("n", "<Esc>", close_fn, { buffer = buf, silent = true, nowait = true, desc = "Close help" })
 end
 
 --- Open an interactive multi-line docked bottom split input buffer for questions or tasks

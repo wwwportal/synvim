@@ -11,6 +11,7 @@ vim.opt.clipboard = "unnamedplus"
 vim.opt.splitright = true
 vim.opt.splitbelow = true
 vim.opt.termguicolors = true
+vim.opt.showtabline = 0
 
 vim.g.mapleader = " "
 vim.g.maplocalleader = "\\"
@@ -372,28 +373,32 @@ for _, mode in ipairs({ "n", "t", "i" }) do
 	vim.keymap.set(mode, "<C-S-W>", close_split, { desc = "Close split" })
 end
 
--- Maximize ("zoom") the focused split: show it alone in a temporary tab, leaving
--- the real layout untouched in the tab behind it. The key again closes the tab
--- and restores everything exactly (same windows, buffers and sizes). `:tab split`
--- copies the window, so window-local options (number, wrap, ...) and the cursor
--- position carry over; parking the zoom in a tab avoids having to rebuild the
--- split layout by hand, and it keeps working the same in any terminal.
+-- Maximize ("zoom") the focused split without creating tabs: toggles between
+-- maximizing current window dimensions (wincmd _ / wincmd |) and restoring
+-- previous split proportions using winrestcmd().
+local zoom_restore_cmd = nil
+
 local function zoom_split()
-	if vim.t.zoom_origin then
-		local origin = vim.t.zoom_origin
-		vim.t.zoom_origin = nil
-		vim.cmd("tabclose")
-		if vim.api.nvim_tabpage_is_valid(origin) then
-			vim.api.nvim_set_current_tabpage(origin)
-		end
+	if zoom_restore_cmd then
+		local cmd = zoom_restore_cmd
+		zoom_restore_cmd = nil
+		pcall(vim.cmd, cmd)
 		return
 	end
-	if #vim.api.nvim_tabpage_list_wins(0) < 2 then
+	local wins = vim.api.nvim_tabpage_list_wins(0)
+	local normal_wins = 0
+	for _, w in ipairs(wins) do
+		local cfg = vim.api.nvim_win_get_config(w)
+		if cfg.relative == "" then
+			normal_wins = normal_wins + 1
+		end
+	end
+	if normal_wins < 2 then
 		return -- single window: nothing to zoom
 	end
-	local origin = vim.api.nvim_get_current_tabpage()
-	vim.cmd("tab split")
-	vim.t.zoom_origin = origin
+	zoom_restore_cmd = vim.fn.winrestcmd()
+	vim.cmd("wincmd _")
+	vim.cmd("wincmd |")
 end
 
 for _, mode in ipairs({ "n", "t", "i" }) do
@@ -543,18 +548,12 @@ require("voice").setup()
 require("agent").setup()
 
 vim.keymap.set("n", "<leader>q", "<Cmd>Tasks<CR>", { silent = true, desc = "Toggle tasks agenda (:Tasks)" })
+vim.keymap.set("n", "<leader>h", "<Cmd>History<CR>", { silent = true, desc = "Visited files navigation graph (:History)" })
 
-
--- ── Tab Navigation (Focused Full-Screen Tabs) ──
-for i = 1, 9 do
-	vim.keymap.set({ "n", "t", "i" }, string.format("<A-%d>", i), string.format("<Cmd>%dtabnext<CR>", i), { desc = string.format("Go to tab %d", i) })
-end
-vim.keymap.set({ "n", "t", "i" }, "<A-t>", "<Cmd>tabnew<CR>", { desc = "New tab" })
-vim.keymap.set({ "n", "t", "i" }, "<A-]>", "<Cmd>tabnext<CR>", { desc = "Next tab" })
-vim.keymap.set({ "n", "t", "i" }, "<A-[>", "<Cmd>tabprev<CR>", { desc = "Previous tab" })
 
 -- Global statusline
 vim.o.laststatus = 3
+vim.opt.showtabline = 0
 vim.opt.shortmess:append("cFWsAI")
 
 -- ── Plugin manager (lazy.nvim) ──
