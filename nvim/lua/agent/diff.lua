@@ -153,7 +153,7 @@ function M.promote_contract_to_approved(filepath, task_id)
 
   local changed = false
   for i, line in ipairs(lines) do
-    if line:find("SPEC%(") or line:find("TODO%(") or line:find("FIXME%(") then
+    if line:find("CONTRACT%(") or line:find("SPEC%(") or line:find("TODO%(") or line:find("FIXME%(") then
       if not task_id or line:find(task_id, 1, true) then
         if line:find("status:DONE") then
           lines[i] = line:gsub("status:DONE", "status:APPROVED")
@@ -173,11 +173,13 @@ function M.promote_contract_to_approved(filepath, task_id)
   end
 
   if changed then
+    vim.fn.writefile(lines, full_path)
     if is_loaded then
+      local was_mod = vim.bo[b].modifiable
+      vim.bo[b].modifiable = true
       vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
-      vim.api.nvim_buf_call(b, function() vim.cmd("silent! write!") end)
-    else
-      vim.fn.writefile(lines, full_path)
+      vim.bo[b].modifiable = was_mod
+      vim.bo[b].modified = false
     end
   end
 end
@@ -185,7 +187,7 @@ end
 function M.ensure_contract_preserved_as_done(orig_slice, new_lines)
   if not orig_slice or #orig_slice == 0 then return new_lines end
   local first = orig_slice[1]
-  if not (first:find("SPEC%(") or first:find("TODO%(") or first:find("FIXME%(") or first:find("^[ \t]*[#/%-]+%s*%[")) then
+  if not (first:find("CONTRACT%(") or first:find("SPEC%(") or first:find("TODO%(") or first:find("FIXME%(") or first:find("^[ \t]*[#/%-]+%s*%[")) then
     return new_lines
   end
 
@@ -195,7 +197,7 @@ function M.ensure_contract_preserved_as_done(orig_slice, new_lines)
   -- Check if new_lines already has the contract header or mentions task_slug
   for idx, nl in ipairs(new_lines) do
     if (task_slug and nl:find(task_slug, 1, true))
-      or nl:find("SPEC%(") or nl:find("TODO%(") or nl:find("FIXME%(")
+      or nl:find("CONTRACT%(") or nl:find("SPEC%(") or nl:find("TODO%(") or nl:find("FIXME%(")
       or nl:find("^[ \t]*[#/%-]+%s*%[[%w_%-]+")
     then
       -- new_lines already has the contract header! Update status to DONE in-place
@@ -215,9 +217,15 @@ function M.ensure_contract_preserved_as_done(orig_slice, new_lines)
   for _, l in ipairs(orig_slice) do
     local trimmed = vim.trim(l)
     if trimmed:find("^[#/%-]+%s*[a-zA-Z0-9_%-]+%s*%(.*%):")
+      or trimmed:find("^[#/%-]+%s*%[HOARE")
+      or trimmed:find("^[#/%-]+%s*%[DTL")
       or trimmed:find("^[#/%-]+%s*action:")
       or trimmed:find("^[#/%-]+%s*requires:")
       or trimmed:find("^[#/%-]+%s*ensures:")
+      or trimmed:find("^[#/%-]+%s*allow:")
+      or trimmed:find("^[#/%-]+%s*forbid:")
+      or trimmed:find("^[#/%-]+%s*always:")
+      or trimmed:find("^[#/%-]+%s*repair:")
       or trimmed:find("^[#/%-]+%s*invariant:")
       or trimmed:find("^[#/%-]+%s*modifies:")
       or trimmed:find("^[#/%-]+%s*status:")
@@ -229,13 +237,14 @@ function M.ensure_contract_preserved_as_done(orig_slice, new_lines)
       or trimmed:find("^[#/%-]+%s*|%s+")
       or trimmed:find("^[#/%-]+%s*Description:")
       or trimmed:find("^[#/%-]+%s*Criterion:")
+      or trimmed:match("^[#/%-]+$")
     then
       local updated_l = l
       if updated_l:find("status:TODO") then
         updated_l = updated_l:gsub("status:TODO", "status:DONE")
       elseif updated_l:find("status:REVISE") then
         updated_l = updated_l:gsub("status:REVISE", "status:DONE")
-      elseif updated_l:find("SPEC%(") or updated_l:find("TODO%(") or updated_l:find("FIXME%(") then
+      elseif updated_l:find("CONTRACT%(") or updated_l:find("SPEC%(") or updated_l:find("TODO%(") or updated_l:find("FIXME%(") then
         if not updated_l:find("status:") then
           updated_l = updated_l:gsub("%):", " | status:DONE):")
         end
@@ -408,6 +417,9 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
       end
     end
   end
+
+  -- Capture buffer modified state BEFORE applying ephemeral preview lines
+  local was_modified_before = vim.bo[bufnr].modified
 
   -- If not already applied to buffer, apply new_lines in-place so additions are visible
   if not already_applied then
@@ -592,7 +604,7 @@ function M.show_inline_diff(bufnr, target_line, new_content, old_lines_count, is
     new_lines = new_lines,
     old_count = old_lines_count,
     revert_lines = revert_lines,
-    was_modified = vim.bo[bufnr].modified,
+    was_modified = was_modified_before,
     is_new_file = is_new_file or false,
     review = review_meta,
     bound_keys = {},

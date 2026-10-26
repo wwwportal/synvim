@@ -10,12 +10,15 @@ local tasks = require("agent.tasks")
 local cmdline = require("agent.cmdline")
 local history = require("agent.history")
 local dtl = require("agent.dtl")
+local image = require("agent.image")
 
 M.dtl = dtl
+M.image = image
 
 M.state = state_mod.state
 M.ns_diff = state_mod.ns_diff
 M.ns_flash = state_mod.ns_flash
+M.ns_placement = state_mod.ns_placement
 
 -- UI & Navigation
 M.get_terminal_cwd = ui.get_terminal_cwd
@@ -104,9 +107,30 @@ M.run_file = tasks.run_file
 M.insert_single_task_stub = tasks.insert_single_task_stub
 M.decompose_and_add_tasks = tasks.decompose_and_add_tasks
 M.add_task = tasks.add_task
+M.get_task_form_template = tasks.get_task_form_template
+M.parse_task_form = tasks.parse_task_form
+M.finalize_task_specs = tasks.finalize_task_specs
+M.validate_task_has_test = tasks.validate_task_has_test
+M.format_task_stub_lines = tasks.format_task_stub_lines
+M.format_specs_as_form = tasks.format_specs_as_form
+M.open_task_form = tasks.open_task_form
+M.open_architecture_review = tasks.open_architecture_review
+M.rerender_architecture_model = tasks.rerender_architecture_model
+M.cycle_architecture_model = tasks.cycle_architecture_model
+M.confirm_architecture_review = tasks.confirm_architecture_review
+M.cancel_architecture_review = tasks.cancel_architecture_review
+M.process_task_form_submission = tasks.process_task_form_submission
+M.start_placement_mode = tasks.start_placement_mode
+M.split_current_placement_task = tasks.split_current_placement_task
+M.render_placement_preview = tasks.render_placement_preview
+M.clear_placement_preview = tasks.clear_placement_preview
+M.stop_placement_mode = tasks.stop_placement_mode
+M.drop_current_task_at_cursor = tasks.drop_current_task_at_cursor
+M.move_task = tasks.move_task
 M.start_task = tasks.start_task
 M.revise_task = tasks.revise_task
 M.write_revision = tasks.write_revision
+M.test_task = tasks.test_task
 M.tasks_complete = tasks.tasks_complete
 M.tasks_command = tasks.tasks_command
 
@@ -167,7 +191,7 @@ function M.setup()
   end, {
     nargs = "*",
     complete = tasks.tasks_complete,
-    desc = "Unified tasks manager (:Tasks [list|add|start|stop|review|YES|MAYBE|NO])",
+    desc = "Unified tasks manager (:Tasks [list|add|form|drop|cancel|test <id>])",
   })
 
   -- Visited Files Navigation Graph (:History)
@@ -191,7 +215,11 @@ function M.setup()
   vim.api.nvim_create_user_command("Find", function(ctx)
     M.state.origin_win = vim.api.nvim_get_current_win()
     search.find(ctx.args)
-  end, { nargs = "*", desc = "Semantic code search across repository with LLM (:Find <concept>)" })
+  end, {
+    nargs = "*",
+    complete = "file",
+    desc = "Hybrid FZF + BM25 + AST Symbol search across repo or locations (:Find <query> [in <path...> | @<path>])",
+  })
 
   vim.api.nvim_create_user_command("Ask", function(ctx)
     M.state.origin_win = vim.api.nvim_get_current_win()
@@ -259,6 +287,7 @@ function M.setup()
 
   history.setup()
   cmdline.setup()
+  image.setup()
 end
 
 return M

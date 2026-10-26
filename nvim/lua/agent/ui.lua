@@ -312,21 +312,37 @@ function M.show_help(initial_query)
     "Unified Tasks Workflow (:Tasks or <leader>q)",
     "  :Tasks                 Toggle repository task agenda (:Tasks or <leader>q)",
     "  :Tasks list            List in-tree tasks in Quickfix",
-    "  :Tasks add <desc>      Insert formatted task contract at cursor",
-    "  :Tasks start [id]      Implement task (closest visible, or by ID/index)",
-    "  :Tasks MAYBE [id]      Mark task as REVISE; critique directly via in-line comments",
-    "  :Tasks review          List pending reviews and changes with IDs",
-    "  :Tasks YES <id>        Accept and approve specific review by ID (alias: accept)",
-    "  :Tasks NO <id>         Reject and revert specific review by ID (alias: reject)",
-    "  :Tasks stop            Stop active agent synthesis job and clear diffs",
+    "  :Tasks add             Review architectural .puml models, then open Two-Layer Task Form",
+    "  :Tasks form            Open Two-Layer Task Specification Form directly (<C-l> fill, <C-n> +task)",
+    "  :Tasks drop            Place/drop active queued task directly at cursor (<M-p>)",
+    "  :Tasks cancel          Cancel active task placement mode (<M-q>)",
+    "  :Tasks test [id]       Run (or scaffold if missing) the test suite for task <id> / cursor",
     "",
-    "In-Line Diff Shortcuts (when diff is active)",
-    "  <M-a>                  Accept active review diff (:Tasks YES)",
-    "  <M-r>                  Reject active review diff (:Tasks NO)",
-    "  <M-w>                  Mark task for revision (:Tasks MAYBE)",
+    "Architectural Model Review & Native Image Viewer (during :Tasks add or on *.png/*.svg)",
+    "  <C-r> / :w             Re-render PlantUML (.puml) diagram and refresh image split in-place",
+    "  <Tab>                  Cycle between architectural .puml models in docs/architecture/",
+    "  <C-s> / <M-a>          Confirm architectural model satisfaction & proceed to task form",
+    "  + / = and -            Zoom in / out on rendered diagram or image buffer (LuaJIT FFI libpng)",
+    "  h / j / k / l          Pan across zoomed image buffer (or Arrow keys)",
+    "  0 / r / q              Reset zoom (0), refresh from disk (r), or close viewer (q)",
+    "",
+    "Interactive Task Placement Mode Shortcuts (after :Tasks add)",
+    "  <M-p>                  Drop/place active queued task at cursor (:Tasks drop)",
+    "  <M-s>                  Carve & drop a sub-task at current location, carry remainder to next spot",
+    "  <M-n> / <M-b>          Cycle next / previous task in multi-task placement queue",
+    "  <M-q>                  Exit placement mode (:Tasks cancel)",
     "",
     "Search & Inspection",
-    "  :Find <concept>        Semantic LLM search; jumps directly to relevant code",
+    "  :Find [query] [in ..]  Floating search menu (search bar on top + live FZF/BM25/AST results + bottom code inspector)",
+    "  [In Find Modal]:",
+    "    Type on Line 1       Live-updates ranked file & code matches + bottom code context inspector",
+    "    <Down> / <Up> / j/k  Navigate between search results (<C-n> / <C-p> also work)",
+    "    <CR> / o             Jump to selected file:line:col and close modal",
+    "    <M-p>                Jump to selected result AND drop active queued task right there",
+    "    <Tab> / p            Preview selected match in background editor without closing",
+    "    1 .. 9               Jump directly to result 1..9 by index (Normal mode)",
+    "    i / /                Focus top search bar to refine query",
+    "    q / <Esc>            Close Find modal",
     "  :Ask <question>        Navigate to code and insert an in-line explanation diff",
     "",
     "Voice Dictation",
@@ -385,9 +401,10 @@ function M.show_help(initial_query)
 end
 
 --- Open an interactive multi-line docked bottom split input buffer for questions or tasks
-function M.open_docked_input(title, default_text, on_submit)
+function M.open_docked_input(title, default_text, on_submit, opts)
+  opts = opts or {}
   local origin_win = vim.api.nvim_get_current_win()
-  local height = 4
+  local height = opts.height or 4
 
   -- Create a bottom split across the entire window width
   vim.cmd("botright " .. height .. "new")
@@ -396,7 +413,7 @@ function M.open_docked_input(title, default_text, on_submit)
 
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].filetype = "markdown"
+  vim.bo[buf].filetype = opts.filetype or "markdown"
   vim.bo[buf].swapfile = false
 
   vim.wo[win].winfixheight = true
@@ -404,7 +421,7 @@ function M.open_docked_input(title, default_text, on_submit)
   vim.wo[win].relativenumber = false
   vim.wo[win].signcolumn = "no"
   vim.wo[win].wrap = true
-  vim.wo[win].statusline = string.format(
+  vim.wo[win].statusline = opts.statusline or string.format(
     " %s %%= [Enter: Newline | Ctrl+Enter / <C-s>: Submit | Esc/q: Cancel] ",
     title or "Input"
   )
@@ -450,7 +467,13 @@ function M.open_docked_input(title, default_text, on_submit)
   vim.keymap.set("n", "q", cancel, { buffer = buf, silent = true, nowait = true })
   vim.keymap.set("n", "<C-c>", cancel, { buffer = buf, silent = true, nowait = true })
 
-  pcall(vim.cmd, "startinsert")
+  if type(opts.on_setup) == "function" then
+    pcall(opts.on_setup, win, buf)
+  end
+
+  if opts.start_insert ~= false then
+    pcall(vim.cmd, "startinsert")
+  end
   return win, buf
 end
 

@@ -71,6 +71,26 @@ DtlValidationResult dtl_validate_patch(
 DtlDagResult dtl_sort_task_dag(const char* tasks_json);
 
 /**
+ * Validates a spawned follow-up task stub created elsewhere in the repository
+ * during task execution.
+ *
+ * Task creation (status:TODO stub only, never auto-start) is permitted across
+ * any repository file provided it does not target globally forbidden files
+ * (.env*, *.pem, *.key, lockfiles) or task-specific deny patterns, and does not
+ * contain secret material.
+ *
+ * @param parent_task_json JSON object of parent task policy (deny/forbid patterns)
+ * @param target_file Relative or absolute path where the new task stub is placed
+ * @param stub_text The generated comment stub lines
+ * @return DtlValidationResult (DTL_OK if allowed, or prohibition/invariant error)
+ */
+DtlValidationResult dtl_validate_spawned_task(
+    const char* parent_task_json,
+    const char* target_file,
+    const char* stub_text
+);
+
+/**
  * Returns library version string.
  */
 const char* dtl_version(void);

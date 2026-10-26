@@ -47,7 +47,7 @@ local function is_trackable_buffer(bufnr)
 
   -- Ignore synvim internal floating buffers
   local ft = vim.bo[bufnr].filetype
-  if ft == "synvim-help" or ft == "synvim-history" or ft == "synvim-history-inspector" then return false end
+  if ft == "synvim-help" or ft == "synvim-history" or ft == "synvim-history-inspector" or ft == "synvim-find" or ft == "synvim-find-inspector" then return false end
 
   return true
 end

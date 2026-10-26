@@ -327,4 +327,240 @@ SynvimAnchorResult synvim_find_context_anchor(
     return res;
 }
 
+int synvim_find_nearest_block(
+    const char* buffer_text,
+    const char* block_text,
+    int hint_line,
+    int normalize_ws
+) {
+    if (!buffer_text || !block_text) return 0;
+    std::string_view buf_sv(buffer_text);
+    std::string_view blk_sv(block_text);
+    if (blk_sv.empty()) return 0;
+
+    std::vector<std::string_view> buf_lines = split_lines(buf_sv);
+    std::vector<std::string_view> blk_lines = split_lines(blk_sv);
+    if (buf_lines.empty() || blk_lines.empty()) return 0;
+
+    const int total = static_cast<int>(buf_lines.size());
+    const int n = static_cast<int>(blk_lines.size());
+    if (n > total) return 0;
+
+    const int hint = (hint_line > 0) ? hint_line : 1;
+
+    // Pass 1: Exact line-by-line match closest to hint_line
+    int best_line = 0;
+    int best_dist = 0x7fffffff;
+    for (int i = 0; i <= total - n; ++i) {
+        if (buf_lines[i] == blk_lines[0]) {
+            bool ok = true;
+            for (int k = 1; k < n; ++k) {
+                if (buf_lines[i + k] != blk_lines[k]) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) {
+                int line_1 = i + 1;
+                int dist = std::abs(line_1 - hint);
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    best_line = line_1;
+                }
+            }
+        }
+    }
+    if (best_line > 0 || !normalize_ws) {
+        return best_line;
+    }
+
+    // Pass 2: Whitespace-normalized match closest to hint_line
+    for (int i = 0; i <= total - n; ++i) {
+        if (lines_equal_normalized(buf_lines[i], blk_lines[0])) {
+            bool ok = true;
+            for (int k = 1; k < n; ++k) {
+                if (!lines_equal_normalized(buf_lines[i + k], blk_lines[k])) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) {
+                int line_1 = i + 1;
+                int dist = std::abs(line_1 - hint);
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    best_line = line_1;
+                }
+            }
+        }
+    }
+    return best_line;
+}
+
+int synvim_find_task_line(
+    const char* buffer_text,
+    const char* task_slug,
+    int hint_line
+) {
+    if (!buffer_text || !task_slug) return 0;
+    std::string_view slug_sv = trim_sv(task_slug);
+    if (slug_sv.empty() || slug_sv == "task") return 0;
+
+    std::vector<std::string_view> buf_lines = split_lines(buffer_text);
+    const int total = static_cast<int>(buf_lines.size());
+    const int hint = (hint_line > 0) ? hint_line : 1;
+
+    int best_line = 0;
+    int best_dist = 0x7fffffff;
+
+    for (int i = 0; i < total; ++i) {
+        std::string_view bl = buf_lines[i];
+        if (!contains_ci(bl, slug_sv)) continue;
+        if (contains_ci(bl, "TODO(") || contains_ci(bl, "SPEC(") ||
+            contains_ci(bl, "CONTRACT(") || contains_ci(bl, "FIXME(") ||
+            contains_ci(bl, "TODO:") || contains_ci(bl, "FIXME:") ||
+            contains_ci(bl, "SPEC:")) {
+            int line_1 = i + 1;
+            int dist = std::abs(line_1 - hint);
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_line = line_1;
+            }
+        }
+    }
+    return best_line;
+}
+
+namespace {
+
+bool is_comment_line_and_strip(std::string_view line, std::string_view& out_body) {
+    std::string_view sv = trim_sv(line);
+    if (sv.empty()) return false;
+
+    // Strip leading comment markers: //, --, #, /*, *, "
+    size_t i = 0;
+    while (i < sv.size() && (sv[i] == '#' || sv[i] == '/' || sv[i] == '-' || sv[i] == '*' || sv[i] == '"')) {
+        i++;
+    }
+    if (i == 0) return false;
+    out_body = trim_sv(sv.substr(i));
+    return true;
+}
+
+bool is_task_header_body(std::string_view body, std::string_view& out_slug) {
+    out_slug = std::string_view{};
+    const char* kinds[] = { "TODO(", "FIXME(", "SPEC(", "CONTRACT(" };
+    for (const char* k : kinds) {
+        size_t klen = std::strlen(k);
+        if (body.size() >= klen && contains_ci(body.substr(0, klen), k)) {
+            std::string_view rest = body.substr(klen);
+            size_t end_id = 0;
+            while (end_id < rest.size() && (std::isalnum(static_cast<unsigned char>(rest[end_id])) || rest[end_id] == '_' || rest[end_id] == '-')) {
+                end_id++;
+            }
+            out_slug = rest.substr(0, end_id);
+            return true;
+        }
+    }
+    const char* bare_kinds[] = { "TODO:", "FIXME:", "SPEC:", "CONTRACT:" };
+    for (const char* bk : bare_kinds) {
+        size_t bklen = std::strlen(bk);
+        if (body.size() >= bklen && contains_ci(body.substr(0, bklen), bk)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool is_contract_continuation_body(std::string_view body) {
+    if (body.empty()) return true; // blank comment separator line inside contract block
+    if (body.front() == '[' || body.front() == '|' || body.front() == '-' || body.front() == '*') {
+        return true;
+    }
+    const char* prefixes[] = {
+        "description:", "criterion:", "action:", "requires:", "ensures:",
+        "test:", "invariant:", "modifies:", "allow:", "forbid:", "deny:", "always:",
+        "repair:", "ctd:", "status:", "depends_on:", "blocks:",
+        "def ", "theorem ", "inductive ", "structure "
+    };
+    for (const char* p : prefixes) {
+        size_t plen = std::strlen(p);
+        if (body.size() >= plen && contains_ci(body.substr(0, plen), p)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+SynvimTaskBlockSpan synvim_find_task_block_span(
+    const char* buffer_text,
+    int start_line,
+    const char* task_slug
+) {
+    SynvimTaskBlockSpan res;
+    res.start_line = (start_line > 0) ? start_line : 1;
+    res.line_count = 1;
+    res.has_contract = 0;
+
+    if (!buffer_text) return res;
+    std::vector<std::string_view> lines = split_lines(buffer_text);
+    const int total = static_cast<int>(lines.size());
+    if (res.start_line > total) return res;
+
+    std::string_view slug_sv = task_slug ? trim_sv(task_slug) : std::string_view{};
+    if (slug_sv.empty()) {
+        std::string_view first_body;
+        if (is_comment_line_and_strip(lines[res.start_line - 1], first_body)) {
+            is_task_header_body(first_body, slug_sv);
+        }
+    }
+
+    int count = 1;
+    for (int idx = res.start_line; idx < total; ++idx) {
+        std::string_view body;
+        if (!is_comment_line_and_strip(lines[idx], body)) {
+            break;
+        }
+
+        std::string_view next_slug;
+        if (is_task_header_body(body, next_slug)) {
+            // Only absorb if it's an exact duplicate of the current task's slug!
+            if (!slug_sv.empty() && slug_sv != "task" && !next_slug.empty() &&
+                slug_sv.size() == next_slug.size() && contains_ci(slug_sv, next_slug)) {
+                count++;
+                continue;
+            }
+            // Another distinct task header begins here -> STOP!
+            break;
+        }
+
+        if (is_contract_continuation_body(body)) {
+            // If it's an empty comment line, only include it if followed by more contract lines of THIS task
+            if (body.empty()) {
+                if (idx + 1 < total) {
+                    std::string_view peek_body;
+                    std::string_view peek_slug;
+                    if (is_comment_line_and_strip(lines[idx + 1], peek_body) &&
+                        !is_task_header_body(peek_body, peek_slug) &&
+                        !peek_body.empty() &&
+                        is_contract_continuation_body(peek_body)) {
+                        count++;
+                        continue;
+                    }
+                }
+                break;
+            }
+            res.has_contract = 1;
+            count++;
+        } else {
+            break;
+        }
+    }
+
+    res.line_count = count;
+    return res;
+}
+
 } // extern "C"

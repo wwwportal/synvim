@@ -18,7 +18,6 @@ assert(contracts["precommit-env-setup"] ~= nil, "precommit-env-setup contract mi
 assert(contracts["precommit-lang-gates"] ~= nil, "precommit-lang-gates contract missing")
 
 local c1 = contracts["precommit-env-setup"]
-assert(c1.tier == "A", "Expected c1 tier A")
 assert(#(c1.allow or {}) == 3, "Expected 3 allow patterns in c1, got " .. #(c1.allow or {}))
 assert(#(c1.forbid or {}) == 3, "Expected 3 forbid patterns in c1, got " .. #(c1.forbid or {}))
 assert(#(c1.requires or {}) == 0, "Expected 0 requires in c1")
@@ -26,7 +25,6 @@ print(string.format("  ✓ Contract %s: Layer 1 (Hoare: requires:0) & Layer 2 (D
   c1.task_id, #c1.allow, #c1.forbid))
 
 local c2 = contracts["precommit-lang-gates"]
-assert(c2.tier == "B", "Expected c2 tier B")
 assert(#(c2.requires or {}) == 1 and c2.requires[1] == "precommit-env-setup", "Expected c2 to require c1")
 print(string.format("  ✓ Contract %s: Hoare precondition requires ['%s'] OK", c2.task_id, c2.requires[1]))
 

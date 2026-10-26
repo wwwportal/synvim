@@ -211,264 +211,209 @@ function M.create_review(file_path, start_line, old_count, old_lines, new_lines,
   return meta
 end
 
---- Revert review cleanly using git apply -R or line replacement
-function M.revert_review(rev_id)
-  local root = ui.get_root_dir()
-  local state = state_mod.state
-  local diff_mod = require("agent.diff")
+--- Extract the bare task slug from a review (task_id may be a raw header line)
+function M.review_slug(r)
+  if not r then return nil end
+  local tid = r.task_id or ""
+  local slug = tid:match("%(([%w_%-]+)") or tid:match("%[([%w_%-]+)") or tid
+  slug = vim.trim(slug or "")
+  if slug == "" or slug == "task" or slug:find("%s") then return nil end
+  return slug
+end
 
+local function review_target_path(rev, root)
+  root = root or ui.get_root_dir()
+  if rev.abs_file and rev.abs_file ~= "" then return rev.abs_file end
+  local f = rev.target_file or rev.file or ""
+  return f:match("^/") and f or (root .. "/" .. f)
+end
+M.review_target_path = review_target_path
+
+--- Resolve a review for accept/reject. An explicit id that matches nothing
+--- NEVER falls back to another review.
+local function resolve_review(rev_id)
+  local state = state_mod.state
   if not rev_id or rev_id == "" then
     if state.current_review and state.current_review.id then
-      rev_id = state.current_review.id
-    else
-      local unrev = M.get_reviews("unreviewed")
-      if #unrev > 0 then
-        rev_id = unrev[1].id
-      end
+      return M.find_review(state.current_review.id, false) or state.current_review
     end
+    local unrev = M.get_reviews("unreviewed")
+    return unrev[1]
   end
-
-  if not rev_id then
-    vim.notify("GitReview: No review to reject", vim.log.levels.WARN)
-    return false
+  if state.current_review and state.current_review.id == rev_id then
+    -- prefer the on-disk record (authoritative status), keep live fields
+    local disk = M.find_review(rev_id, false)
+    if disk and disk.id == rev_id then return disk end
+    return state.current_review
   end
+  return M.find_review(rev_id, true)
+end
 
-  local rev
-  if state.current_review and (not rev_id or rev_id == "" or state.current_review.id == rev_id) then
-    rev = state.current_review
-  else
-    rev = M.find_review(rev_id, true)
+--- Clear the in-line diff UI only if it belongs to the given file
+local function clear_diff_for(target_full)
+  local state = state_mod.state
+  local p = state.pending_diff
+  if not p then return end
+  local name = (p.bufnr and vim.api.nvim_buf_is_valid(p.bufnr)) and vim.api.nvim_buf_get_name(p.bufnr) or ""
+  if name == target_full or vim.fn.fnamemodify(name, ":p") == vim.fn.fnamemodify(target_full, ":p") then
+    p.revert_lines = nil
+    require("agent.diff").clear_diff(true)
   end
-  if not rev and state.current_review then
-    rev = state.current_review
-  end
+end
 
-  if not rev then
-    vim.notify("GitReview: Review ID not found: " .. tostring(rev_id), vim.log.levels.WARN)
-    return false
-  end
-
-  diff_mod.clear_diff(true)
-  local target_full = rev.abs_file or (rev.target_file:match("^/") and rev.target_file or (root .. "/" .. rev.target_file))
-  local reverted = false
-
-  -- 1. Try git apply -R
-  local patch_path = root .. "/" .. (rev.patch_file or "")
-  if vim.fn.filereadable(patch_path) == 1 then
-    local res = vim.system({ "git", "-C", root, "apply", "-R", patch_path }, { text = true }):wait()
-    if res.code == 0 then
-      reverted = true
-    end
-  end
-
-  -- 2. Line-replacement fallback or reload active buffer
-  local bufnr = vim.fn.bufnr(target_full)
-  if bufnr and bufnr ~= -1 and vim.api.nvim_buf_is_valid(bufnr) then
-    if reverted then
-      vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! edit!") end)
-    elseif rev.old_lines then
-      local s_line = math.max(0, (rev.start_line or 1) - 1)
-      local new_cnt = rev.new_lines_count or (rev.new_lines and #rev.new_lines) or 1
-      local total = vim.api.nvim_buf_line_count(bufnr)
-      local e_line = math.min(total, s_line + new_cnt)
-      vim.bo[bufnr].modifiable = true
-      vim.api.nvim_buf_set_lines(bufnr, s_line, e_line, false, rev.old_lines)
-      vim.api.nvim_buf_call(bufnr, function() vim.cmd("silent! write!") end)
-      reverted = true
-    end
-  elseif not reverted and vim.fn.filereadable(target_full) == 1 and rev.old_lines then
-    local cur = vim.fn.readfile(target_full)
-    local s_line = math.max(0, (rev.start_line or 1) - 1)
-    local new_cnt = rev.new_lines_count or (rev.new_lines and #rev.new_lines) or 1
-    local e_line = math.min(#cur, s_line + new_cnt)
-    local restored = {}
-    for i = 1, s_line do table.insert(restored, cur[i]) end
-    for _, l in ipairs(rev.old_lines) do table.insert(restored, l) end
-    for i = e_line + 1, #cur do table.insert(restored, cur[i]) end
-    vim.fn.writefile(restored, target_full)
-    reverted = true
-  end
-
-  if rev.is_new_file and vim.fn.filereadable(target_full) == 1 then
-    local cur_content = vim.fn.readfile(target_full)
-    if #cur_content == 0 or (#cur_content == 1 and vim.trim(cur_content[1]) == "") then
-      pcall(vim.fn.delete, target_full)
-      if bufnr and bufnr ~= -1 and vim.api.nvim_buf_is_valid(bufnr) then
-        pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
-      end
-    end
-  end
-
-  -- 3. Clean up isolated agent workspace if one was created
-  local ws_mod = require("agent.workspaces")
-  if rev.worktree or rev.task_id then
-    pcall(ws_mod.remove_workspace, rev.worktree or rev.task_id)
-  end
-
-  -- Update review JSON
-  rev.status = "rejected"
+local function finish_review(rev, status)
+  local state = state_mod.state
+  rev.status = status
   rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
   M.save_review_meta(rev)
+  if state.current_review and state.current_review.id == rev.id then
+    state.current_review = nil
+  end
+  if rev.worktree then
+    pcall(require("agent.workspaces").remove_workspace, rev.worktree)
+  end
+end
 
-  state.current_review = nil
-  vim.notify(string.format("✗ Tasks: Reverted %s on %s!", rev.id, vim.fn.fnamemodify(target_full, ":.")), vim.log.levels.INFO)
+--- Revert review: content-anchored, never touches unrelated lines
+function M.revert_review(rev_id)
+  local root = ui.get_root_dir()
+  local patch = require("agent.patch")
 
-  -- Refresh review list
+  local rev = resolve_review(rev_id)
+  if not rev then
+    vim.notify(rev_id and rev_id ~= "" and ("Tasks: Review '" .. rev_id .. "' not found") or "Tasks: No review to reject", vim.log.levels.WARN)
+    return false
+  end
+  if rev.status and rev.status ~= "unreviewed" then
+    vim.notify(string.format("Tasks: Review %s is already %s.", rev.id, rev.status), vim.log.levels.WARN)
+    return false
+  end
+
+  local target_full = review_target_path(rev, root)
+  clear_diff_for(target_full)
+
+  local bufnr = vim.fn.bufnr(target_full)
+  local buf_loaded = bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr)
+  if vim.fn.filereadable(target_full) ~= 1 and not buf_loaded then
+    finish_review(rev, "rejected")
+    vim.notify(string.format("✗ Tasks: %s discarded (target file %s no longer exists).", rev.id, rev.target_file or target_full), vim.log.levels.INFO)
+  else
+    local ok, st, b = patch.commit(target_full, rev, patch.unapply)
+    if not ok then
+      rev.is_conflict = true
+      vim.notify(string.format(
+        "⚠ Tasks: Cannot revert %s — the generated block in %s was edited since generation, so it can't be located safely. Fix the file manually, then run ':Tasks review discard %s'.",
+        rev.id, rev.target_file or target_full, rev.id), vim.log.levels.WARN)
+      return false
+    end
+    -- Remove files that only existed because of this review
+    if rev.is_new_file and b and vim.api.nvim_buf_is_valid(b) then
+      local cur = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+      if #cur == 0 or (#cur == 1 and vim.trim(cur[1]) == "") then
+        pcall(vim.fn.delete, target_full)
+        pcall(vim.api.nvim_buf_delete, b, { force = true })
+      end
+    end
+    finish_review(rev, "rejected")
+    vim.notify(string.format("✗ Tasks: Reverted %s on %s%s", rev.id, vim.fn.fnamemodify(target_full, ":."), st == "unchanged" and " (already reverted)" or ""), vim.log.levels.INFO)
+  end
+
   local rem = M.get_reviews("unreviewed")
   if #rem > 0 then
     M.list_reviews_qf()
   else
-    vim.cmd("cclose")
+    pcall(vim.cmd, "cclose")
     vim.notify("✓ Tasks: All implementations have been reviewed by a human!", vim.log.levels.INFO)
   end
   return true
 end
 
---- Accept review: mark as human-approved
+--- Mark a review rejected without touching any file (manual conflict escape hatch)
+function M.discard_review(rev_id)
+  local rev = resolve_review(rev_id)
+  if not rev then
+    vim.notify("Tasks: Review '" .. tostring(rev_id) .. "' not found", vim.log.levels.WARN)
+    return false
+  end
+  if rev.status and rev.status ~= "unreviewed" then
+    vim.notify(string.format("Tasks: Review %s is already %s.", rev.id, rev.status), vim.log.levels.WARN)
+    return false
+  end
+  clear_diff_for(review_target_path(rev))
+  finish_review(rev, "rejected")
+  vim.notify(string.format("Tasks: Discarded %s (files left untouched).", rev.id), vim.log.levels.INFO)
+  return true
+end
+
+--- Accept review: apply (content-anchored) and persist, mark human-approved
 function M.accept_review(rev_id)
   local root = ui.get_root_dir()
-  local state = state_mod.state
   local diff_mod = require("agent.diff")
+  local patch = require("agent.patch")
 
-  if not rev_id or rev_id == "" then
-    if state.current_review and state.current_review.id then
-      rev_id = state.current_review.id
-    else
-      local unrev = M.get_reviews("unreviewed")
-      if #unrev > 0 then
-        rev_id = unrev[1].id
-      end
-    end
-  end
-
-  if not rev_id then
-    vim.notify("GitReview: No review to accept", vim.log.levels.WARN)
-    return false
-  end
-
-  local rev
-  if state.current_review and (not rev_id or rev_id == "" or state.current_review.id == rev_id) then
-    rev = state.current_review
-  else
-    rev = M.find_review(rev_id, true)
-  end
-  if not rev and state.current_review then
-    rev = state.current_review
-  end
-
+  local rev = resolve_review(rev_id)
   if not rev then
-    vim.notify("GitReview: Review ID not found: " .. tostring(rev_id), vim.log.levels.WARN)
+    vim.notify(rev_id and rev_id ~= "" and ("Tasks: Review '" .. rev_id .. "' not found") or "Tasks: No review to accept", vim.log.levels.WARN)
+    return false
+  end
+  if rev.status and rev.status ~= "unreviewed" then
+    vim.notify(string.format("Tasks: Review %s is already %s.", rev.id, rev.status), vim.log.levels.WARN)
     return false
   end
 
-  -- If diff is active for this review, accept without reverting
-  if state.pending_diff then
-    state.pending_diff.revert_lines = nil
-    local p_buf = state.pending_diff.bufnr
-    diff_mod.clear_diff(true)
-    if p_buf and vim.api.nvim_buf_is_valid(p_buf) then
-      local name = vim.api.nvim_buf_get_name(p_buf)
-      if name ~= "" and vim.bo[p_buf].buftype == "" then
-        pcall(vim.api.nvim_buf_call, p_buf, function() vim.cmd("silent! write!") end)
-      end
-    end
-  else
-    diff_mod.clear_diff(true)
+  local target_full = review_target_path(rev, root)
+  clear_diff_for(target_full)
+
+  local ok = patch.commit(target_full, rev, patch.apply)
+  if not ok then
+    rev.is_conflict = true
+    vim.notify(string.format(
+      "⚠ Tasks: Cannot accept %s — the original code in %s changed since generation. Run ':Tasks rebase %s' to regenerate, or ':Tasks NO %s'.",
+      rev.id, rev.target_file or target_full, rev.id, rev.id), vim.log.levels.WARN)
+    return false
   end
 
-  local target_full = rev.abs_file or (rev.target_file and (rev.target_file:match("^/") and rev.target_file or (root .. "/" .. rev.target_file)))
-  -- Ensure new lines are present on disk if accepting directly without active diff
-  if not rev.is_task_stub and rev.new_lines and #rev.new_lines > 0 and target_full and vim.fn.filereadable(target_full) == 1 then
-    local cur_lines = vim.fn.readfile(target_full)
-    local first_nl = rev.new_lines[1]
-    local has_content = false
-    for _, cl in ipairs(cur_lines) do
-      if cl == first_nl then has_content = true; break end
-    end
-    if not has_content then
-      local s_line = math.max(0, (rev.start_line or 1) - 1)
-      local old_cnt = rev.old_lines_count or (rev.old_lines and #rev.old_lines) or 0
-      local e_line = math.min(#cur_lines, s_line + old_cnt)
-      local updated = {}
-      for i = 1, s_line do table.insert(updated, cur_lines[i]) end
-      for _, nl in ipairs(rev.new_lines) do table.insert(updated, nl) end
-      for i = e_line + 1, #cur_lines do table.insert(updated, cur_lines[i]) end
-      vim.fn.writefile(updated, target_full)
-      local b = vim.fn.bufnr(target_full)
-      if b ~= -1 and vim.api.nvim_buf_is_loaded(b) then
-        vim.api.nvim_buf_call(b, function() vim.cmd("checktime") end)
-      end
-    end
+  local slug = M.review_slug(rev)
+  if not rev.is_task_stub and slug then
+    diff_mod.promote_contract_to_approved(target_full, slug)
   end
 
-  if not rev.is_task_stub and target_full then
-    diff_mod.promote_contract_to_approved(target_full, rev.task_id)
-  end
-
-  -- Clean up isolated agent workspace if one was created
-  local ws_mod = require("agent.workspaces")
-  if rev.worktree or rev.task_id then
-    pcall(ws_mod.remove_workspace, rev.worktree or rev.task_id)
-  end
-
-  rev.status = "accepted"
-  rev.reviewed_at = os.date("%Y-%m-%d %H:%M:%S")
-  M.save_review_meta(rev)
-
-  state.current_review = nil
+  finish_review(rev, "accepted")
   if rev.is_task_stub then
-    vim.notify(string.format("✓ Tasks: Task stub '%s' accepted! Ready to implement via :Tasks start %s", rev.task_id or rev.id, rev.task_id or rev.id), vim.log.levels.INFO)
+    vim.notify(string.format("✓ Tasks: Task stub '%s' accepted! Ready to implement via :Tasks start %s", slug or rev.id, slug or rev.id), vim.log.levels.INFO)
   else
     vim.notify(string.format("✓ Tasks: %s accepted and approved!", rev.id), vim.log.levels.INFO)
   end
 
-  -- Check and notify if this task unblocks downstream tasks
-  local accepted_id = rev.task_id
-  if accepted_id and accepted_id ~= "" and accepted_id ~= "task" then
+  -- Notify downstream tasks that became unblocked
+  if slug then
     local tasks_mod = require("agent.tasks")
     local all_tasks = tasks_mod.scan_repository_tasks()
+    local status_of = {}
+    for _, t in ipairs(all_tasks) do
+      if t.task_id then status_of[t.task_id:lower()] = t.status end
+    end
+    status_of[slug:lower()] = "APPROVED"
     for _, t in ipairs(all_tasks) do
       if t.status ~= "DONE" and t.status ~= "APPROVED" then
-        local was_blocked = false
+        local blocked_by_this, all_met = false, true
         for _, dep in ipairs(t.depends_on or {}) do
-          if dep:lower() == accepted_id:lower() then
-            was_blocked = true
-            break
-          end
+          if dep:lower() == slug:lower() then blocked_by_this = true end
+          local s = status_of[dep:lower()]
+          if s ~= "DONE" and s ~= "APPROVED" then all_met = false end
         end
-        if was_blocked then
-          local all_met = true
-          for _, dep in ipairs(t.depends_on or {}) do
-            if dep:lower() ~= accepted_id:lower() then
-              local dep_met = false
-              for _, other in ipairs(all_tasks) do
-                if other.task_id and other.task_id:lower() == dep:lower() then
-                  if other.status == "DONE" or other.status == "APPROVED" then
-                    dep_met = true
-                  end
-                  break
-                end
-              end
-              if not dep_met then
-                all_met = false
-                break
-              end
-            end
-          end
-          if all_met then
-            vim.notify(string.format("● [Tasks] '%s' is now UNBLOCKED and ready to start (:Tasks start %s)", t.task_id, t.task_id), vim.log.levels.INFO)
-          end
+        if blocked_by_this and all_met then
+          vim.notify(string.format("● [Tasks] '%s' is now UNBLOCKED and ready to start (:Tasks start %s)", t.task_id, t.task_id), vim.log.levels.INFO)
         end
       end
     end
   end
 
-  -- Refresh review list
   local rem = M.get_reviews("unreviewed")
   if #rem > 0 then
-    M.review("list")
+    M.list_reviews_qf()
   else
-    vim.cmd("cclose")
+    pcall(vim.cmd, "cclose")
     vim.notify("✓ Tasks: All implementations have been reviewed and approved!", vim.log.levels.INFO)
   end
   return true
@@ -501,7 +446,9 @@ function M.list_reviews_qf(filter)
     local f = r.target_file or r.file or r.filepath or ""
     local full = (f:match("^/") and f) or (root .. "/" .. f)
     local rel_f = f:gsub("^" .. vim.pesc(root) .. "/", ""):gsub("^/+", "")
-    local status_label = (r.status == "accepted") and "[APPROVED]" or ((r.status == "rejected") and "[REJECTED]" or "[PENDING]")
+    local status_label = (r.status == "accepted") and "[APPROVED]"
+      or ((r.status == "rejected") and "[REJECTED]"
+      or ((r.status == "superseded") and "[SUPERSEDED]" or "[PENDING]"))
     local d = vim.trim(r.description or "")
     if #d > 35 then d = d:sub(1, 32) .. "..." end
     local text = string.format("#%d %s ID: %s (%s)", idx, status_label, r.id or "unknown", r.task_id or "task")
@@ -561,50 +508,26 @@ function M.show_review(rev, target_win)
   vim.api.nvim_win_set_buf(origin_win, bufnr)
 
   local lnum = rev.start_line or 1
-
-  -- Dynamically locate the actual current line of this task or content in the buffer
-  -- via native C++ FFI language-agnostic anchor engine
-  local anchor_mod = require("agent.anchor")
-  local anchor_res = anchor_mod.find_anchor(bufnr, {
-    target_lines = rev.old_lines,
-    new_lines = rev.new_lines,
-    identifier_slug = rev.task_id,
-  })
-  if anchor_res.is_already_applied or anchor_res.confidence >= 0.85 then
-    lnum = anchor_res.start_line
-    rev.start_line = anchor_res.start_line
-  elseif anchor_res.duplicate_line then
-    lnum = anchor_res.duplicate_line
-    rev.start_line = anchor_res.duplicate_line
-  end
-
-  pcall(vim.api.nvim_win_set_cursor, origin_win, { lnum, 0 })
-  pcall(function() vim.cmd("normal! zz") end)
-
-  state_mod.state.current_review = rev
   local new_content = table.concat(rev.new_lines or {}, "\n")
-  local old_cnt = rev.old_lines_count or (rev.old_lines and #rev.old_lines) or 1
+  local old_cnt = (rev.old_lines and #rev.old_lines) or rev.old_lines_count or 0
+  state_mod.state.current_review = rev
 
-  -- Check for base hash divergence and reconcile concurrent edits
-  local ws_mod = require("agent.workspaces")
-  local current_buf_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local current_content = table.concat(current_buf_lines, "\n")
-  local current_hash = vim.fn.sha256(current_content)
-
-  if rev.base_hash and rev.base_hash ~= "" and rev.base_hash ~= current_hash and not rev.is_task_stub then
-    local base_str = rev.base_content or table.concat(rev.old_lines or {}, "\n")
-    local rec = ws_mod.reconcile_changes(current_content, base_str, new_content)
-    if rec.has_conflict then
-      rev.is_conflict = true
-      rev.conflict_markers = rec.conflict_markers
-      vim.notify(string.format("⚠ [AGENT CONFLICT]: Upstream edits conflicted with review '%s' in '%s'. Run ':Tasks resolve %s' or ':Tasks rebase %s'.", rev.id, rev.target_file, rev.id, rev.id), vim.log.levels.WARN)
-    elseif rec.status == "merged" then
-      rev.is_conflict = false
-      vim.notify(string.format("● [Tasks] Upstream changes reconciled cleanly via 3-way merge for '%s'.", rev.target_file), vim.log.levels.INFO)
-      new_content = rec.merged_content
-      rev.new_lines = vim.split(new_content, "\n")
-    end
+  -- Locate the review by CONTENT (line numbers drift as the file is edited)
+  local patch = require("agent.patch")
+  local cur_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local st, idx = patch.locate(cur_lines, rev)
+  if st == "missing" then
+    rev.is_conflict = true
+    pcall(vim.api.nvim_win_set_cursor, origin_win, { math.min(lnum, #cur_lines), 0 })
+    vim.notify(string.format("⚠ [AGENT CONFLICT]: Code targeted by review '%s' in '%s' was changed since generation. Run ':Tasks rebase %s' to regenerate or ':Tasks NO %s'.", rev.id, rev.target_file, rev.id, rev.id), vim.log.levels.WARN)
+    return
   end
+  rev.is_conflict = false
+  lnum = idx
+  rev.start_line = idx
+
+  pcall(vim.api.nvim_win_set_cursor, origin_win, { math.min(lnum, math.max(1, #cur_lines)), 0 })
+  pcall(function() vim.cmd("normal! zz") end)
 
   local diff_mod = require("agent.diff")
   diff_mod.show_inline_diff(bufnr, lnum, new_content, old_cnt, false, rev.old_lines, rev)
@@ -639,18 +562,25 @@ function M.review(subcmd, arg)
     local tasks_mod = require("agent.tasks")
     tasks_mod.revise_task(arg)
     return
+  elseif subcmd == "discard" then
+    M.discard_review(arg or (state_mod.state.current_review and state_mod.state.current_review.id))
+    return
   elseif subcmd == "resolve" then
     local target_id = arg or (state_mod.state.current_review and state_mod.state.current_review.id)
     local rev = target_id and M.find_review(target_id, true) or state_mod.state.current_review
     if rev then
       local ws_mod = require("agent.workspaces")
-      local root = ui.get_root_dir()
-      local target_full = rev.abs_file or (root .. "/" .. rev.target_file)
+      local patch = require("agent.patch")
+      local target_full = review_target_path(rev)
       local bufnr = vim.fn.bufadd(target_full)
       vim.fn.bufload(bufnr)
       local cur_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
       local cur_str = table.concat(cur_lines, "\n")
-      local rec = ws_mod.reconcile_changes(cur_str, rev.base_content or "", table.concat(rev.new_lines or {}, "\n"))
+      -- Build the full-file incoming version: base content with the patch applied
+      local base_lines = vim.split(rev.base_content or "", "\n")
+      local incoming = patch.apply(base_lines, rev)
+      local incoming_str = incoming and table.concat(incoming, "\n") or table.concat(rev.new_lines or {}, "\n")
+      local rec = ws_mod.reconcile_changes(cur_str, rev.base_content or "", incoming_str)
       ws_mod.open_conflict_resolver(rev, bufnr, rec)
     else
       vim.notify("Review: No review found to resolve.", vim.log.levels.WARN)
@@ -659,13 +589,16 @@ function M.review(subcmd, arg)
   elseif subcmd == "rebase" then
     local target_id = arg or (state_mod.state.current_review and state_mod.state.current_review.id)
     local rev = target_id and M.find_review(target_id, true) or state_mod.state.current_review
-    if rev and rev.task_id then
+    local slug = rev and M.review_slug(rev)
+    if rev and slug then
       local tasks_mod = require("agent.tasks")
-      vim.notify(string.format("● [Tasks] Rebasing task '%s' against updated file...", rev.task_id), vim.log.levels.INFO)
-      M.revert_review(rev.id)
-      tasks_mod.start_task(rev.task_id)
+      vim.notify(string.format("● [Tasks] Rebasing task '%s' against updated file...", slug), vim.log.levels.INFO)
+      local reverted = (rev.status ~= "unreviewed") or M.revert_review(rev.id) or M.discard_review(rev.id)
+      if reverted then
+        tasks_mod.start_task(slug)
+      end
     else
-      vim.notify("Review: No review found to rebase.", vim.log.levels.WARN)
+      vim.notify("Review: No task-backed review found to rebase.", vim.log.levels.WARN)
     end
     return
   elseif subcmd == "clear" or subcmd == "close" then
@@ -721,25 +654,24 @@ function M.accept(arg)
     local rev = M.find_review(arg, true)
     if not rev then
       vim.notify("Tasks: Review ID '" .. arg .. "' not found. Run :Tasks review to see active reviews.", vim.log.levels.WARN)
-      return
+      return false
     end
-    M.accept_review(rev.id)
-    return
+    return M.accept_review(rev.id)
   end
 
   -- In-line diff active
   if state.pending_diff then
     local review = state.pending_diff.review
-    diff_mod.accept_diff()
     if review and review.id then
-      M.accept_review(review.id)
+      return M.accept_review(review.id)
+    else
+      diff_mod.accept_diff()
+      return true
     end
-    return
   end
 
   if state.current_review then
-    M.accept_review(state.current_review.id)
-    return
+    return M.accept_review(state.current_review.id)
   end
 
   -- Dir preview:

@@ -65,7 +65,7 @@ do
   assert_true(vim.fn.filereadable(nested_file) == 1, "Nested file and parent directories created successfully")
   local lines = vim.fn.readfile(nested_file)
   assert_true(#lines >= 1, "File contains written task stub")
-  assert_true(lines[1]:find("^# TODO%(implement%-deep%-nested%-feature%-gate | tier:A | status:TODO%):") ~= nil, "Task stub has proper header and slug")
+  assert_true(lines[1]:find("^# TODO%(implement%-deep%-nested%-feature%-gate | status:TODO%):") ~= nil, "Task stub has proper header and slug")
 
   -- Verify review record was created
   local unrev = reviews_mod.get_reviews("unreviewed")
@@ -126,7 +126,7 @@ do
   local lines = vim.fn.readfile(test_file)
   assert_eq(#lines, 2, "Task stub inserted at line 2")
   assert_true(lines[2]:find("Compute curvature: assert α >= 0.50 and θ <= 0.25", 1, true) ~= nil, "Unicode symbols α, θ, colons, and operators preserved intact")
-  assert_true(lines[2]:find("TODO%([a-zA-Z0-9_%-]+ | tier:A | status:TODO%)") ~= nil, "Valid sanitized slug generated from unicode description")
+  assert_true(lines[2]:find("TODO%([a-zA-Z0-9_%-]+ | status:TODO%)") ~= nil, "Valid sanitized slug generated from unicode description")
 end
 
 -- -----------------------------------------------------------------------------
@@ -352,6 +352,407 @@ do
   end
 end
 
+-- -----------------------------------------------------------------------------
+-- SCENARIO 13: Duplicate Slugs, Positional Resolution & FFI Nearest-Block/Task Lookup
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 13] Duplicate Slugs, Positional Resolution & FFI Nearest-Block/Task Lookup")
+do
+  local anchor_mod = require("agent.anchor")
+  local dup_file = tmp_dir .. "/dup_tasks.lua"
+  vim.fn.writefile({
+    "-- header",
+    "-- TODO(dup-gate | tier:A | status:TODO): First duplicate gate",
+    "local function first() return 1 end",
+    "-- middle",
+    "-- TODO(dup-gate | tier:A | status:TODO): Second duplicate gate",
+    "local function second() return 2 end",
+  }, dup_file)
+
+  local l1 = anchor_mod.find_task_line(vim.fn.readfile(dup_file), "dup-gate", 2)
+  local l2 = anchor_mod.find_task_line(vim.fn.readfile(dup_file), "dup-gate", 5)
+  assert_eq(l1, 2, "FFI find_task_line resolves first duplicate near line 2")
+  assert_eq(l2, 5, "FFI find_task_line resolves second duplicate near line 5")
+
+  -- Find which agenda indices correspond to the two dup-gate tasks
+  local sorted = tasks_mod.sort_tasks(tasks_mod.scan_repository_tasks(tmp_dir))
+  local idxs = {}
+  for idx, t in ipairs(sorted) do
+    if t.task_id == "dup-gate" then table.insert(idxs, idx) end
+  end
+  assert_eq(#idxs, 2, "Both duplicate-slug tasks discovered in agenda")
+  local rec1 = tasks_mod.resolve_task_record(tostring(idxs[1]))
+  local rec2 = tasks_mod.resolve_task_record(tostring(idxs[2]))
+  assert_eq(rec1 and rec1.line, 2, "Numeric index 1 resolves to first occurrence (line 2)")
+  assert_eq(rec2 and rec2.line, 5, "Numeric index 2 resolves to second occurrence (line 5)")
+end
+
+-- -----------------------------------------------------------------------------
+-- SCENARIO 14: Content-Anchored Review Revert & Accept Under Line Drift
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 14] Content-Anchored Review Revert & Accept Under Line Drift")
+do
+  local drift_file = tmp_dir .. "/drift_target.lua"
+  local orig_block = {
+    "-- TODO(drift-task | tier:A | status:TODO): compute value",
+    "local function compute() return 0 end",
+  }
+  local new_block = {
+    "-- TODO(drift-task | tier:A | status:DONE): compute value",
+    "local function compute() return 42 end",
+  }
+  vim.fn.writefile({
+    "-- line 1",
+    new_block[1],
+    new_block[2],
+    "-- footer",
+  }, drift_file)
+  local b = vim.fn.bufadd(drift_file)
+  vim.fn.bufload(b)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, vim.fn.readfile(drift_file))
+
+  -- Create review recorded at start_line = 2
+  local rev = reviews_mod.create_review(drift_file, 2, #orig_block, orig_block, new_block, "drift-task", "compute 42", "unreviewed", 1, false)
+
+  -- Now insert 15 lines at the top of the file AND buffer (simulating upstream edits shifting lines by +15)
+  local shifted = {}
+  for i = 1, 15 do table.insert(shifted, "-- prepended line " .. i) end
+  for _, l in ipairs(vim.fn.readfile(drift_file)) do table.insert(shifted, l) end
+  vim.fn.writefile(shifted, drift_file)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, shifted)
+
+  -- Rejecting the review must revert the block at its new shifted position (line 17), NOT line 2!
+  local ok_rev = reviews_mod.revert_review(rev.id)
+  assert_true(ok_rev, "Content-anchored revert succeeded despite +15 line drift")
+  local after_revert = vim.fn.readfile(drift_file)
+  assert_eq(after_revert[1], "-- prepended line 1", "Prepended header lines untouched by revert")
+  assert_eq(after_revert[17], orig_block[1], "Original TODO line restored at shifted line 17")
+  assert_eq(after_revert[18], orig_block[2], "Original function restored at shifted line 18")
+  assert_eq(after_revert[19], "-- footer", "Footer preserved after revert")
+end
+
+-- -----------------------------------------------------------------------------
+-- SCENARIO 15: Conflict Refusal, Bogus Review ID Guard & Discard Escape Hatch
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 15] Conflict Refusal, Bogus Review ID Guard & Discard Escape Hatch")
+do
+  local conf_file = tmp_dir .. "/conflict_target.lua"
+  vim.fn.writefile({
+    "local x = 1",
+    "local y = 2",
+  }, conf_file)
+  local b = vim.fn.bufadd(conf_file)
+  vim.fn.bufload(b)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, { "local x = 1", "local y = 2" })
+
+  local rev = reviews_mod.create_review(
+    conf_file, 1, 2,
+    { "local x = 1", "local y = 2" },
+    { "local x = 10", "local y = 20" },
+    "conflict-task", "update x and y", "unreviewed", 1, false
+  )
+
+  -- User completely rewrites the file so neither old_lines nor new_lines exists
+  local user_lines = { "local completely_different = 999" }
+  vim.fn.writefile(user_lines, conf_file)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, user_lines)
+
+  -- Bogus ID must NEVER fall back to accepting/rejecting `rev`
+  local state_mod = require("agent.state")
+  state_mod.state.current_review = rev
+  local bogus_ok = reviews_mod.accept_review("rev-nonexistent-9999")
+  assert_true(not bogus_ok, "Bogus review ID rejected without falling back to current_review")
+
+  -- Accepting conflicted review must refuse to clobber user_lines
+  local acc_ok = reviews_mod.accept_review(rev.id)
+  assert_true(not acc_ok, "Accepting conflicted review refused safely")
+  assert_eq(vim.fn.readfile(conf_file)[1], "local completely_different = 999", "User file was not corrupted on conflict")
+
+  -- Discard escape hatch marks review rejected without touching the file
+  local disc_ok = reviews_mod.discard_review(rev.id)
+  assert_true(disc_ok, "discard_review succeeded on conflicted review")
+  assert_eq(vim.fn.readfile(conf_file)[1], "local completely_different = 999", "Discard left file intact")
+
+  -- Second accept/reject on already-rejected review is a safe no-op
+  local dup_ok = reviews_mod.accept_review(rev.id)
+  assert_true(not dup_ok, "Re-accepting an already-reviewed item is refused")
+end
+
+-- -----------------------------------------------------------------------------
+-- SCENARIO 16: Deleted Target File & New-File Cleanup on Reject
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 16] Deleted Target File & New-File Cleanup on Reject")
+do
+  -- 1. Rejecting a task stub that created a brand-new file deletes the file
+  local brand_new_rel = "ephemeral_dir/brand_new_stub.lua"
+  local brand_new_abs = tmp_dir .. "/" .. brand_new_rel
+  tasks_mod.add_task(brand_new_rel .. ":1 Temporary stub in brand new file")
+  assert_eq(vim.fn.filereadable(brand_new_abs), 1, "New file created by :Tasks add")
+  local found_rev = reviews_mod.find_review("temporary-stub-in-brand-new-file", true)
+  assert_true(found_rev ~= nil, "Review created for brand-new file stub")
+  if found_rev then
+    reviews_mod.revert_review(found_rev.id)
+    assert_eq(vim.fn.filereadable(brand_new_abs), 0, "Rejecting new-file stub deleted the file from disk")
+  end
+
+  -- 2. Deleting a file externally before rejecting its review handles missing file cleanly
+  local vanish_file = tmp_dir .. "/vanishing.lua"
+  vim.fn.writefile({ "-- vanishing" }, vanish_file)
+  local rev_v = reviews_mod.create_review(vanish_file, 1, 1, { "-- vanishing" }, { "-- gone" }, "vanish-task", "vanish", "unreviewed", 1, false)
+  vim.fn.delete(vanish_file)
+  local v_buf = vim.fn.bufnr(vanish_file)
+  if v_buf ~= -1 then pcall(vim.api.nvim_buf_delete, v_buf, { force = true }) end
+  local ok_v = reviews_mod.revert_review(rev_v.id)
+  assert_true(ok_v, "Reverting review whose target file was deleted succeeds cleanly")
+end
+
+-- -----------------------------------------------------------------------------
+-- SCENARIO 17: :Tasks start Adjacent Task Boundary & agy JSON Envelope Parsing
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 17] :Tasks start Adjacent Task Boundary & agy JSON Envelope Parsing")
+do
+  local llm_mod = require("agent.llm")
+  local anchor_mod = require("agent.anchor")
+
+  -- 1. Verify parse_solution_from_raw does NOT confuse agy's outer { status, response }
+  --    or spinner text with the inner solution JSON
+  local raw_agy_envelope = vim.fn.json_encode({
+    status = "SUCCESS",
+    response = vim.fn.json_encode({
+      start_line = 200,
+      old_lines_count = 2,
+      content = "function M.delete_task(id)\n  return true\nend",
+      description = "Implement delete_task",
+    }),
+  })
+  local parsed_env = llm_mod.parse_solution_from_raw(raw_agy_envelope)
+  assert_true(parsed_env ~= nil, "Parsed agy JSON envelope")
+  assert_eq(parsed_env.start_line, 200, "Extracted inner start_line from agy response envelope")
+  assert_eq(parsed_env.old_lines_count, 2, "Extracted inner old_lines_count from agy response envelope")
+  assert_true(parsed_env.content:find("function M.delete_task", 1, true) ~= nil, "Extracted inner content from agy response envelope")
+
+  -- 2. Verify multi-region edits array parsing
+  local raw_multi_edits = vim.fn.json_encode({
+    status = "SUCCESS",
+    response = vim.fn.json_encode({
+      start_line = 1,
+      old_lines_count = 1,
+      content = "-- DONE",
+      description = "Multi-region implementation",
+      edits = {
+        { start_line = 1, old_lines_count = 1, content = "-- TODO(task-1 | tier:A | status:DONE): done" },
+        { start_line = 50, old_lines_count = 1, content = "function M.new_cmd()\n  return 1\nend" },
+      },
+    }),
+  })
+  local parsed_multi = llm_mod.parse_solution_from_raw(raw_multi_edits)
+  assert_true(parsed_multi ~= nil and type(parsed_multi.edits) == "table" and #parsed_multi.edits == 2, "Parsed multi-region edits array cleanly")
+
+  -- 3. Verify adjacent tasks on lines 1 and 2 are strictly isolated by FFI find_task_block_span
+  local adj_lines = {
+    "-- TODO(support-for-tasks-delete-and-tasks-modify | tier:A | status:TODO): support for ':Tasks delete' and ':Tasks modify'",
+    "-- TODO(review-todo-routing-decomposition-model | tier:B | status:TODO): Review and optimize TODO routing",
+    "--   [HOARE CODE CONTRACT]",
+    "--   requires:  []",
+    "--   action:    Review and optimize TODO routing",
+    "--   ensures:   review: \"Smart TODO placement heuristics\"",
+    "--",
+    "--   [DTL AGENT POLICY]",
+    "--   allow:     [nvim/lua/agent/tasks.lua]",
+    "--   forbid:    [.env*, *.pem, *.key]",
+    "--   always:    review: \"Existing task scanning remains functional\"",
+    "--   repair:    on_violation -> (auto_revert, mark:REVISE)",
+    "local M = {}",
+  }
+  local span_first = anchor_mod.find_task_block_span(adj_lines, 1, "support-for-tasks-delete-and-tasks-modify")
+  assert_eq(span_first.line_count, 1, "First task on line 1 has old_lines_count == 1 (never swallows task 2 on line 2)")
+
+  local span_second = anchor_mod.find_task_block_span(adj_lines, 2, "review-todo-routing-decomposition-model")
+  assert_eq(span_second.line_count, 11, "Second task on line 2 spans 11 lines (lines 2..12)")
+end
+
+-- -----------------------------------------------------------------------------
+-- SCENARIO 18: Form-Based Single & Multi-Task Creation with Blank Field Auto-Fill
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 18] Form-Based Single & Multi-Task Creation with Blank Field Auto-Fill")
+do
+  -- User fills ONLY 'action:' across two Two-Layer CONTRACT blocks separated by '---', leaving everything else blank
+  local multi_form = table.concat({
+    "# ── Two-Layer Task Contract Form ──",
+    "CONTRACT():",
+    "  [HOARE CODE CONTRACT]",
+    "  requires:  []",
+    "  action:    Define token bucket rate limiter struct",
+    "  ensures:   ",
+    "",
+    "  [DTL AGENT POLICY]",
+    "  allow:     []",
+    "  forbid:    [.env*, *.pem, *.key]",
+    "  always:    ",
+    "  repair:    ",
+    "---",
+    "CONTRACT():",
+    "  [HOARE CODE CONTRACT]",
+    "  requires:  []",
+    "  action:    Integrate token bucket middleware into HTTP router",
+    "  ensures:   ",
+    "",
+    "  [DTL AGENT POLICY]",
+    "  allow:     []",
+    "  forbid:    [.env*, *.pem, *.key]",
+    "  always:    ",
+    "  repair:    ",
+  }, "\n")
+
+  local raw_specs = tasks_mod.parse_task_form(multi_form)
+  assert_eq(#raw_specs, 2, "Parsed 2 task blocks separated by '---' from form")
+  assert_eq(raw_specs[1].action, "Define token bucket rate limiter struct", "First task action extracted")
+  assert_eq(raw_specs[2].action, "Integrate token bucket middleware into HTTP router", "Second task action extracted")
+
+  local finalized = tasks_mod.finalize_task_specs(raw_specs, "src/limiter.py", {})
+  assert_eq(#finalized, 2, "Finalized 2 task specs")
+  assert_eq(finalized[1].task_id, "define-token-bucket-rate-limiter-struct", "Blank task_id 1 auto-filled from action")
+  assert_eq(finalized[2].task_id, "integrate-token-bucket-middleware-into-http-rout", "Blank task_id 2 auto-filled from action")
+  assert_eq(#finalized[1].requires, 0, "First task has no requires")
+  assert_eq(finalized[2].requires[1], finalized[1].task_id, "Second task auto-wired to require first task in Hoare contract")
+  assert_true(finalized[1].ensures ~= "" and finalized[1].always ~= "", "Blank ensures and always auto-filled")
+
+  -- Round-trip back into Two-Layer form lines
+  local form_lines = tasks_mod.format_specs_as_form(finalized)
+  local reparsed = tasks_mod.parse_task_form(table.concat(form_lines, "\n"))
+  assert_eq(#reparsed, 2, "Round-tripped form text parses back into 2 complete task specs")
+  assert_eq(reparsed[1].task_id, finalized[1].task_id, "Round-tripped CONTRACT(task_id) preserved")
+end
+
+-- -----------------------------------------------------------------------------
+-- SCENARIO 19: Interactive Placement Mode Across Multiple Files & Virtual Preview
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 19] Interactive Placement Mode Across Multiple Files & Virtual Preview")
+do
+  local file_one = tmp_dir .. "/place_one.py"
+  local file_two = tmp_dir .. "/place_two.lua"
+  vim.fn.writefile({
+    "class RateLimiter:",
+    "    def check(self):",
+    "        return True",
+  }, file_one)
+  vim.fn.writefile({
+    "local M = {}",
+    "function M.route(req)",
+    "  return req",
+    "end",
+    "return M",
+  }, file_two)
+
+  local win = vim.api.nvim_get_current_win()
+  local buf_one = vim.fn.bufadd(file_one)
+  vim.fn.bufload(buf_one)
+  vim.api.nvim_win_set_buf(win, buf_one)
+  vim.api.nvim_win_set_cursor(win, { 3, 8 })
+
+  -- Submit a 2-task form; this enters Interactive Placement Mode
+  local form_submission = table.concat({
+    "CONTRACT():",
+    "  [HOARE CODE CONTRACT]",
+    "  action: Implement token bucket check inside RateLimiter",
+    "---",
+    "CONTRACT():",
+    "  [HOARE CODE CONTRACT]",
+    "  action: Call RateLimiter check inside M.route",
+  }, "\n")
+  local specs = tasks_mod.process_task_form_submission(form_submission, win, false)
+  assert_eq(#specs, 2, "Form submission created 2 queued tasks")
+  assert_true(state_mod.state.placement_active == true, "Interactive placement mode is active")
+  assert_eq(#state_mod.state.placement_queue, 2, "Placement queue holds 2 tasks")
+
+  -- Verify virtual-lines preview extmark is rendered on buf_one at cursor
+  tasks_mod.render_placement_preview()
+  local extmarks = vim.api.nvim_buf_get_extmarks(buf_one, state_mod.ns_placement, 0, -1, { details = true })
+  assert_true(#extmarks >= 1, "Live virtual-lines task preview extmark rendered at cursor during placement mode")
+
+  -- Drop Task 1 at cursor (line 3 of place_one.py, inside `def check(self):` with 8-space indent)
+  local dropped_1 = tasks_mod.drop_current_task_at_cursor()
+  assert_true(dropped_1, "First queued task dropped at cursor in place_one.py")
+  assert_true(state_mod.state.placement_active == true, "Placement mode remains active for Task 2")
+  assert_eq(#state_mod.state.placement_queue, 1, "1 task remaining in placement queue")
+
+  local lines_one = vim.fn.readfile(file_one)
+  assert_true(lines_one[3]:match("^        # CONTRACT%(implement%-token%-bucket%-check%-inside") ~= nil, "Task 1 placed at line 3 with 8-space Python indentation and '# CONTRACT(...):' header")
+  assert_eq(lines_one[14], "        return True", "Original line 3 pushed cleanly below the 11-line task contract")
+
+  -- Now navigate to file_two.lua line 3 (`  return req`) and drop Task 2
+  local buf_two = vim.fn.bufadd(file_two)
+  vim.fn.bufload(buf_two)
+  vim.api.nvim_win_set_buf(win, buf_two)
+  vim.api.nvim_win_set_cursor(win, { 3, 2 })
+  tasks_mod.render_placement_preview()
+
+  local dropped_2 = tasks_mod.drop_current_task_at_cursor()
+  assert_true(dropped_2, "Second queued task dropped at cursor in place_two.lua")
+  assert_true(state_mod.state.placement_active == false, "Placement mode automatically exited after placing final task")
+  assert_eq(#state_mod.state.placement_queue, 0, "Placement queue is now empty")
+
+  local lines_two = vim.fn.readfile(file_two)
+  assert_true(lines_two[3]:match("^  %-%- CONTRACT%(call%-ratelimiter%-check%-inside%-mroute") ~= nil, "Task 2 placed at line 3 with 2-space Lua indentation and '-- CONTRACT(...):' header")
+end
+
+-- -----------------------------------------------------------------------------
+-- SCENARIO 20: Task Repositioning (:Tasks move) Across Lines & Files
+-- -----------------------------------------------------------------------------
+print("\n[SCENARIO 20] Task Repositioning (:Tasks move) Across Lines & Files")
+do
+  local move_file = tmp_dir .. "/reposition_target.lua"
+  local initial_lines = {
+    "local M = {}",
+    "-- CONTRACT(misplaced-task):",
+    "--   [HOARE CODE CONTRACT]",
+    "--   requires:  []",
+    "--   action:    Misplaced task that belongs inside helper()",
+    "--   ensures:   review: \"Helper logic verified\"",
+    "--",
+    "--   [DTL AGENT POLICY]",
+    "--   allow:     [reposition_target.lua]",
+    "--   forbid:    [.env*, *.pem, *.key]",
+    "--   always:    review: \"Module intact\"",
+    "--   repair:    on_violation -> (auto_revert, mark:REVISE)",
+    "function M.first()",
+    "  return 1",
+    "end",
+    "function M.helper()",
+    "  return 2",
+    "end",
+    "return M",
+  }
+  vim.fn.writefile(initial_lines, move_file)
+
+  local win = vim.api.nvim_get_current_win()
+  local buf = vim.fn.bufadd(move_file)
+  vim.fn.bufload(buf)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, initial_lines)
+  vim.api.nvim_win_set_buf(win, buf)
+  vim.api.nvim_win_set_cursor(win, { 2, 0 })
+
+  -- Pick up the task at line 2 via move_task
+  local picked_up = tasks_mod.move_task("")
+  assert_true(picked_up, "move_task picked up multi-line task at cursor")
+  assert_true(state_mod.state.placement_active == true, "move_task entered interactive placement mode")
+
+  -- Verify the 11-line task block was cleanly removed from line 2
+  local after_pickup = vim.fn.readfile(move_file)
+  assert_eq(#after_pickup, 8, "11-line task block removed from old position (19 - 11 = 8 lines)")
+  assert_eq(after_pickup[2], "function M.first()", "Code immediately following removed task is now at line 2")
+
+  -- Move cursor inside `M.helper()` (line 6: `  return 2`) and drop the task there!
+  vim.api.nvim_win_set_cursor(win, { 6, 2 })
+  local dropped = tasks_mod.drop_current_task_at_cursor()
+  assert_true(dropped, "Picked-up task dropped at new cursor location inside M.helper()")
+  assert_true(state_mod.state.placement_active == false, "Placement mode exited after dropping moved task")
+
+  local after_drop = vim.fn.readfile(move_file)
+  assert_eq(#after_drop, 19, "11-line task block re-inserted at new location (8 + 11 = 19 lines)")
+  assert_true(after_drop[6]:match("^  %-%- CONTRACT%(misplaced%-task%):") ~= nil, "Moved task placed at line 6 with 2-space indentation inside M.helper()")
+  assert_eq(after_drop[17], "  return 2", "Original line 6 (`  return 2`) preserved right below moved task block")
+end
+
 -- Clean up temporary directory
 pcall(vim.fn.delete, tmp_dir, "rf")
 
@@ -365,5 +766,5 @@ print("==================================================================")
 if failed > 0 then
   vim.cmd("cquit 1")
 else
-  vim.cmd("qall")
+  vim.cmd("qall!")
 end

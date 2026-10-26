@@ -153,8 +153,10 @@ extern "C" DtlValidationResult dtl_validate_patch(
         } catch (...) {}
     }
 
-    // Task-specific Prohibitions (deny list)
+    // Task-specific Prohibitions (deny / forbid list)
     std::vector<std::string> deny_list = extract_json_string_array(task_json, "deny");
+    std::vector<std::string> forbid_list = extract_json_string_array(task_json, "forbid");
+    for (const auto& f : forbid_list) deny_list.push_back(f);
     for (const auto& pattern : deny_list) {
         if (matches_pattern(target_file, pattern)) {
             tls_err_msg = "PROHIBITION VIOLATION (F): File '" + target_file + "' matches task deny policy '" + pattern + "'";
@@ -206,6 +208,76 @@ extern "C" DtlValidationResult dtl_validate_patch(
     return { DTL_OK, nullptr, nullptr };
 }
 
+extern "C" DtlValidationResult dtl_validate_spawned_task(
+    const char* parent_task_json_raw,
+    const char* target_file_raw,
+    const char* stub_text_raw
+) {
+    std::string task_json = parent_task_json_raw ? parent_task_json_raw : "{}";
+    std::string target_file = target_file_raw ? target_file_raw : "";
+    std::string stub_text = stub_text_raw ? stub_text_raw : "";
+
+    if (target_file.rfind("./", 0) == 0) {
+        target_file = target_file.substr(2);
+    }
+
+    // 1. Prohibitions (F): Global inviolable files (.env*, lockfiles, private keys)
+    static const std::vector<std::string> global_prohibitions = {
+        R"(\.env($|\..*))",
+        R"(.*Cargo\.lock$)",
+        R"(.*package-lock\.json$)",
+        R"(.*yarn\.lock$)",
+        R"(.*\.pem$)",
+        R"(.*\.key$)",
+        R"(.*id_rsa($|\.pub$))"
+    };
+
+    for (const auto& pat : global_prohibitions) {
+        try {
+            if (std::regex_search(target_file, std::regex(pat))) {
+                tls_err_msg = "PROHIBITION VIOLATION (F): Spawned task stub forbidden on sensitive file: " + target_file;
+                tls_ctd_action = "skip_spawn;alert_human";
+                return { DTL_ERR_PROHIBITION, tls_err_msg.c_str(), tls_ctd_action.c_str() };
+            }
+        } catch (...) {}
+    }
+
+    // 2. Task-specific Prohibitions (deny / forbid list)
+    std::vector<std::string> deny_list = extract_json_string_array(task_json, "deny");
+    std::vector<std::string> forbid_list = extract_json_string_array(task_json, "forbid");
+    for (const auto& f : forbid_list) deny_list.push_back(f);
+    for (const auto& pattern : deny_list) {
+        if (matches_pattern(target_file, pattern)) {
+            tls_err_msg = "PROHIBITION VIOLATION (F): Spawned task target '" + target_file + "' matches deny policy '" + pattern + "'";
+            tls_ctd_action = "skip_spawn;alert_human";
+            return { DTL_ERR_PROHIBITION, tls_err_msg.c_str(), tls_ctd_action.c_str() };
+        }
+    }
+
+    // 3. Temporal Invariants (Box): Ensure stub text contains no secrets
+    static const std::vector<std::pair<std::string, std::string>> invariant_rules = {
+        { R"(-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----)", "Private key material detected in spawned task stub" },
+        { R"(AKIA[0-9A-Z]{16})", "AWS Access Key ID detected in spawned task stub" },
+        { R"(ghp_[0-9a-zA-Z]{36})", "GitHub personal access token detected in spawned task stub" },
+        { R"(xox[baprs]-[0-9a-zA-Z]{10,48})", "Slack API token detected in spawned task stub" }
+    };
+
+    for (const auto& rule : invariant_rules) {
+        try {
+            if (std::regex_search(stub_text, std::regex(rule.first))) {
+                tls_err_msg = "INVARIANT VIOLATION (Box): " + rule.second;
+                tls_ctd_action = "purge_stub;alert_human";
+                return { DTL_ERR_INVARIANT, tls_err_msg.c_str(), tls_ctd_action.c_str() };
+            }
+        } catch (...) {}
+    }
+
+    // Note: Permissions (P) allow-list is intentionally bypassed for spawned task stubs
+    // because follow-up tasks are meant to be created in other files across the repository
+    // (with status:TODO, without auto-starting them).
+    return { DTL_OK, nullptr, nullptr };
+}
+
 // ==============================================================================
 // Topological DAG Sorter & Cycle Detector (Kahn's Algorithm)
 // ==============================================================================
@@ -220,8 +292,9 @@ struct TaskNode {
 extern "C" DtlDagResult dtl_sort_task_dag(const char* tasks_json_raw) {
     std::string json = tasks_json_raw ? tasks_json_raw : "[]";
     std::unordered_map<std::string, TaskNode> nodes;
+    std::vector<std::string> insertion_order;
 
-    // Parse array of JSON objects: [{ "id": "task-1", "blocks": [...], "depends_on": [...] }, ...]
+    // Parse array of JSON objects: [{ "id": "task-1", "requires": [...] }, ...]
     std::regex task_obj_regex(R"(\{[^{}]*\})");
     auto begin = std::sregex_iterator(json.begin(), json.end(), task_obj_regex);
     auto end = std::sregex_iterator();
@@ -229,14 +302,20 @@ extern "C" DtlDagResult dtl_sort_task_dag(const char* tasks_json_raw) {
     for (auto it = begin; it != end; ++it) {
         std::string obj_str = it->str();
         std::string id = extract_json_field(obj_str, "id");
+        if (id.empty()) {
+            id = extract_json_field(obj_str, "task_id");
+        }
         if (id.empty()) continue;
 
         TaskNode node;
         node.id = id;
         node.blocks = extract_json_string_array(obj_str, "blocks");
-        node.depends_on = extract_json_string_array(obj_str, "depends_on");
+        node.depends_on = extract_json_string_array(obj_str, "requires");
         if (node.depends_on.empty()) {
-            node.depends_on = extract_json_string_array(obj_str, "requires");
+            node.depends_on = extract_json_string_array(obj_str, "depends_on");
+        }
+        if (nodes.find(id) == nodes.end()) {
+            insertion_order.push_back(id);
         }
         nodes[id] = node;
     }
@@ -246,8 +325,11 @@ extern "C" DtlDagResult dtl_sort_task_dag(const char* tasks_json_raw) {
         return { DTL_OK, tls_sorted_json.c_str(), nullptr };
     }
 
-    // Normalize edges: if A blocks B, then B depends on A
-    for (const auto& [id, node] : nodes) {
+    // Normalize edges bidirectionally:
+    // 1. If A blocks B, then B depends_on (requires) A
+    // 2. If B depends_on (requires) A, then A blocks B
+    for (const auto& id : insertion_order) {
+        const auto& node = nodes[id];
         for (const auto& blocked_id : node.blocks) {
             if (nodes.find(blocked_id) != nodes.end()) {
                 auto& dep_list = nodes[blocked_id].depends_on;
@@ -256,17 +338,32 @@ extern "C" DtlDagResult dtl_sort_task_dag(const char* tasks_json_raw) {
                 }
             }
         }
+        for (const auto& req_id : node.depends_on) {
+            if (nodes.find(req_id) != nodes.end()) {
+                auto& blk_list = nodes[req_id].blocks;
+                if (std::find(blk_list.begin(), blk_list.end(), id) == blk_list.end()) {
+                    blk_list.push_back(id);
+                }
+            }
+        }
     }
 
-    // Calculate in-degrees based on depends_on
-    for (auto& [id, node] : nodes) {
-        node.in_degree = static_cast<int>(node.depends_on.size());
+    // Calculate in-degrees based on existing nodes in depends_on / requires
+    for (const auto& id : insertion_order) {
+        auto& node = nodes[id];
+        int deg = 0;
+        for (const auto& req_id : node.depends_on) {
+            if (nodes.find(req_id) != nodes.end()) {
+                deg++;
+            }
+        }
+        node.in_degree = deg;
     }
 
-    // Kahn's algorithm queue
+    // Kahn's algorithm queue (seeded in deterministic insertion_order)
     std::queue<std::string> zero_in_degree_q;
-    for (const auto& [id, node] : nodes) {
-        if (node.in_degree == 0) {
+    for (const auto& id : insertion_order) {
+        if (nodes[id].in_degree == 0) {
             zero_in_degree_q.push(id);
         }
     }

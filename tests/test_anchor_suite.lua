@@ -1,6 +1,8 @@
 local script_dir = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h")
 local repo_root = vim.fn.fnamemodify(script_dir, ":h")
+vim.opt.rtp:prepend(repo_root .. "/nvim")
 package.path = repo_root .. "/nvim/lua/?.lua;" .. repo_root .. "/nvim/lua/?/init.lua;" .. package.path
+package.loaded["agent.anchor"] = nil
 
 local anchor = require("agent.anchor")
 assert(anchor.is_available(), "Native Anchor engine (libsynvim_anchor.so) must be available")
@@ -113,7 +115,34 @@ local res_applied = anchor.find_anchor(buf_dup, {
 assert_true(res_applied.is_already_applied, "Detected new_lines is already applied verbatim")
 assert_eq(res_applied.start_line, 2, "Start line matches existing application")
 
-print("\n=== [6/6] Microsecond Latency Benchmark ===")
+print("\n=== [6/7] Testing Multi-Task Block Span Boundary Isolation (FFI) ===")
+local buf_two_tasks = table.concat({
+  "-- TODO(support-for-tasks-delete-and-tasks-modify | tier:A | status:TODO): support for ':Tasks delete' and ':Tasks modify'",
+  "-- TODO(review-todo-routing-decomposition-model | tier:B | status:TODO): Review and optimize TODO routing",
+  "--   [HOARE CODE CONTRACT]",
+  "--   requires:  []",
+  "--   action:    Review and optimize TODO routing",
+  "--   ensures:   review: \"Smart TODO placement heuristics\"",
+  "--",
+  "--   [DTL AGENT POLICY]",
+  "--   allow:     [nvim/lua/agent/tasks.lua]",
+  "--   forbid:    [.env*, *.pem, *.key]",
+  "--   always:    review: \"Existing task scanning remains functional\"",
+  "--   repair:    on_violation -> (auto_revert, mark:REVISE)",
+  "local M = {}",
+}, "\n")
+
+local span1 = anchor.find_task_block_span(buf_two_tasks, 1, "support-for-tasks-delete-and-tasks-modify")
+assert_eq(span1.start_line, 1, "Task 1 starts at line 1")
+assert_eq(span1.line_count, 1, "Task 1 span is strictly 1 line (does NOT bleed into Task 2 on line 2!)")
+assert_true(not span1.has_contract, "Task 1 has no Hoare/DTL block")
+
+local span2 = anchor.find_task_block_span(buf_two_tasks, 2, "review-todo-routing-decomposition-model")
+assert_eq(span2.start_line, 2, "Task 2 starts at line 2")
+assert_eq(span2.line_count, 11, "Task 2 span is 11 lines (lines 2..12 inclusive)")
+assert_true(span2.has_contract, "Task 2 has Hoare/DTL contract block")
+
+print("\n=== [7/7] Microsecond Latency Benchmark ===")
 local start_clock = vim.loop.hrtime()
 local iters = 20000
 for _ = 1, iters do

@@ -27,6 +27,31 @@ ffi.cdef[[
     const char* identifier_slug
   );
 
+  int synvim_find_nearest_block(
+    const char* buffer_text,
+    const char* block_text,
+    int hint_line,
+    int normalize_ws
+  );
+
+  int synvim_find_task_line(
+    const char* buffer_text,
+    const char* task_slug,
+    int hint_line
+  );
+
+  typedef struct {
+    int start_line;
+    int line_count;
+    int has_contract;
+  } SynvimTaskBlockSpan;
+
+  SynvimTaskBlockSpan synvim_find_task_block_span(
+    const char* buffer_text,
+    int start_line,
+    const char* task_slug
+  );
+
   const char* synvim_anchor_version(void);
 ]]
 
@@ -221,6 +246,178 @@ function M.fallback_find_anchor(buffer_text, context_before, target_lines, conte
   end
 
   return res
+end
+
+--- Locate the 1-based start line of `block` inside `buffer_text` closest to `hint_line`
+--- Uses the native C++ LuaJIT FFI engine (`synvim_find_nearest_block`) when available.
+function M.find_nearest_block(buffer_text, block_text, hint_line, normalize_ws)
+  local buf_str = to_str(buffer_text)
+  local blk_str = to_str(block_text)
+  if buf_str == "" or blk_str == "" then return nil end
+  hint_line = tonumber(hint_line) or 1
+  local norm_flag = (normalize_ws == false) and 0 or 1
+
+  if lib_anchor then
+    local ok, line_1 = pcall(function()
+      return lib_anchor.synvim_find_nearest_block(buf_str, blk_str, hint_line, norm_flag)
+    end)
+    if ok and line_1 then
+      return (line_1 > 0) and line_1 or nil
+    end
+  end
+
+  -- Pure Lua fallback
+  local lines = (type(buffer_text) == "table") and buffer_text or vim.split(buf_str, "\n")
+  local block = (type(block_text) == "table") and block_text or vim.split(blk_str, "\n")
+  if #block == 0 or #block > #lines then return nil end
+  local best, best_d = nil, math.huge
+  for i = 1, #lines - #block + 1 do
+    if lines[i] == block[1] then
+      local m = true
+      for k = 2, #block do
+        if lines[i + k - 1] ~= block[k] then m = false; break end
+      end
+      if m then
+        local d = math.abs(i - hint_line)
+        if d < best_d then best, best_d = i, d end
+      end
+    end
+  end
+  if best or norm_flag == 0 then return best end
+  for i = 1, #lines - #block + 1 do
+    if vim.trim(lines[i]) == vim.trim(block[1]) then
+      local m = true
+      for k = 2, #block do
+        if vim.trim(lines[i + k - 1]) ~= vim.trim(block[k]) then m = false; break end
+      end
+      if m then
+        local d = math.abs(i - hint_line)
+        if d < best_d then best, best_d = i, d end
+      end
+    end
+  end
+  return best
+end
+
+--- Locate the 1-based line number of a task comment matching `task_slug` closest to `hint_line`
+function M.find_task_line(buffer_text, task_slug, hint_line)
+  if not task_slug or task_slug == "" or task_slug == "task" then return nil end
+  local buf_str = to_str(buffer_text)
+  if buf_str == "" then return nil end
+  hint_line = tonumber(hint_line) or 1
+
+  if lib_anchor then
+    local ok, line_1 = pcall(function()
+      return lib_anchor.synvim_find_task_line(buf_str, task_slug, hint_line)
+    end)
+    if ok and line_1 then
+      return (line_1 > 0) and line_1 or nil
+    end
+  end
+
+  local lines = (type(buffer_text) == "table") and buffer_text or vim.split(buf_str, "\n")
+  local slug_low = task_slug:lower()
+  local best, best_d = nil, math.huge
+  for i, l in ipairs(lines) do
+    local ll = l:lower()
+    if ll:find(slug_low, 1, true) and (ll:find("todo(") or ll:find("spec(") or ll:find("contract(") or ll:find("fixme(")) then
+      local d = math.abs(i - hint_line)
+      if d < best_d then best, best_d = i, d end
+    end
+  end
+  return best
+end
+
+--- Compute the exact multi-line span of a single task comment block starting at `start_line` (1-based)
+--- Uses the native C++ LuaJIT FFI engine (`synvim_find_task_block_span`) when available.
+--- Strictly stops before any subsequent distinct task header (TODO/FIXME/SPEC/CONTRACT).
+--- @param buffer_text string|table|number
+--- @param start_line integer (1-based)
+--- @param task_slug string|nil
+--- @return table { start_line = int, line_count = int, has_contract = boolean }
+function M.find_task_block_span(buffer_text, start_line, task_slug)
+  local text_str = ""
+  local lines = nil
+  if type(buffer_text) == "number" and vim.api.nvim_buf_is_valid(buffer_text) then
+    lines = vim.api.nvim_buf_get_lines(buffer_text, 0, -1, false)
+    text_str = table.concat(lines, "\n")
+  elseif type(buffer_text) == "table" then
+    lines = buffer_text
+    text_str = table.concat(lines, "\n")
+  elseif type(buffer_text) == "string" then
+    text_str = buffer_text
+  end
+
+  start_line = tonumber(start_line) or 1
+  local slug_str = task_slug or ""
+
+  if lib_anchor and text_str ~= "" then
+    local ok, span = pcall(function()
+      return lib_anchor.synvim_find_task_block_span(text_str, start_line, slug_str)
+    end)
+    if ok and span then
+      return {
+        start_line = span.start_line,
+        line_count = math.max(1, span.line_count),
+        has_contract = (span.has_contract == 1),
+      }
+    end
+  end
+
+  -- Pure Lua fallback
+  lines = lines or vim.split(text_str, "\n")
+  local count = 1
+  local has_contract = false
+  local cur_slug = (slug_str ~= "" and slug_str) or (lines[start_line] and lines[start_line]:match("%(([a-zA-Z0-9_%-]+)")) or nil
+  local j = start_line + 1
+  while j <= #lines do
+    local l = vim.trim(lines[j])
+    local next_slug = l:match("^[#/%-%*%\"]+%s*[A-Z]+%(([a-zA-Z0-9_%-]+)")
+    local is_any_task_header = (next_slug ~= nil) or (l:match("^[#/%-%*%\"]+%s*(TODO|FIXME|SPEC|CONTRACT):") ~= nil)
+    if is_any_task_header then
+      if cur_slug and cur_slug ~= "task" and next_slug and cur_slug:lower() == next_slug:lower() then
+        count = count + 1
+        j = j + 1
+      else
+        break
+      end
+    elseif l:find("^[#/%-]+%s*%[")
+      or l:find("^[#/%-]+%s*[Dd]escription:")
+      or l:find("^[#/%-]+%s*[Cc]riterion:")
+      or l:find("^[#/%-]+%s*[Aa]ction:")
+      or l:find("^[#/%-]+%s*[Rr]equires:")
+      or l:find("^[#/%-]+%s*[Ee]nsures:")
+      or l:find("^[#/%-]+%s*[Ii]nvariant:")
+      or l:find("^[#/%-]+%s*[Mm]odifies:")
+      or l:find("^[#/%-]+%s*[Aa]llow:")
+      or l:find("^[#/%-]+%s*[Ff]orbid:")
+      or l:find("^[#/%-]+%s*[Dd]eny:")
+      or l:find("^[#/%-]+%s*[Aa]lways:")
+      or l:find("^[#/%-]+%s*[Rr]epair:")
+      or l:find("^[#/%-]+%s*[Cc][Tt][Dd]:")
+      or l:find("^[#/%-]+%s*[Ss]tatus:")
+      or l:find("^[#/%-]+%s*def%s+")
+      or l:find("^[#/%-]+%s*theorem%s+")
+      or l:find("^[#/%-]+%s*inductive%s+")
+      or l:find("^[#/%-]+%s*structure%s+")
+      or l:find("^[#/%-]+%s*|%s+")
+      or l:find("^[#/%-]+%s*[-*]")
+    then
+      has_contract = true
+      count = count + 1
+      j = j + 1
+    elseif l:match("^[#/%-]+%s*$") and j + 1 <= #lines and vim.trim(lines[j + 1]):match("^[#/%-]+%s*%[") then
+      count = count + 1
+      j = j + 1
+    else
+      break
+    end
+  end
+  return {
+    start_line = start_line,
+    line_count = count,
+    has_contract = has_contract,
+  }
 end
 
 return M

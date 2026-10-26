@@ -131,7 +131,19 @@ function M.parse_solution_from_raw(raw)
     return nil
   end
 
-  -- 1. Reassemble text parts from opencode / agy streaming JSON Lines
+  local function is_valid_solution(obj)
+    if type(obj) ~= "table" then return false end
+    if obj.edits and type(obj.edits) == "table" and #obj.edits > 0 then
+      return true
+    end
+    if obj.content or obj.code then
+      if not obj.content and obj.code then obj.content = obj.code end
+      return true
+    end
+    return false
+  end
+
+  -- 1. Reassemble text parts from opencode / agy streaming JSON Lines or JSON wrapper
   local full_text = ""
   for line in raw:gmatch("[^\r\n]+") do
     local ok, obj = pcall(vim.fn.json_decode, line)
@@ -140,7 +152,9 @@ function M.parse_solution_from_raw(raw)
         full_text = full_text .. obj.part.text
       elseif obj.response and type(obj.response) == "string" then
         full_text = full_text .. obj.response
-      elseif obj.content then
+      elseif obj.result and type(obj.result) == "table" and type(obj.result.response) == "string" then
+        full_text = full_text .. obj.result.response
+      elseif is_valid_solution(obj) then
         return obj
       end
     end
@@ -152,17 +166,23 @@ function M.parse_solution_from_raw(raw)
 
   -- 2. Direct JSON decode of full_text
   local ok, data = pcall(vim.fn.json_decode, vim.trim(full_text))
-  if ok and type(data) == "table" and (data.content or data.code) then
-    if not data.content and data.code then data.content = data.code end
-    return data
+  if ok and type(data) == "table" then
+    if data.response and type(data.response) == "string" then
+      local rok, rdata = pcall(vim.fn.json_decode, vim.trim(data.response))
+      if rok and is_valid_solution(rdata) then
+        return rdata
+      end
+      full_text = data.response
+    elseif is_valid_solution(data) then
+      return data
+    end
   end
 
   -- 3. Check for ```json ... ``` code fence
   local json_block = full_text:match("```[jJ][sS][oO][nN]%s*\n(.-)\n%s*```")
   if json_block then
     local jok, jdata = pcall(vim.fn.json_decode, vim.trim(json_block))
-    if jok and type(jdata) == "table" and (jdata.content or jdata.code) then
-      if not jdata.content and jdata.code then jdata.content = jdata.code end
+    if jok and is_valid_solution(jdata) then
       return jdata
     end
   end
@@ -202,8 +222,7 @@ function M.parse_solution_from_raw(raw)
     if b_end then
       local candidate = full_text:sub(b_start, b_end)
       local cok, cdata = pcall(vim.fn.json_decode, candidate)
-      if cok and type(cdata) == "table" and (cdata.content or cdata.code) then
-        if not cdata.content and cdata.code then cdata.content = cdata.code end
+      if cok and is_valid_solution(cdata) then
         return cdata
       end
       s_idx = b_start + 1

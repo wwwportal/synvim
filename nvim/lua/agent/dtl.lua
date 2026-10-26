@@ -38,6 +38,12 @@ ffi.cdef[[
 
   DtlDagResult dtl_sort_task_dag(const char* tasks_json);
 
+  DtlValidationResult dtl_validate_spawned_task(
+    const char* parent_task_json,
+    const char* target_file,
+    const char* stub_text
+  );
+
   const char* dtl_version(void);
 ]]
 
@@ -154,6 +160,32 @@ function M.validate_patch(task, target_file, patch_diff)
 
   local msg = (res.message ~= nil) and ffi.string(res.message) or "Normative contract violation"
   local ctd = (res.ctd_action ~= nil) and ffi.string(res.ctd_action) or "revert_patch;mark_revise"
+  return false, msg, ctd
+end
+
+--- Validate a spawned follow-up task stub created elsewhere in the repository
+--- (Permits cross-file task stub creation while enforcing global/task prohibitions and secret invariants)
+--- @param parent_task table: Parent task contract table
+--- @param target_file string: Target file path for the new task stub
+--- @param stub_text string: Generated task stub text
+--- @return boolean ok, string? message, string? ctd_action
+function M.validate_spawned_task(parent_task, target_file, stub_text)
+  if not lib then
+    local copy = vim.deepcopy(parent_task or {})
+    copy.allow = nil
+    copy.modifies = nil
+    return fallback_validate(copy, target_file, stub_text)
+  end
+
+  local task_json = vim.json.encode(parent_task or {})
+  local res = lib.dtl_validate_spawned_task(task_json, target_file or "", stub_text or "")
+
+  if res.code == ffi.C.DTL_OK then
+    return true, nil, nil
+  end
+
+  local msg = (res.message ~= nil) and ffi.string(res.message) or "Spawned task policy violation"
+  local ctd = (res.ctd_action ~= nil) and ffi.string(res.ctd_action) or "skip_spawn;alert_human"
   return false, msg, ctd
 end
 
