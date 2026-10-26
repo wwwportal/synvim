@@ -366,7 +366,7 @@ function M.setup_agent_qf_keymaps(origin_win, qf_buf)
     if vim.api.nvim_win_get_buf(w) == qf_buf then
       pcall(function()
         if state.is_tasks_list then
-          vim.wo[w].statusline = "%#AgentDiffHeader# ● TASKS %#AgentDiffMenuSel# [<CR>] Jump %#AgentDiffHeader#  %#AgentDiffMenuBtn# [o] Jump & Close %#AgentDiffHeader#  %#AgentDiffMenuBtn# [<Tab>] Switch %#AgentDiffHeader#  %#Normal# [q] Close %="
+          vim.wo[w].statusline = "%#AgentDiffHeader# ● TASKS %#AgentDiffMenuSel# [<CR>] Jump %#AgentDiffHeader#  %#AgentDiffMenuBtn# [s/Space] Start Task %#AgentDiffHeader#  %#AgentDiffMenuBtn# [o] Jump & Close %#AgentDiffHeader#  %#Normal# [q] Close %="
         else
           vim.wo[w].statusline = "%#AgentDiffHeader# ● RESULTS %#AgentDiffMenuSel# [<CR>] Jump (Stays Open) %#AgentDiffHeader#  %#AgentDiffMenuBtn# [<Tab>] Focus File %#AgentDiffHeader#  %#AgentDiffMenuBtn# [o] Jump & Close %#AgentDiffHeader#  %#Normal# [q] Close %="
         end
@@ -445,6 +445,40 @@ function M.setup_agent_qf_keymaps(origin_win, qf_buf)
       end
     end
   end
+
+  local function start_task_from_qf()
+    local idx = vim.fn.line(".")
+    local qf_list = vim.fn.getqflist()
+    local item = qf_list[idx]
+    if not item then return end
+    local target_slug = nil
+    if state.queue and state.queue[idx] and state.queue[idx].task_id then
+      target_slug = state.queue[idx].task_id
+    elseif item.text then
+      target_slug = item.text:match("%[[%w_%-]+%]%s*([%w_%-]+)")
+    end
+    vim.cmd("cclose")
+    if target_slug and target_slug ~= "task" then
+      M.start_task(target_slug)
+    else
+      M.start_task(tostring(idx))
+    end
+  end
+
+  vim.keymap.set("n", "s", function()
+    if state.is_tasks_list then
+      start_task_from_qf()
+      return
+    end
+  end, { buffer = qf_buf, silent = true, noremap = true, desc = "Start selected task" })
+
+  vim.keymap.set("n", "<Space>", function()
+    if state.is_tasks_list then
+      start_task_from_qf()
+      return
+    end
+    jump_in_origin(false)
+  end, { buffer = qf_buf, silent = true, noremap = true, desc = "Start selected task (in tasks list) or jump" })
 
   vim.keymap.set("n", "<CR>", function()
     jump_in_origin(false)
@@ -1852,8 +1886,28 @@ function M.start_task(raw)
   state_mod.state.origin_win = ui.get_primary_editor_win()
   raw = vim.trim(raw or "")
 
-  -- If called without arguments: execute closest in-line task visible in the current window
+  -- If called without arguments: execute task under quickfix cursor, or closest visible in-line task
   if raw == "" then
+    local cur_w = vim.api.nvim_get_current_win()
+    local cur_b = vim.api.nvim_win_get_buf(cur_w)
+    if vim.bo[cur_b].buftype == "quickfix" then
+      local idx = vim.fn.line(".")
+      local qf_list = vim.fn.getqflist()
+      local item = qf_list[idx]
+      local target_slug = nil
+      if state_mod.state.queue and state_mod.state.queue[idx] and state_mod.state.queue[idx].task_id then
+        target_slug = state_mod.state.queue[idx].task_id
+      elseif item and item.text then
+        target_slug = item.text:match("%[[%w_%-]+%]%s*([%w_%-]+)")
+      end
+      vim.cmd("cclose")
+      if target_slug and target_slug ~= "task" then
+        return M.start_task(target_slug)
+      else
+        return M.start_task(tostring(idx))
+      end
+    end
+
     local win = ui.get_primary_editor_win()
     local bufnr = vim.api.nvim_win_get_buf(win)
     if vim.bo[bufnr].buftype ~= "" then
@@ -2172,7 +2226,7 @@ function M.tasks_command(args)
       end
     end
     if found then
-      M.start_task(subcmd)
+      M.start_task(resolved)
     else
       vim.notify(string.format("Tasks: Unknown subcommand or task ID '%s'. Available: list, add, start, stop, review, YES, MAYBE, NO", subcmd), vim.log.levels.WARN)
     end

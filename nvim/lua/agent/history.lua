@@ -383,8 +383,8 @@ function M.jump_to(entry, editor_win)
   end)
 end
 
---- Build Tree lines: EVERY file appears EXACTLY ONCE. No duplicate loop lines. No loopback symbols.
-local function build_tree_lines(entries, current_file)
+--- Build clean, aligned vertical list lines: EVERY file appears EXACTLY ONCE in recent order.
+local function build_list_lines(entries, current_file)
   local lines = {}
   local highlights = {}
   local line_to_entry = {}
@@ -392,32 +392,28 @@ local function build_tree_lines(entries, current_file)
   local path_to_line = {}
   local line_to_head_col = {}
 
-  local path_to_idx = {}
-  for idx, entry in ipairs(entries) do
-    path_to_idx[entry.path] = idx
+  -- Determine maximum file column length for clean vertical alignment
+  local max_file_len = 26
+  for _, entry in ipairs(entries) do
+    local f_name = entry.rel_path or vim.fn.fnamemodify(entry.path, ":t")
+    if #f_name > max_file_len and #f_name <= 45 then
+      max_file_len = #f_name
+    end
   end
 
-  local rendered = {}
-  local function render_node(entry, prefix, is_last, depth)
-    if depth > 10 then return end
-    local path = entry.path
-    if rendered[path] then return end
-    rendered[path] = true
-
-    local idx = path_to_idx[path] or 0
-    local is_cur = (path == current_file)
-    local connector = depth == 0 and "" or (is_last and "└───> " or "├───> ")
+  for idx, entry in ipairs(entries) do
+    local is_cur = (entry.path == current_file)
     local idx_str = string.format("[%d]", idx)
-    local file_part = entry.rel_path or vim.fn.fnamemodify(path, ":t")
+    local file_part = entry.rel_path or vim.fn.fnamemodify(entry.path, ":t")
 
     -- Extract closest task badge
     local task_badge = ""
-    local anchor = entry.anchor or M.find_closest_anchor(path, entry.line)
+    local anchor = entry.anchor or M.find_closest_anchor(entry.path, entry.line)
     if anchor and anchor.type == "task" then
       if anchor.id and anchor.id ~= "task" and anchor.id ~= "" then
         task_badge = string.format("[@%s]", anchor.id)
       elseif anchor.desc and anchor.desc ~= "" then
-        task_badge = string.format("[Task: %s]", anchor.desc:sub(1, 26))
+        task_badge = string.format("[Task: %s]", anchor.desc:sub(1, 24))
       else
         task_badge = "[@task]"
       end
@@ -429,44 +425,32 @@ local function build_tree_lines(entries, current_file)
     local edits_str = format_chars(entry.chars_added, entry.chars_deleted)
     local cur_badge = is_cur and "  [ACTIVE]" or ""
 
-    local line_str = prefix .. connector .. idx_str .. " " .. file_part
-    if task_badge ~= "" then
-      line_str = line_str .. "  " .. task_badge
-    end
-    line_str = line_str .. "  " .. time_str .. "  " .. edits_str .. cur_badge
+    local padded_file = file_part .. string.rep(" ", math.max(2, max_file_len - #file_part + 2))
+    local padded_task = task_badge ~= "" and (task_badge .. string.rep(" ", math.max(2, 28 - #task_badge))) or string.rep(" ", 28)
+    local padded_time = string.rep(" ", math.max(0, 8 - #time_str)) .. time_str .. "  "
+    local padded_edits = edits_str .. string.rep(" ", math.max(0, 16 - #edits_str))
 
+    local line_str = string.format(" %-5s %s %s %s %s%s", idx_str, padded_file, padded_task, padded_time, padded_edits, cur_badge)
     local line_idx = #lines
     table.insert(lines, line_str)
     line_to_entry[line_idx + 1] = entry
     table.insert(node_lines, line_idx + 1)
-    path_to_line[path] = line_idx + 1
+    path_to_line[entry.path] = line_idx + 1
 
     -- Exact 0-based column of the number head for snapping
     local s_b = line_str:find("%[(%d+)%]")
     line_to_head_col[line_idx + 1] = s_b
 
-    -- Connector highlight
-    if #connector > 0 then
-      table.insert(highlights, {
-        line = line_idx,
-        col_start = #prefix,
-        col_end = #prefix + #connector,
-        hl_group = "Directory",
-      })
-    end
-
-    -- Node index
-    local idx_start = #prefix + #connector
-    local idx_end = idx_start + #idx_str
+    -- Node index highlight
     table.insert(highlights, {
       line = line_idx,
-      col_start = idx_start,
-      col_end = idx_end,
+      col_start = s_b - 1,
+      col_end = s_b - 1 + #idx_str,
       hl_group = "Title",
     })
 
-    -- Filename / relative path
-    local f_start = idx_end + 1
+    -- Filename / path highlight
+    local f_start = s_b - 1 + #idx_str + 2
     local f_end = f_start + #file_part
     table.insert(highlights, {
       line = line_idx,
@@ -477,7 +461,7 @@ local function build_tree_lines(entries, current_file)
 
     -- Task badge highlight
     if task_badge ~= "" then
-      local t_start = f_end + 2
+      local t_start = f_start + #padded_file
       local t_end = t_start + #task_badge
       table.insert(highlights, {
         line = line_idx,
@@ -496,42 +480,12 @@ local function build_tree_lines(entries, current_file)
         hl_group = "ModeMsg",
       })
     end
-
-    -- Identify outgoing transitions: only unvisited children!
-    -- NO DUPLICATES, NO LOOPS, NO REPEATING PREVIOUS NODES!
-    local out_edges = M.state.transitions[path] or {}
-    local children = {}
-    for tgt, _ in pairs(out_edges) do
-      if path_to_idx[tgt] and not rendered[tgt] then
-        table.insert(children, M.state.files[tgt])
-      end
-    end
-
-    table.sort(children, function(a, b) return (a.timestamp or 0) > (b.timestamp or 0) end)
-
-    local child_prefix = prefix .. (depth == 0 and " " or (is_last and "      " or "│     "))
-    for c_i, child in ipairs(children) do
-      local is_child_last = (c_i == #children)
-      render_node(child, child_prefix, is_child_last, depth + 1)
-    end
-  end
-
-  -- First, render tree rooted at current_file if present
-  if current_file and M.state.files[current_file] then
-    render_node(M.state.files[current_file], " ", false, 0)
-  end
-
-  -- Then render any remaining unrendered nodes in LRU order
-  for _, entry in ipairs(entries) do
-    if not rendered[entry.path] then
-      render_node(entry, " ", false, 0)
-    end
   end
 
   return lines, highlights, line_to_entry, node_lines, path_to_line, line_to_head_col
 end
 
---- Show interactive Visited Files Graph window
+--- Show interactive Visited Files List window
 function M.show_history(opts)
   opts = opts or {}
   M.update_current_position()
@@ -546,7 +500,7 @@ function M.show_history(opts)
   local current_file = normalize_path(vim.api.nvim_buf_get_name(cur_buf))
   local origin_win = vim.api.nvim_get_current_win()
 
-  local lines, highlights, line_to_entry, node_lines, path_to_line, line_to_head_col = build_tree_lines(entries, current_file)
+  local lines, highlights, line_to_entry, node_lines, path_to_line, line_to_head_col = build_list_lines(entries, current_file)
 
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].buftype = "nofile"
@@ -581,7 +535,7 @@ function M.show_history(opts)
     height = graph_h,
     style = "minimal",
     border = "rounded",
-    title = string.format(" Visited Files History (%d files) ", #entries),
+    title = string.format(" Visited Files (%d) ", #entries),
     title_pos = "left",
     zindex = 150,
   }
