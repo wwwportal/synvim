@@ -10,8 +10,8 @@
 
 local M = {}
 local ffi = require("ffi")
-local state_mod = require("agent.state")
-local ui = require("agent.ui")
+local state_mod = require("synvim.state")
+local ui = require("synvim.ui")
 
 pcall(ffi.cdef, [[
   const char* synvim_search_repo(
@@ -25,14 +25,11 @@ pcall(ffi.cdef, [[
 
 local function find_search_library()
   local candidates = {
-    vim.fn.getcwd() .. "/build/libsynvim_search.so",
-    (function()
-      local git_root = vim.fs.root(0, { ".git" })
-      return git_root and (git_root .. "/build/libsynvim_search.so") or nil
-    end)(),
+    vim.fn.expand("~/.local/lib/librouter_search.so"),
     vim.fn.expand("~/.local/lib/libsynvim_search.so"),
-    vim.fn.stdpath("config") .. "/build/libsynvim_search.so",
+    "/usr/local/lib/librouter_search.so",
     "/usr/local/lib/libsynvim_search.so",
+    "librouter_search.so",
     "libsynvim_search.so",
   }
 

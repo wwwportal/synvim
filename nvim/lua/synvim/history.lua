@@ -1,6 +1,6 @@
 local M = {}
 
-local state_mod = require("agent.state")
+local state_mod = require("synvim.state")
 
 M.state = {
   files = {},        -- map of path -> { path, rel_path, line, col, anchor, snippet, timestamp, count, time_spent_secs, chars_added, chars_deleted, last_enter }
@@ -54,7 +54,7 @@ end
 
 --- Get repository root directory for clean relative path display
 local function get_root_dir()
-  local ok, ui = pcall(require, "agent.ui")
+  local ok, ui = pcall(require, "synvim.ui")
   if ok and ui.get_root_dir then
     return ui.get_root_dir()
   end
@@ -348,7 +348,7 @@ function M.jump_to(entry, editor_win)
   end
 
   local win = editor_win
-  local ui = require("agent.ui")
+  local ui = require("synvim.ui")
   if not win or not vim.api.nvim_win_is_valid(win) or vim.bo[vim.api.nvim_win_get_buf(win)].buftype ~= "" then
     win = ui.get_primary_editor_win()
   end

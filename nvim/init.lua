@@ -544,11 +544,11 @@ require("lsp")
 -- ── Voice Transcription (:Listen) ──
 require("voice").setup()
 
--- ── Autonomous Silent Code Agent ──
-require("agent").setup()
+-- ── Sovereign Editor Core (:Find, :History, :Synvim) ──
+require("synvim").setup()
 
-vim.keymap.set("n", "<leader>q", "<Cmd>Tasks<CR>", { silent = true, desc = "Toggle tasks agenda (:Tasks)" })
 vim.keymap.set("n", "<leader>h", "<Cmd>History<CR>", { silent = true, desc = "Visited files list (:History)" })
+vim.keymap.set("n", "<leader>f", "<Cmd>Find<CR>", { silent = true, desc = "Hybrid search (:Find)" })
 
 
 -- Global statusline
