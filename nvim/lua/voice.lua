@@ -123,16 +123,23 @@ function M.record_once(callback)
     vim.api.nvim_echo({ { "● Transcribing audio with faster-whisper...", "ModeMsg" } }, false, {})
     vim.cmd("redraw")
 
-    local py_bin = vim.fn.expand("~/myenv/bin/python")
-    local root = vim.fs.root(0, { ".git" }) or vim.fn.getcwd()
-    local transcribe_script = root .. "/bin/agent_transcribe.py"
-    if vim.fn.filereadable(transcribe_script) ~= 1 then
-        transcribe_script = vim.fn.expand("~/.local/bin/agent_transcribe.py")
-    end
+    local text = ""
+    local scribe_bin = vim.fn.exepath("scribe")
+    if scribe_bin ~= "" then
+        local out = vim.fn.system({ scribe_bin, "-q", "-f", wav_file })
+        text = vim.trim(out or "")
+    else
+        local py_bin = vim.fn.expand("~/myenv/bin/python")
+        local root = vim.fs.root(0, { ".git" }) or vim.fn.getcwd()
+        local transcribe_script = root .. "/bin/agent_transcribe.py"
+        if vim.fn.filereadable(transcribe_script) ~= 1 then
+            transcribe_script = vim.fn.expand("~/.local/bin/agent_transcribe.py")
+        end
 
-    local cmd = { py_bin, transcribe_script, wav_file }
-    local out = vim.fn.system(cmd)
-    local text = vim.trim(out or "")
+        local cmd = { py_bin, transcribe_script, wav_file }
+        local out = vim.fn.system(cmd)
+        text = vim.trim(out or "")
+    end
     pcall(vim.fn.delete, wav_file)
 
     if text == "" then
